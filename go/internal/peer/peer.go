@@ -1,0 +1,114 @@
+// go/internal/peer/peer.go
+package peer
+
+import (
+	"context"
+
+	"github.com/pion/webrtc/v4"
+)
+
+// MsgConn is a reliable, ordered, discrete-message channel — a WebRTC
+// DataChannel. Noise handshake/transport messages map 1:1 to channel messages.
+type MsgConn interface {
+	Send(b []byte) error
+	Recv(ctx context.Context) ([]byte, error)
+}
+
+// DataChannel adapts a pion DataChannel to MsgConn.
+type DataChannel struct {
+	dc   *webrtc.DataChannel
+	recv chan []byte
+}
+
+func wrap(dc *webrtc.DataChannel) *DataChannel {
+	d := &DataChannel{dc: dc, recv: make(chan []byte, 64)}
+	dc.OnMessage(func(m webrtc.DataChannelMessage) { d.recv <- m.Data })
+	return d
+}
+
+func (d *DataChannel) Send(b []byte) error { return d.dc.Send(b) }
+
+func (d *DataChannel) Recv(ctx context.Context) ([]byte, error) {
+	select {
+	case b := <-d.recv:
+		return b, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// strict P2P: STUN only (hole-punch), never TURN. Empty stun => host candidates
+// only (fine for localhost tests).
+func config(stun []string) webrtc.Configuration {
+	if len(stun) == 0 {
+		return webrtc.Configuration{}
+	}
+	return webrtc.Configuration{ICEServers: []webrtc.ICEServer{{URLs: stun}}}
+}
+
+// NewOfferer creates a peer that initiates the DataChannel. opened fires when the
+// channel is ready to use.
+func NewOfferer(stun []string) (*webrtc.PeerConnection, <-chan *DataChannel, error) {
+	pc, err := webrtc.NewPeerConnection(config(stun))
+	if err != nil {
+		return nil, nil, err
+	}
+	dc, err := pc.CreateDataChannel("terminal", nil)
+	if err != nil {
+		_ = pc.Close()
+		return nil, nil, err
+	}
+	opened := make(chan *DataChannel, 1)
+	w := wrap(dc)
+	dc.OnOpen(func() { opened <- w })
+	return pc, opened, nil
+}
+
+// NewAnswerer creates a peer that accepts the offered DataChannel.
+func NewAnswerer(stun []string) (*webrtc.PeerConnection, <-chan *DataChannel, error) {
+	pc, err := webrtc.NewPeerConnection(config(stun))
+	if err != nil {
+		return nil, nil, err
+	}
+	opened := make(chan *DataChannel, 1)
+	pc.OnDataChannel(func(dc *webrtc.DataChannel) {
+		w := wrap(dc)
+		dc.OnOpen(func() { opened <- w })
+	})
+	return pc, opened, nil
+}
+
+// CreateOffer / CreateAnswer / AcceptAnswer use non-trickle ICE: gather all
+// candidates, then return the SDP with them embedded.
+func CreateOffer(pc *webrtc.PeerConnection) (string, error) {
+	offer, err := pc.CreateOffer(nil)
+	if err != nil {
+		return "", err
+	}
+	done := webrtc.GatheringCompletePromise(pc)
+	if err := pc.SetLocalDescription(offer); err != nil {
+		return "", err
+	}
+	<-done
+	return pc.LocalDescription().SDP, nil
+}
+
+func CreateAnswer(pc *webrtc.PeerConnection, offerSDP string) (string, error) {
+	if err := pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: offerSDP}); err != nil {
+		return "", err
+	}
+	answer, err := pc.CreateAnswer(nil)
+	if err != nil {
+		return "", err
+	}
+	done := webrtc.GatheringCompletePromise(pc)
+	if err := pc.SetLocalDescription(answer); err != nil {
+		return "", err
+	}
+	<-done
+	return pc.LocalDescription().SDP, nil
+}
+
+func AcceptAnswer(pc *webrtc.PeerConnection, answerSDP string) error {
+	return pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: answerSDP})
+}
