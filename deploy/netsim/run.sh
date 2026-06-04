@@ -7,6 +7,11 @@ cd "$(dirname "$0")"
 
 SIGNAL="http://10.88.0.10:8443"
 STUN="stun:10.88.0.20:3478"
+# TURN=1 enables the opt-in TURN fallback (expected to PASS even across symmetric NATs).
+TURN_ARGS=""
+if [ "${TURN:-0}" = "1" ]; then
+  TURN_ARGS="--turn turn:10.88.0.20:3478 --turn-user tr --turn-pass trpass"
+fi
 dc() { docker compose "$@"; }
 exec_t() { docker compose exec -T "$@"; }
 field() { grep "\"$2\"" | sed 's/.*: "\(.*\)".*/\1/' | head -1; }
@@ -41,14 +46,15 @@ echo "  owner_pub=${OPUB:0:16}..."
 
 echo "== pair + run agent =="
 exec_t agent tr-agent pair-dev --owner-pub "$OPUB" >/dev/null
-dc exec -d agent sh -c "tr-agent up --shell sh --signal $SIGNAL --stun $STUN >/tmp/agent.log 2>&1"
+dc exec -d agent sh -c "tr-agent up --shell sh --signal $SIGNAL --stun $STUN $TURN_ARGS >/tmp/agent.log 2>&1"
 sleep 2
+[ -n "$TURN_ARGS" ] && echo "== TURN fallback ENABLED =="
 
 echo "== client registers machine =="
 exec_t client tr add-machine --name box --id "$MID" --host-pub "$HPUB" --signal "$SIGNAL" >/dev/null
 
 echo "== run a command across the two NATs =="
-OUT=$(exec_t client tr run --stun "$STUN" --window 10s box "echo NAT_TRAVERSAL_OK; echo host=\$(hostname)" 2>&1 || true)
+OUT=$(exec_t client tr run --stun "$STUN" $TURN_ARGS --window 12s box "echo NAT_TRAVERSAL_OK; echo host=\$(hostname)" 2>&1 || true)
 echo "---- client output (incl. ICE debug) ----"
 echo "$OUT"
 echo "---- agent ICE debug ----"
@@ -56,7 +62,11 @@ exec_t agent cat /tmp/agent.log 2>/dev/null | grep -i "ice\|machine" | tail -20 
 echo "----------------"
 
 if echo "$OUT" | grep -q NAT_TRAVERSAL_OK; then
-  echo "PASS: real shell ran over a hole-punched P2P DataChannel across two NATs (no TURN)."
+  if [ -n "$TURN_ARGS" ]; then
+    echo "PASS: real shell ran across two symmetric NATs via the TURN relay (Noise keeps the relay blind)."
+  else
+    echo "PASS: real shell ran over a hole-punched direct P2P DataChannel across two NATs (no TURN)."
+  fi
   echo "(leave it up to inspect; tear down with: docker compose -f $(pwd)/docker-compose.yml down -v)"
   exit 0
 else

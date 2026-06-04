@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/srcful/terminal-relay/go/internal/client"
+	"github.com/srcful/terminal-relay/go/internal/peer"
 )
 
 func defaultDir() string {
@@ -50,7 +51,7 @@ func usage() {
 func cmdRun(args []string) {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	dir := fs.String("dir", defaultDir(), "config directory")
-	stunFlag := fs.String("stun", "", "comma-separated STUN URLs")
+	ice := iceFlags(fs)
 	window := fs.Duration("window", 3*time.Second, "how long to stream output before exiting")
 	_ = fs.Parse(args)
 	rest := fs.Args()
@@ -72,7 +73,7 @@ func cmdRun(args []string) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	mc, sess, cleanup, err := client.Attach(ctx, *m, idn, splitStun(*stunFlag))
+	mc, sess, cleanup, err := client.Attach(ctx, *m, idn, ice())
 	if err != nil {
 		fatal(err)
 	}
@@ -131,13 +132,13 @@ func cmdList(args []string) {
 func cmdAttach(args []string) {
 	fs := flag.NewFlagSet("attach", flag.ExitOnError)
 	dir := fs.String("dir", defaultDir(), "config directory")
-	stunFlag := fs.String("stun", "", "comma-separated STUN URLs (e.g. stun:host:3478); empty = host candidates only")
+	ice := iceFlags(fs)
 	_ = fs.Parse(args)
 	names := fs.Args()
 	if len(names) == 0 {
 		fatal(fmt.Errorf("usage: tr attach <machine> [machine...]"))
 	}
-	stun := splitStun(*stunFlag)
+	servers := ice()
 	idn, err := client.LoadOrCreateIdentity(*dir)
 	if err != nil {
 		fatal(err)
@@ -151,7 +152,7 @@ func cmdAttach(args []string) {
 		if err != nil {
 			fatal(err)
 		}
-		mc, sess, cleanup, err := client.Attach(ctx, *m, idn, stun)
+		mc, sess, cleanup, err := client.Attach(ctx, *m, idn, servers)
 		if err != nil {
 			fatal(err)
 		}
@@ -162,7 +163,7 @@ func cmdAttach(args []string) {
 		return
 	}
 
-	sessions, cleanup, err := client.AttachAll(ctx, *dir, names, idn, stun)
+	sessions, cleanup, err := client.AttachAll(ctx, *dir, names, idn, servers)
 	if err != nil {
 		fatal(err)
 	}
@@ -177,9 +178,28 @@ func fatal(err error) {
 	os.Exit(1)
 }
 
-// splitStun turns a comma-separated STUN flag into a slice; empty -> nil (host
-// candidates only).
-func splitStun(s string) []string {
+// iceFlags registers --stun/--turn/--turn-user/--turn-pass on fs and returns a
+// closure that builds the ICE server list (call it after fs.Parse). TURN is the
+// opt-in symmetric-NAT fallback; Noise keeps it blind to content.
+func iceFlags(fs *flag.FlagSet) func() []peer.ICEServer {
+	stun := fs.String("stun", "", "comma-separated STUN URLs (e.g. stun:host:3478); empty = host candidates only")
+	turn := fs.String("turn", "", "comma-separated TURN URLs (opt-in fallback; e.g. turn:host:3478)")
+	user := fs.String("turn-user", "", "TURN username")
+	pass := fs.String("turn-pass", "", "TURN password")
+	return func() []peer.ICEServer {
+		var servers []peer.ICEServer
+		if s := splitCSV(*stun); len(s) > 0 {
+			servers = append(servers, peer.ICEServer{URLs: s})
+		}
+		if t := splitCSV(*turn); len(t) > 0 {
+			servers = append(servers, peer.ICEServer{URLs: t, Username: *user, Credential: *pass})
+		}
+		return servers
+	}
+}
+
+// splitCSV splits a comma-separated flag into a trimmed slice; empty -> nil.
+func splitCSV(s string) []string {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return nil

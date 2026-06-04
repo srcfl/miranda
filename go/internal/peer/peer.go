@@ -82,17 +82,34 @@ func (d *DataChannel) Recv(ctx context.Context) ([]byte, error) {
 
 // strict P2P: STUN only (hole-punch), never TURN. Empty stun => host candidates
 // only (fine for localhost tests).
-func config(stun []string) webrtc.Configuration {
-	if len(stun) == 0 {
+// ICEServer is a STUN or TURN server. TURN servers carry Username/Credential;
+// STUN servers leave them empty. Empty list = host candidates only (local).
+type ICEServer struct {
+	URLs       []string
+	Username   string
+	Credential string
+}
+
+func config(servers []ICEServer) webrtc.Configuration {
+	if len(servers) == 0 {
 		return webrtc.Configuration{}
 	}
-	return webrtc.Configuration{ICEServers: []webrtc.ICEServer{{URLs: stun}}}
+	ws := make([]webrtc.ICEServer, 0, len(servers))
+	for _, s := range servers {
+		ice := webrtc.ICEServer{URLs: s.URLs}
+		if s.Username != "" || s.Credential != "" {
+			ice.Username = s.Username
+			ice.Credential = s.Credential
+		}
+		ws = append(ws, ice)
+	}
+	return webrtc.Configuration{ICEServers: ws}
 }
 
 // NewOfferer creates a peer that initiates the DataChannel. opened fires when the
 // channel is ready to use.
-func NewOfferer(stun []string) (*webrtc.PeerConnection, <-chan *DataChannel, error) {
-	pc, err := webrtc.NewPeerConnection(config(stun))
+func NewOfferer(servers []ICEServer) (*webrtc.PeerConnection, <-chan *DataChannel, error) {
+	pc, err := webrtc.NewPeerConnection(config(servers))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -109,8 +126,8 @@ func NewOfferer(stun []string) (*webrtc.PeerConnection, <-chan *DataChannel, err
 }
 
 // NewAnswerer creates a peer that accepts the offered DataChannel.
-func NewAnswerer(stun []string) (*webrtc.PeerConnection, <-chan *DataChannel, error) {
-	pc, err := webrtc.NewPeerConnection(config(stun))
+func NewAnswerer(servers []ICEServer) (*webrtc.PeerConnection, <-chan *DataChannel, error) {
+	pc, err := webrtc.NewPeerConnection(config(servers))
 	if err != nil {
 		return nil, nil, err
 	}

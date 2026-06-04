@@ -20,7 +20,7 @@ import (
 // Attach connects to the signaling server as the owner, negotiates a P2P
 // DataChannel with the named machine's agent, runs the Noise KK initiator, and
 // returns the established session. Call cleanup when done.
-func Attach(ctx context.Context, m Machine, id *Identity, stun []string) (mc *peer.DataChannel, sess *noise.Session, cleanup func(), err error) {
+func Attach(ctx context.Context, m Machine, id *Identity, ice []peer.ICEServer) (mc *peer.DataChannel, sess *noise.Session, cleanup func(), err error) {
 	ownerPubHex := id.OwnerPubHex
 	wsURL := "ws" + strings.TrimPrefix(m.SignalURL, "http") +
 		"/attach?owner_id=" + url.QueryEscape(ownerPubHex) +
@@ -32,7 +32,7 @@ func Attach(ctx context.Context, m Machine, id *Identity, stun []string) (mc *pe
 	}
 	closeWS := func() { _ = c.CloseNow() }
 
-	off, opened, err := peer.NewOfferer(stun)
+	off, opened, err := peer.NewOfferer(ice)
 	if err != nil {
 		closeWS()
 		return nil, nil, nil, err

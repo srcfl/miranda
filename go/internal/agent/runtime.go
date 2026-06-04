@@ -19,12 +19,12 @@ import (
 // answers the WebRTC offer, runs the Noise responder, and bridges to a shell.
 type Runtime struct {
 	cfg    *Config
-	launch []string // shell command, e.g. {"tmux","new","-A","-s","main"} or {"sh"}
-	stun   []string // STUN URLs; nil for local (host candidates)
+	launch []string          // shell command, e.g. {"tmux","new","-A","-s","main"} or {"sh"}
+	ice    []peer.ICEServer  // STUN/TURN servers; nil for local (host candidates)
 }
 
-func NewRuntime(cfg *Config, launch, stun []string) *Runtime {
-	return &Runtime{cfg: cfg, launch: launch, stun: stun}
+func NewRuntime(cfg *Config, launch []string, ice []peer.ICEServer) *Runtime {
+	return &Runtime{cfg: cfg, launch: launch, ice: ice}
 }
 
 // Up registers on the signaling channel under {pinned owner, machine id} and
@@ -56,7 +56,7 @@ func (rt *Runtime) Up(ctx context.Context) error {
 }
 
 func (rt *Runtime) handleOffer(ctx context.Context, c *websocket.Conn, m signal.SignalMsg) {
-	ans, opened, err := peer.NewAnswerer(rt.stun)
+	ans, opened, err := peer.NewAnswerer(rt.ice)
 	if err != nil {
 		return
 	}

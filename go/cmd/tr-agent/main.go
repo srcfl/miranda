@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/srcful/terminal-relay/go/internal/agent"
+	"github.com/srcful/terminal-relay/go/internal/peer"
 )
 
 func defaultDir() string {
@@ -80,7 +81,7 @@ func cmdUp(args []string) {
 	name := fs.String("name", hostname(), "machine display name")
 	signalURL := fs.String("signal", "http://localhost:8443", "signaling server base URL")
 	shell := fs.String("shell", "tmux:new:-A:-s:main", "launch command, ':'-separated")
-	stunFlag := fs.String("stun", "", "comma-separated STUN URLs (e.g. stun:host:3478); empty = host candidates only")
+	ice := iceFlags(fs)
 	_ = fs.Parse(args)
 
 	cfg, err := agent.LoadOrInit(*dir, *name, *signalURL)
@@ -95,7 +96,7 @@ func cmdUp(args []string) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	rt := agent.NewRuntime(cfg, launch, splitStun(*stunFlag))
+	rt := agent.NewRuntime(cfg, launch, ice())
 	fmt.Printf("tr-agent up: machine %s, signaling %s\n", cfg.MachineID, cfg.SignalURL)
 	if err := rt.Up(ctx); err != nil && ctx.Err() == nil {
 		fatal(err)
@@ -115,8 +116,28 @@ func fatal(err error) {
 	os.Exit(1)
 }
 
-// splitStun turns a comma-separated STUN flag into a slice; empty -> nil.
-func splitStun(s string) []string {
+// iceFlags registers --stun/--turn/--turn-user/--turn-pass on fs and returns a
+// closure that builds the ICE server list (call it after fs.Parse). TURN is the
+// opt-in symmetric-NAT fallback; Noise keeps it blind to content.
+func iceFlags(fs *flag.FlagSet) func() []peer.ICEServer {
+	stun := fs.String("stun", "", "comma-separated STUN URLs (e.g. stun:host:3478); empty = host candidates only")
+	turn := fs.String("turn", "", "comma-separated TURN URLs (opt-in fallback; e.g. turn:host:3478)")
+	user := fs.String("turn-user", "", "TURN username")
+	pass := fs.String("turn-pass", "", "TURN password")
+	return func() []peer.ICEServer {
+		var servers []peer.ICEServer
+		if s := splitCSV(*stun); len(s) > 0 {
+			servers = append(servers, peer.ICEServer{URLs: s})
+		}
+		if t := splitCSV(*turn); len(t) > 0 {
+			servers = append(servers, peer.ICEServer{URLs: t, Username: *user, Credential: *pass})
+		}
+		return servers
+	}
+}
+
+// splitCSV splits a comma-separated flag into a trimmed slice; empty -> nil.
+func splitCSV(s string) []string {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return nil

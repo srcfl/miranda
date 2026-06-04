@@ -9,11 +9,13 @@ import (
 	"syscall"
 
 	"golang.org/x/term"
+
+	"github.com/srcful/terminal-relay/go/internal/peer"
 )
 
 // AttachAll attaches every named machine and returns their sessions + a cleanup.
 // On any failure it cleans up the ones already attached.
-func AttachAll(ctx context.Context, dir string, names []string, id *Identity, stun []string) ([]*MuxSession, func(), error) {
+func AttachAll(ctx context.Context, dir string, names []string, id *Identity, ice []peer.ICEServer) ([]*MuxSession, func(), error) {
 	var sessions []*MuxSession
 	var cleanups []func()
 	cleanupAll := func() {
@@ -27,7 +29,7 @@ func AttachAll(ctx context.Context, dir string, names []string, id *Identity, st
 			cleanupAll()
 			return nil, nil, err
 		}
-		mc, sess, cleanup, err := Attach(ctx, *m, id, stun)
+		mc, sess, cleanup, err := Attach(ctx, *m, id, ice)
 		if err != nil {
 			cleanupAll()
 			return nil, nil, fmt.Errorf("attach %s: %w", name, err)

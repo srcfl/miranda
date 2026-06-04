@@ -72,15 +72,20 @@ server.
                ↑ hole-punched via STUN; Noise KK runs INSIDE it
 ```
 
-**Strict P2P, no TURN.** ICE uses STUN (which only reveals your public IP:port —
-it does not tunnel) to hole-punch a direct path. If no direct path can be found
-(symmetric NAT / some CGNAT), the attach fails with a clear "can't reach directly
-from this network" message rather than falling back to a relayed tunnel. This is
-the deliberate purity choice: the server touches data **never**. (Honest
-trade-off: in P2P each peer learns the other's IP address — that is how a direct
-path works — and the signaling server sees ICE candidates. We trade
-IP-anonymity-from-the-peer for content-secrecy-from-the-server plus a direct,
-low-latency path.)
+**Strict P2P by default; TURN as an opt-in fallback.** ICE uses STUN (which only
+reveals your public IP:port — it does not tunnel) to hole-punch a direct path.
+That is the default and the common case. But STUN hole-punching **cannot** traverse
+symmetric↔symmetric NAT (confirmed locally by `deploy/netsim` — see below), which
+is common with carrier-grade and some corporate NATs. So an operator MAY enable a
+**TURN** relay as a fallback for the sessions that can't go direct. Crucially, even
+when a session is TURN-relayed, **Noise `KK` keeps the relay blind** — it forwards
+only ciphertext, never plaintext. So the property "no one but the two peers can
+read the terminal" holds whether the path is direct P2P or TURN-relayed. With no
+TURN configured (the default), an un-punchable attach fails with a clear
+"can't reach directly from this network" message rather than silently degrading.
+(Honest trade-off: in direct P2P each peer learns the other's IP — that is how a
+direct path works; with TURN, neither peer's IP is exposed to the other, at the
+cost of relaying encrypted bytes. We always keep content secret from the server.)
 
 Three components, each with one clear job:
 
@@ -275,7 +280,7 @@ inside the Noise transport on the P2P DataChannel.
 
 - **`prf` unsupported** → detected at passkey registration; block with guidance.
 - **Agent offline** → signaling server returns "machine offline"; browser shows status, retries with backoff.
-- **No direct P2P path** (strict P2P, ICE fails) → clear "can't reach directly from this network" error; no tunnel fallback.
+- **No direct P2P path** (ICE fails) → if a TURN fallback is configured, relay via TURN (Noise keeps it blind); otherwise a clear "can't reach directly from this network" error.
 - **DataChannel drop** → browser re-signals and re-attaches with backoff; tmux preserves state; terminal redraws on reattach.
 - **Handshake failure** (wrong key / MITM) → abort with a fingerprint/identity warning. Tripwire, not a silent retry.
 - **Signaling server restart** → agents re-register with backoff; browsers reconnect; live DataChannels are unaffected (already P2P).
@@ -307,7 +312,8 @@ Designed for AI-effective feedback loops (change → run → see result → adju
   `RTCPeerConnection` + `RTCDataChannel`, `xterm.js`, `@noble/curves` +
   `@noble/ciphers` + `@noble/hashes`, the WebAuthn API for passkey + `prf`.
 - **tmux** on the target machine (documented dependency).
-- **STUN** for hole-punching (public STUN or self-hosted); **no TURN** (strict P2P).
+- **STUN** for hole-punching; **TURN optional** — an operator-enabled fallback for
+  symmetric-NAT sessions, kept blind to content by the inner Noise layer.
 
 ```
 terminal-relay/

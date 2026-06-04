@@ -26,7 +26,11 @@ services:
 
   coturn:
     image: coturn/coturn
-    command: ["-n", "--listening-port=3478", "--no-tls", "--no-dtls", "--no-cli", "--listening-ip=0.0.0.0", "--log-file=stdout", "--verbose"]
+    # STUN always; TURN (long-term cred tr:trpass) available as the opt-in fallback.
+    command: ["-n", "--listening-port=3478", "--no-tls", "--no-dtls", "--no-cli",
+              "--listening-ip=0.0.0.0", "--log-file=stdout",
+              "--lt-cred-mech", "--user=tr:trpass", "--realm=tr",
+              "--min-port=49160", "--max-port=49200"]
     networks:
       pub: { ipv4_address: 10.88.0.20 }
 
