@@ -5,6 +5,7 @@
 build:
 	cd go && go build -o ../bin/tr-signal ./cmd/tr-signal
 	cd go && go build -o ../bin/tr-agent ./cmd/tr-agent
+	cd go && go build -o ../bin/tr ./cmd/tr
 
 test:
 	cd go && go test ./...

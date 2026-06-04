@@ -50,3 +50,25 @@ The full path — browser-stand-in → `tr-signal` → real shell over P2P — i
 hermetically by `go test ./internal/agent/ -run TestEndToEnd`.
 
 Note: interactive QR/token pairing is built in Plan 4 alongside the browser.
+
+## CLI client (Plan 4)
+
+`go/cmd/tr` — `tr attach <machine>` opens a P2P terminal to one of your machines
+from your own terminal. Identity is a local owner key (`~/.terminal-relay/owner.json`);
+machines are pinned by host key in `machines.json`.
+
+Local loop (all on one Mac):
+
+    make build
+    ./bin/tr-signal --addr :8443 &
+    # machine side:
+    ./bin/tr-agent enroll --signal http://localhost:8443     # prints machine_id + host_pub
+    ./bin/tr keygen                                          # prints owner pub
+    ./bin/tr-agent pair-dev --owner-pub <owner-pub>          # machine trusts you
+    ./bin/tr-agent up --shell sh &                           # (or tmux for persistence)
+    # client side:
+    ./bin/tr add-machine --name box --id <machine_id> --host-pub <host_pub> --signal http://localhost:8443
+    ./bin/tr attach box                                      # real shell over P2P
+
+The full client path is proven hermetically by
+`go test ./internal/client/ -run TestEndToEnd`.
