@@ -29,6 +29,12 @@ func LoadOrInit(dir, machineName, signalURL string) (*Config, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
+	// MkdirAll is a no-op on an existing dir and does not tighten its mode, so
+	// defensively chmod regardless of whether it pre-existed. The config holds the
+	// secret host private key and must never be group/world readable.
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return nil, err
+	}
 	cfg := &Config{}
 	if data, err := os.ReadFile(configPath(dir)); err == nil {
 		if err := json.Unmarshal(data, cfg); err != nil {
@@ -61,7 +67,13 @@ func save(dir string, cfg *Config) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(configPath(dir), data, 0o600)
+	path := configPath(dir)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return err
+	}
+	// WriteFile preserves the mode of a pre-existing file (it only truncates), so
+	// explicitly tighten to 0600 to protect the host private key.
+	return os.Chmod(path, 0o600)
 }
 
 // PinOwner adds an owner pubkey (hex) to the trusted set and persists it.

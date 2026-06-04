@@ -9,11 +9,14 @@ import (
 	"github.com/srcful/terminal-relay/go/internal/peer"
 )
 
-// Shell is the subset of *PTY the session bridge needs.
+// Shell is the subset of *PTY the session bridge needs. Close lets the bridge
+// tear down the shell side itself so the shell->peer pump (blocked in Read)
+// unblocks on session end regardless of which side ended first.
 type Shell interface {
 	Read(b []byte) (int, error)
 	Write(b []byte) (int, error)
 	Resize(cols, rows uint16) error
+	Close() error
 }
 
 // RunAgentSession bridges an established Noise session to a shell using the
@@ -24,6 +27,12 @@ func RunAgentSession(ctx context.Context, mc peer.MsgConn, sess *noise.Session, 
 	if err := send(mc, sess, noise.EncodeHello(hello)); err != nil {
 		return err
 	}
+
+	// Child context so the two pumps terminate symmetrically: when one ends, we
+	// cancel it to unblock the peer->shell goroutine parked in mc.Recv (which is
+	// not unblocked merely by this function returning, nor by closing the PTY).
+	sctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
 	errc := make(chan error, 2)
 
@@ -48,7 +57,7 @@ func RunAgentSession(ctx context.Context, mc peer.MsgConn, sess *noise.Session, 
 	// peer -> shell
 	go func() {
 		for {
-			ct, err := mc.Recv(ctx)
+			ct, err := mc.Recv(sctx)
 			if err != nil {
 				errc <- err
 				return
@@ -76,7 +85,15 @@ func RunAgentSession(ctx context.Context, mc peer.MsgConn, sess *noise.Session, 
 		}
 	}()
 
-	return <-errc
+	// Wait for the first goroutine to finish, then unblock the other and drain
+	// its result — neither goroutine outlives this call:
+	//   - cancel() unblocks peer->shell (parked in mc.Recv on sctx).
+	//   - sh.Close() unblocks shell->peer (parked in sh.Read).
+	err := <-errc
+	cancel()
+	_ = sh.Close()
+	<-errc
+	return err
 }
 
 func send(mc peer.MsgConn, sess *noise.Session, framed []byte) error {

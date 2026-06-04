@@ -41,10 +41,14 @@ func (p *PTY) Resize(cols, rows uint16) error {
 }
 
 func (p *PTY) Close() error {
+	// Close the PTY fd first (unblocks any pending Read), then kill and reap the
+	// child. Without Wait() the kernel keeps the process-table entry as a zombie
+	// until the agent exits — leaking one PID per attach over the agent lifetime.
 	_ = p.f.Close()
 	if p.cmd.Process != nil {
 		_ = p.cmd.Process.Kill()
 	}
+	_ = p.cmd.Wait()
 	return nil
 }
 

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/pion/webrtc/v4"
 	"github.com/srcful/terminal-relay/go/internal/peer"
 	"github.com/srcful/terminal-relay/go/internal/signal"
 )
@@ -68,6 +69,22 @@ func (rt *Runtime) handleOffer(ctx context.Context, c *websocket.Conn, m signal.
 	}
 	defer closeOnce()
 
+	// Per-attach context tied to PeerConnection liveness. When the remote
+	// disconnects (the dominant steady-state path), the state handler cancels
+	// attachCtx, which unblocks RunResponder/RunAgentSession so the deferred
+	// closeOnce()/pty.Close() actually run and reclaim the PC, shell, and
+	// goroutines while the agent's long-lived ctx stays alive.
+	attachCtx, attachCancel := context.WithCancel(ctx)
+	defer attachCancel()
+	ans.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
+		switch s {
+		case webrtc.PeerConnectionStateDisconnected,
+			webrtc.PeerConnectionStateFailed,
+			webrtc.PeerConnectionStateClosed:
+			attachCancel()
+		}
+	})
+
 	answerSDP, err := peer.CreateAnswer(ans, m.SDP)
 	if err != nil {
 		return
@@ -77,7 +94,7 @@ func (rt *Runtime) handleOffer(ctx context.Context, c *websocket.Conn, m signal.
 		return
 	}
 
-	octx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	octx, cancel := context.WithTimeout(attachCtx, 20*time.Second)
 	defer cancel()
 	var dc *peer.DataChannel
 	select {
@@ -90,18 +107,18 @@ func (rt *Runtime) handleOffer(ctx context.Context, c *websocket.Conn, m signal.
 	if err != nil {
 		return
 	}
-	sess, err := peer.RunResponder(ctx, dc, rt.cfg.HostPriv(), ownerPub)
+	sess, err := peer.RunResponder(attachCtx, dc, rt.cfg.HostPriv(), ownerPub)
 	if err != nil {
 		return
 	}
 
-	pty, err := StartPTY(ctx, rt.launch)
+	pty, err := StartPTY(attachCtx, rt.launch)
 	if err != nil {
 		return
 	}
 	defer pty.Close()
 
-	_ = RunAgentSession(ctx, dc, sess, pty, rt.cfg.MachineName)
+	_ = RunAgentSession(attachCtx, dc, sess, pty, rt.cfg.MachineName)
 }
 
 // agentSignalURL builds ws(s)://host/agent/signal?owner_id=..&machine_id=..

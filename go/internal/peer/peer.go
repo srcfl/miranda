@@ -3,9 +3,15 @@ package peer
 
 import (
 	"context"
+	"errors"
+	"sync"
 
 	"github.com/pion/webrtc/v4"
 )
+
+// ErrDataChannelClosed is returned by Recv when the DataChannel is closed
+// (locally or by the remote peer) before a message arrives.
+var ErrDataChannelClosed = errors.New("peer: data channel closed")
 
 // MsgConn is a reliable, ordered, discrete-message channel — a WebRTC
 // DataChannel. Noise handshake/transport messages map 1:1 to channel messages.
@@ -16,14 +22,30 @@ type MsgConn interface {
 
 // DataChannel adapts a pion DataChannel to MsgConn.
 type DataChannel struct {
-	dc   *webrtc.DataChannel
-	recv chan []byte
+	dc        *webrtc.DataChannel
+	recv      chan []byte
+	closed    chan struct{} // closed when the channel is closed (local or remote)
+	closeOnce sync.Once
 }
 
 func wrap(dc *webrtc.DataChannel) *DataChannel {
-	d := &DataChannel{dc: dc, recv: make(chan []byte, 64)}
-	dc.OnMessage(func(m webrtc.DataChannelMessage) { d.recv <- m.Data })
+	d := &DataChannel{dc: dc, recv: make(chan []byte, 64), closed: make(chan struct{})}
+	dc.OnMessage(func(m webrtc.DataChannelMessage) {
+		select {
+		case d.recv <- m.Data:
+		case <-d.closed:
+		}
+	})
+	// On remote close (or error), signal Recv so it unblocks instead of parking
+	// forever. Without this a remote PeerConnection/DataChannel close would leave
+	// any Recv blocked, leaking the goroutine and everything it captured.
+	dc.OnClose(func() { d.signalClosed() })
+	dc.OnError(func(error) { d.signalClosed() })
 	return d
+}
+
+func (d *DataChannel) signalClosed() {
+	d.closeOnce.Do(func() { close(d.closed) })
 }
 
 func (d *DataChannel) Send(b []byte) error { return d.dc.Send(b) }
@@ -32,6 +54,8 @@ func (d *DataChannel) Recv(ctx context.Context) ([]byte, error) {
 	select {
 	case b := <-d.recv:
 		return b, nil
+	case <-d.closed:
+		return nil, ErrDataChannelClosed
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
