@@ -1,7 +1,10 @@
 // go/internal/client/store_test.go
 package client
 
-import "testing"
+import (
+	"os"
+	"testing"
+)
 
 func TestIdentityIsCreatedOnceAndStable(t *testing.T) {
 	dir := t.TempDir()
@@ -49,5 +52,30 @@ func TestGetMissingMachineErrors(t *testing.T) {
 	dir := t.TempDir()
 	if _, err := GetMachine(dir, "nope"); err == nil {
 		t.Fatal("expected error for unknown machine")
+	}
+}
+
+// TestAddMachineDoesNotDestroyCorruptStore guards the pin set: if machines.json
+// is unreadable/corrupt (e.g. a truncated write from a prior crash), AddMachine
+// must NOT silently overwrite the whole file with just the new entry. The pinned
+// host pubkeys anchor the Noise KK trust decision, so silent loss is unacceptable.
+func TestAddMachineDoesNotDestroyCorruptStore(t *testing.T) {
+	dir := t.TempDir()
+	// Simulate a truncated/partial write: valid JSON prefix, cut off mid-array.
+	corrupt := []byte(`[{"name":"a","host_pub":"aa"},{"name":"b","host_pub":"bb"},{"name":"c"`)
+	if err := os.WriteFile(machinesPath(dir), corrupt, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := Machine{Name: "d", HostPubHex: "dd"}
+	if err := AddMachine(dir, m); err == nil {
+		t.Fatal("expected AddMachine to return an error on corrupt store, got nil")
+	}
+	// The corrupt file must be left untouched, not overwritten with [d].
+	after, err := os.ReadFile(machinesPath(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(corrupt) {
+		t.Fatalf("AddMachine overwrote corrupt store; pin set lost. file=%s", after)
 	}
 }

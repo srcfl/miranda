@@ -64,7 +64,13 @@ func AddMachine(dir string, m Machine) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	list, _ := ListMachines(dir)
+	list, err := ListMachines(dir)
+	if err != nil {
+		// Refuse to mutate a store we couldn't read: the pinned host pubkeys
+		// anchor the Noise KK trust decision, so silently overwriting them with
+		// just the new entry would lose the user's pin set. Propagate instead.
+		return err
+	}
 	updated := false
 	for i := range list {
 		if list[i].Name == m.Name {
@@ -76,8 +82,36 @@ func AddMachine(dir string, m Machine) error {
 	if !updated {
 		list = append(list, m)
 	}
-	data, _ := json.MarshalIndent(list, "", "  ")
-	return os.WriteFile(machinesPath(dir), data, 0o600)
+	data, err := json.MarshalIndent(list, "", "  ")
+	if err != nil {
+		return err
+	}
+	// Write atomically (temp file + rename) so a crash mid-write can't truncate
+	// the real machines.json into the corrupt state this guards against.
+	tmp, err := os.CreateTemp(dir, "machines-*.json.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, machinesPath(dir)); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	return nil
 }
 
 func ListMachines(dir string) ([]Machine, error) {
