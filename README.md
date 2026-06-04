@@ -72,3 +72,18 @@ Local loop (all on one Mac):
 
 The full client path is proven hermetically by
 `go test ./internal/client/ -run TestEndToEnd`.
+
+### Multi-machine (Plan 4b)
+
+`tr attach <m1> <m2> ...` attaches several machines at once and multiplexes them
+onto your terminal — one in focus, the rest live in the background. Switch with the
+prefix key **Ctrl-]** then:
+
+- `1`–`9` — focus that machine
+- `n` — next machine
+- `q` — quit (detach all)
+- `Ctrl-]` again — send a literal Ctrl-] to the focused machine
+
+Each machine keeps its own tmux (windows/panes + persistence); this layer only
+chooses which machine is in focus. Switching clears the screen and nudges the
+focused machine's tmux to redraw.
