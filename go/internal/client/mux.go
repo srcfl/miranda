@@ -71,7 +71,22 @@ func (m *Mux) Run(ctx context.Context, in io.Reader, resizes <-chan Size) error 
 		go m.readSession(ctx, i)
 	}
 	go m.resizeLoop(ctx, resizes)
-	return m.readStdin(ctx, in)
+
+	// readStdin blocks in in.Read; run it on its own goroutine so Run can return as
+	// soon as ctx is canceled (e.g. SIGTERM) or all sessions disconnect (m.quit),
+	// even while stdin is idle — otherwise the caller's terminal-restore deferral
+	// would not run until the next keystroke.
+	stdinErr := make(chan error, 1)
+	go func() { stdinErr <- m.readStdin(ctx, in) }()
+
+	select {
+	case err := <-stdinErr:
+		return err
+	case <-m.quit:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (m *Mux) readSession(ctx context.Context, i int) {
@@ -190,6 +205,8 @@ func (m *Mux) command(b byte) {
 	}
 }
 
+// switchTo is the user-driven focus change (prefix digit / 'n'). It is a no-op if
+// the requested session is dead or already focused.
 func (m *Mux) switchTo(idx int) {
 	m.mu.Lock()
 	if idx < 0 || idx >= len(m.sessions) || m.dead[idx] || idx == m.focus {
@@ -201,6 +218,12 @@ func (m *Mux) switchTo(idx int) {
 	_, _ = io.WriteString(m.out, "\x1b[2J\x1b[H") // clear + home, under lock with other out writes
 	m.mu.Unlock()
 
+	m.afterFocusChange(idx, size)
+}
+
+// afterFocusChange does the post-focus-change side effects that must run WITHOUT
+// m.mu held: set the window title and nudge the newly-focused machine to redraw.
+func (m *Mux) afterFocusChange(idx int, size Size) {
 	m.setTitle(m.sessions[idx].Name)
 	// Nudge the newly-focused machine's tmux to redraw the current screen.
 	_ = m.sessions[idx].snd.send(noise.EncodeResize(size.Cols, size.Rows))
@@ -215,16 +238,26 @@ func (m *Mux) onSessionEnd(i int) {
 	m.dead[i] = true
 	fmt.Fprintf(m.out, "\r\n[tr] %s disconnected\r\n", m.sessions[i].Name)
 	wasFocus := i == m.focus
+	// Resolve the next live target AND commit the focus change atomically while the
+	// lock is held. Releasing the lock between resolving and committing would let a
+	// concurrent onSessionEnd kill the resolved target, stranding focus on a dead
+	// session (the live target's output would then be dropped forever).
 	next := m.nextLiveLocked()
-	m.mu.Unlock()
-
 	if next < 0 {
+		m.mu.Unlock()
 		m.quitOnce.Do(func() { close(m.quit) })
 		return
 	}
-	if wasFocus {
-		m.switchTo(next)
+	if !wasFocus {
+		m.mu.Unlock()
+		return
 	}
+	m.focus = next
+	size := m.size
+	_, _ = io.WriteString(m.out, "\x1b[2J\x1b[H") // clear + home, under lock with other out writes
+	m.mu.Unlock()
+
+	m.afterFocusChange(next, size)
 }
 
 // nextLiveLocked returns the next non-dead session after focus (wrapping), or -1.
