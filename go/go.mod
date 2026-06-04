@@ -4,13 +4,13 @@ go 1.26.3
 
 require (
 	github.com/coder/websocket v1.8.14
+	github.com/creack/pty v1.1.24
 	github.com/flynn/noise v1.1.0
 	github.com/pion/webrtc/v4 v4.2.14
 	golang.org/x/crypto v0.52.0
 )
 
 require (
-	github.com/creack/pty v1.1.24 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/pion/datachannel v1.6.0 // indirect
 	github.com/pion/dtls/v3 v3.1.3 // indirect
