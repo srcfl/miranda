@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/srcful/terminal-relay/go/internal/client"
 )
@@ -32,14 +33,53 @@ func main() {
 		cmdList(os.Args[2:])
 	case "attach":
 		cmdAttach(os.Args[2:])
+	case "run":
+		cmdRun(os.Args[2:])
 	default:
 		usage()
 	}
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: tr <keygen|add-machine|list|attach> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: tr <keygen|add-machine|list|attach|run> [flags]")
 	os.Exit(2)
+}
+
+// cmdRun attaches and runs one command non-interactively, streaming output for a
+// short window. Useful for scripts and the NAT-sim smoke test (no TTY needed).
+func cmdRun(args []string) {
+	fs := flag.NewFlagSet("run", flag.ExitOnError)
+	dir := fs.String("dir", defaultDir(), "config directory")
+	stunFlag := fs.String("stun", "", "comma-separated STUN URLs")
+	window := fs.Duration("window", 3*time.Second, "how long to stream output before exiting")
+	_ = fs.Parse(args)
+	rest := fs.Args()
+	if len(rest) < 2 {
+		fatal(fmt.Errorf("usage: tr run <machine> <command...>"))
+	}
+	name := rest[0]
+	cmd := strings.Join(rest[1:], " ")
+
+	idn, err := client.LoadOrCreateIdentity(*dir)
+	if err != nil {
+		fatal(err)
+	}
+	m, err := client.GetMachine(*dir, name)
+	if err != nil {
+		fatal(err)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	mc, sess, cleanup, err := client.Attach(ctx, *m, idn, splitStun(*stunFlag))
+	if err != nil {
+		fatal(err)
+	}
+	defer cleanup()
+	if err := client.RunCommand(ctx, mc, sess, cmd, *window, os.Stdout); err != nil && ctx.Err() == nil {
+		fatal(err)
+	}
 }
 
 func cmdKeygen(args []string) {
