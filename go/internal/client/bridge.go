@@ -19,7 +19,8 @@ type Size struct {
 // stdin -> DATA frames; incoming DATA -> out; window changes (resizes) -> RESIZE;
 // the agent's HELLO is consumed (not written to out). Returns when either side ends.
 func ClientBridge(ctx context.Context, in io.Reader, out io.Writer, resizes <-chan Size, initial Size, mc peer.MsgConn, sess *noise.Session) error {
-	if err := sendFrame(mc, sess, noise.EncodeResize(initial.Cols, initial.Rows)); err != nil {
+	s := newSender(mc, sess)
+	if err := s.send(noise.EncodeResize(initial.Cols, initial.Rows)); err != nil {
 		return err
 	}
 
@@ -33,7 +34,7 @@ func ClientBridge(ctx context.Context, in io.Reader, out io.Writer, resizes <-ch
 		for {
 			n, err := in.Read(buf)
 			if n > 0 {
-				if e := sendFrame(mc, sess, noise.EncodeData(buf[:n])); e != nil {
+				if e := s.send(noise.EncodeData(buf[:n])); e != nil {
 					errc <- e
 					return
 				}
@@ -76,8 +77,8 @@ func ClientBridge(ctx context.Context, in io.Reader, out io.Writer, resizes <-ch
 	go func() {
 		for {
 			select {
-			case s := <-resizes:
-				if e := sendFrame(mc, sess, noise.EncodeResize(s.Cols, s.Rows)); e != nil {
+			case sz := <-resizes:
+				if e := s.send(noise.EncodeResize(sz.Cols, sz.Rows)); e != nil {
 					errc <- e
 					return
 				}
@@ -89,12 +90,4 @@ func ClientBridge(ctx context.Context, in io.Reader, out io.Writer, resizes <-ch
 	}()
 
 	return <-errc
-}
-
-func sendFrame(mc peer.MsgConn, sess *noise.Session, framed []byte) error {
-	ct, err := sess.Encrypt(framed)
-	if err != nil {
-		return err
-	}
-	return mc.Send(ct)
 }
