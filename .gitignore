@@ -1,2 +1,4 @@
 bin/
 *.pid
+.claude/
+.DS_Store
