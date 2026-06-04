@@ -19,7 +19,9 @@ var (
 	fxInitEph    = mustHex("0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20")
 	fxRespEph    = mustHex("2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40")
 	fxPayload0   = []byte("pair-request")
-	fxTransport  = []byte("terminal-relay")
+	fxTransport  = []byte("terminal-relay")     // initiator->responder, send nonce 0
+	fxTransport2 = []byte("second-record")      // initiator->responder, send nonce 1
+	fxTransport3 = []byte("relay->you")         // responder->initiator, send nonce 0
 	fxPrf        = mustHex("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff")
 )
 
@@ -52,6 +54,11 @@ type interopVectors struct {
 	Msg0           string `json:"msg0"`
 	Msg1           string `json:"msg1"`
 	TransportCT    string `json:"transport_ct"`
+	// Hardening vectors (close the review's coverage gaps):
+	Transport2     string `json:"transport2_plaintext"`    // initiator send, nonce 1
+	Transport2CT   string `json:"transport2_ct"`           // catches a counter/endianness divergence
+	TransportRev   string `json:"transport_rev_plaintext"` // responder send, nonce 0
+	TransportRevCT string `json:"transport_rev_ct"`        // catches a split() send/recv swap
 }
 
 func runFixedHandshake(t *testing.T) interopVectors {
@@ -82,7 +89,18 @@ func runFixedHandshake(t *testing.T) interopVectors {
 	if _, err := initiator.ReadMessage(msg1); err != nil {
 		t.Fatal(err)
 	}
-	ct, err := initiator.Session().Encrypt(fxTransport)
+	is := initiator.Session()
+	rs := responder.Session()
+
+	ct, err := is.Encrypt(fxTransport) // initiator send, nonce 0
+	if err != nil {
+		t.Fatal(err)
+	}
+	ct2, err := is.Encrypt(fxTransport2) // initiator send, nonce 1
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctRev, err := rs.Encrypt(fxTransport3) // responder send, nonce 0
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,6 +115,10 @@ func runFixedHandshake(t *testing.T) interopVectors {
 		Msg0:           hex.EncodeToString(msg0),
 		Msg1:           hex.EncodeToString(msg1),
 		TransportCT:    hex.EncodeToString(ct),
+		Transport2:     hex.EncodeToString(fxTransport2),
+		Transport2CT:   hex.EncodeToString(ct2),
+		TransportRev:   hex.EncodeToString(fxTransport3),
+		TransportRevCT: hex.EncodeToString(ctRev),
 	}
 }
 
@@ -143,6 +165,12 @@ func TestInteropVectorsStable(t *testing.T) {
 	}
 	if v.Msg0 != want.Msg0 || v.Msg1 != want.Msg1 || v.TransportCT != want.TransportCT {
 		t.Fatalf("Go handshake no longer matches committed vectors\n got msg0=%s\nwant msg0=%s", v.Msg0, want.Msg0)
+	}
+	if v.Transport2CT != want.Transport2CT {
+		t.Fatalf("second-record (nonce 1) ciphertext drift\n got=%s\nwant=%s", v.Transport2CT, want.Transport2CT)
+	}
+	if v.TransportRevCT != want.TransportRevCT {
+		t.Fatalf("reverse-direction ciphertext drift\n got=%s\nwant=%s", v.TransportRevCT, want.TransportRevCT)
 	}
 	if !bytes.Equal(mustHex(v.Msg0), mustHex(want.Msg0)) {
 		t.Fatal("msg0 bytes differ")

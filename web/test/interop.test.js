@@ -51,4 +51,18 @@ test('JS reproduces the Go KK wire bytes exactly', () => {
   // And the JS responder decrypts the Go-produced transport ciphertext.
   const pt = responder.decrypt(hexToBytes(v.transport_ct));
   assert.equal(bytesToHex(pt), v.transport_plaintext, 'JS decrypts Go ciphertext');
+
+  // Hardening: second record on the same send key (nonce 1) must match Go —
+  // catches a counter-endianness divergence that nonce 0 alone would hide.
+  const ct2 = initiator.encrypt(hexToBytes(v.transport2_plaintext));
+  assert.equal(bytesToHex(ct2), v.transport2_ct, 'second-record (nonce 1) ciphertext must match Go');
+  const pt2 = responder.decrypt(hexToBytes(v.transport2_ct));
+  assert.equal(bytesToHex(pt2), v.transport2_plaintext, 'JS decrypts Go second record');
+
+  // Hardening: reverse direction (responder->initiator, nonce 0) must match Go —
+  // catches a split() send/recv cipherstate swap that the forward direction misses.
+  const ctRev = responder.encrypt(hexToBytes(v.transport_rev_plaintext));
+  assert.equal(bytesToHex(ctRev), v.transport_rev_ct, 'reverse-direction ciphertext must match Go');
+  const ptRev = initiator.decrypt(hexToBytes(v.transport_rev_ct));
+  assert.equal(bytesToHex(ptRev), v.transport_rev_plaintext, 'JS initiator decrypts Go reverse ciphertext');
 });

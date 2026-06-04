@@ -7,5 +7,9 @@
   "transport_plaintext": "7465726d696e616c2d72656c6179",
   "msg0": "07a37cbc142093c8b755dc1b10e86cb426374ad16aa853ed0bdfc0b2b86d1c7cdd69ca54c540a565c62fb36ad3cb047f516ee351b8cc2dbc31b15c1c",
   "msg1": "5869aff450549732cbaaed5e5df9b30a6da31cb0e5742bad5ad4a1a768f1a67b37431544fc4d42f68bd09296aa844a2b",
-  "transport_ct": "0f05e3794dbcb9d57deaa68f67725037c4c17a6ae0e6e37a351d760366d9"
+  "transport_ct": "0f05e3794dbcb9d57deaa68f67725037c4c17a6ae0e6e37a351d760366d9",
+  "transport2_plaintext": "7365636f6e642d7265636f7264",
+  "transport2_ct": "a24524bb5c57c3c3fb974d6065e618456b75b937ced8ab36fe18eb4f05",
+  "transport_rev_plaintext": "72656c61792d3e796f75",
+  "transport_rev_ct": "e62cc1c65b04371f896900bbee41ba5ffe2a8f49f8d7d86c4e36"
 }
