@@ -7,26 +7,124 @@ import (
 	"encoding/hex"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/coder/websocket"
 )
+
+// sendTimeout bounds how long the broker will wait to hand a SignalMsg to a
+// peer's writer before giving up. One wedged agent/browser must never stall
+// another peer's handler. SDP relay is one-shot per session, so a give-up here
+// just fails that session fast (the peer re-attaches) rather than blocking
+// forever.
+const sendTimeout = 2 * time.Second
+
+// flushTimeout bounds the graceful drain of queued messages (e.g. a final
+// TypeError "machine offline") before the socket is closed.
+const flushTimeout = 2 * time.Second
 
 // Server brokers SDP between agents and browsers. It never carries terminal
 // data — only SignalMsg (SDP + routing). Once a DataChannel is up P2P, the two
 // signaling sockets for that session are no longer needed.
 type Server struct {
 	mu       sync.Mutex
-	agents   map[string]*agentConn   // owner|machine -> agent
-	sessions map[string]*browserConn // session id -> browser
+	agents   map[string]*agentConn   // owner|machine -> live agent
+	sessions map[string]*browserConn // session id -> browser (global lookup)
 }
 
+// agentConn is one agent control socket. It owns the set of browser sessions
+// bound to it so that when the agent dies — or is replaced by a re-registration —
+// those browsers are torn down and told the machine went offline, instead of
+// hanging or routing offers to a dead agent.
 type agentConn struct {
-	out chan SignalMsg
+	out  chan SignalMsg
+	done chan struct{} // closed once when the agent is gone/replaced
+	once sync.Once
+
+	mu       sync.Mutex
+	sessions map[string]*browserConn // session id -> bound browser
 }
 
-type browserConn struct {
-	out chan SignalMsg
+func newAgentConn() *agentConn {
+	return &agentConn{
+		out:      make(chan SignalMsg, 32),
+		done:     make(chan struct{}),
+		sessions: map[string]*browserConn{},
+	}
 }
+
+// bind attaches a browser session to this agent. Returns false if the agent has
+// already been torn down (its socket is gone / it was replaced), in which case
+// the caller must treat the machine as offline.
+func (ac *agentConn) bind(sess string, bc *browserConn) bool {
+	ac.mu.Lock()
+	defer ac.mu.Unlock()
+	select {
+	case <-ac.done:
+		return false
+	default:
+	}
+	ac.sessions[sess] = bc
+	return true
+}
+
+func (ac *agentConn) unbind(sess string) {
+	ac.mu.Lock()
+	delete(ac.sessions, sess)
+	ac.mu.Unlock()
+}
+
+// teardown marks the agent gone and tells every browser bound to it that the
+// machine went offline so it can re-attach. Idempotent.
+func (ac *agentConn) teardown() {
+	ac.once.Do(func() {
+		ac.mu.Lock()
+		bound := make([]*browserConn, 0, len(ac.sessions))
+		for _, bc := range ac.sessions {
+			bound = append(bound, bc)
+		}
+		ac.sessions = map[string]*browserConn{}
+		ac.mu.Unlock()
+		close(ac.done)
+		for _, bc := range bound {
+			bc.fail("machine offline")
+		}
+	})
+}
+
+// browserConn is one attach socket.
+type browserConn struct {
+	out  chan SignalMsg
+	done chan struct{} // closed once to make the writer flush+close gracefully
+	once sync.Once
+}
+
+func newBrowserConn() *browserConn {
+	return &browserConn{out: make(chan SignalMsg, 32), done: make(chan struct{})}
+}
+
+// notify hands a message to the browser's writer without blocking forever: it
+// gives up on done or after sendTimeout.
+func (bc *browserConn) notify(m SignalMsg) {
+	t := time.NewTimer(sendTimeout)
+	defer t.Stop()
+	select {
+	case bc.out <- m:
+	case <-bc.done:
+	case <-t.C:
+	}
+}
+
+// fail enqueues a final TypeError and signals the writer to flush+close. The
+// writer (not the reader) owns the socket close so the queued error is actually
+// delivered before the connection goes away.
+func (bc *browserConn) fail(reason string) {
+	bc.notify(SignalMsg{Type: TypeError, Reason: reason})
+	bc.close()
+}
+
+// close signals the browser writer to flush and shut down. Idempotent.
+func (bc *browserConn) close() { bc.once.Do(func() { close(bc.done) }) }
 
 func New() *Server {
 	return &Server{agents: map[string]*agentConn{}, sessions: map[string]*browserConn{}}
@@ -59,28 +157,45 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	ac := &agentConn{out: make(chan SignalMsg, 32)}
+
+	ac := newAgentConn()
 	k := key(owner, machine)
+
+	// Register, replacing any previous agent for this key. Re-registration is
+	// routine on agent restart; the previous agent — and the browser sessions
+	// bound to it — must be torn down so nothing keeps routing offers to the
+	// dead one.
 	s.mu.Lock()
+	prev := s.agents[k]
 	s.agents[k] = ac
 	s.mu.Unlock()
+	if prev != nil {
+		prev.teardown()
+	}
+
+	// readCtx bounds reads only. Cancelling the read context in coder/websocket
+	// closes the socket, so we never cancel it to deliver a message — the writer
+	// owns graceful shutdown via ac.done / writeCtx.
+	readCtx, cancelRead := context.WithCancel(r.Context())
+	defer cancelRead()
+
 	defer func() {
+		// Remove from the map only if we are still the live agent (a later
+		// re-registration may have already replaced us).
 		s.mu.Lock()
 		if s.agents[k] == ac {
 			delete(s.agents, k)
 		}
 		s.mu.Unlock()
+		ac.teardown()
 	}()
-
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
 
 	// Reader: agent -> server (answers); route to the browser by session.
 	go func() {
 		for {
-			_, data, err := c.Read(ctx)
+			_, data, err := c.Read(readCtx)
 			if err != nil {
-				cancel()
+				ac.teardown() // agent socket died -> tear down bound browsers
 				return
 			}
 			m, err := decodeSignal(data)
@@ -92,14 +207,14 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 				bc := s.sessions[m.Session]
 				s.mu.Unlock()
 				if bc != nil {
-					bc.out <- SignalMsg{Type: TypeAnswer, SDP: m.SDP}
+					bc.notify(SignalMsg{Type: TypeAnswer, SDP: m.SDP})
 				}
 			}
 		}
 	}()
 
-	// Writer: drain ac.out to the agent.
-	send(ctx, c, ac.out, SignalMsg{Type: TypeReady})
+	// Writer: drain ac.out to the agent until ac.done (or r.Context()) fires.
+	writeUntil(r.Context(), ac.done, c, ac.out, SignalMsg{Type: TypeReady})
 }
 
 func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
@@ -113,21 +228,23 @@ func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
 
+	readCtx, cancelRead := context.WithCancel(r.Context())
+	defer cancelRead()
+
+	k := key(owner, machine)
 	s.mu.Lock()
-	ac := s.agents[key(owner, machine)]
+	ac := s.agents[k]
 	s.mu.Unlock()
 	if ac == nil {
 		data, _ := SignalMsg{Type: TypeError, Reason: "machine offline"}.encode()
-		_ = c.Write(ctx, websocket.MessageText, data)
+		_ = c.Write(readCtx, websocket.MessageText, data)
 		c.Close(websocket.StatusGoingAway, "machine offline")
 		return
 	}
 
 	sess := newSessionID()
-	bc := &browserConn{out: make(chan SignalMsg, 32)}
+	bc := newBrowserConn()
 	s.mu.Lock()
 	s.sessions[sess] = bc
 	s.mu.Unlock()
@@ -135,17 +252,33 @@ func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		delete(s.sessions, sess)
 		s.mu.Unlock()
+		ac.unbind(sess)
+		bc.close()
 	}()
 
-	// Notify the agent that a browser wants it.
-	ac.out <- SignalMsg{Type: TypeAttach, Session: sess}
+	// Bind this session to the agent so the agent's teardown (death or
+	// re-registration) tells us the machine went offline and shuts us down.
+	if !ac.bind(sess, bc) {
+		data, _ := SignalMsg{Type: TypeError, Reason: "machine offline"}.encode()
+		_ = c.Write(readCtx, websocket.MessageText, data)
+		c.Close(websocket.StatusGoingAway, "machine offline")
+		return
+	}
 
-	// Reader: browser -> server (offer); forward to the agent tagged with session.
+	// Notify the agent that a browser wants it. Never a bare blocking send: bound
+	// to the agent's done and a timeout so a wedged agent can't hang this attach.
+	if !agentSend(ac, bc.done, SignalMsg{Type: TypeAttach, Session: sess}) {
+		bc.fail("machine offline")
+		// fall through to the writer so the error is actually flushed
+	}
+
+	// Reader: browser -> server (offer); forward to the live agent tagged with
+	// session.
 	go func() {
 		for {
-			_, data, err := c.Read(ctx)
+			_, data, err := c.Read(readCtx)
 			if err != nil {
-				cancel()
+				bc.close()
 				return
 			}
 			m, err := decodeSignal(data)
@@ -153,20 +286,57 @@ func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			if m.Type == TypeOffer {
-				ac.out <- SignalMsg{Type: TypeOffer, Session: sess, SDP: m.SDP}
+				// Re-look-up the live agent for this key on every offer rather
+				// than trusting the pointer captured at attach time. On agent
+				// re-registration the captured ac is stale; routing the offer to
+				// it would split-brain. If the live agent is gone, fail fast.
+				s.mu.Lock()
+				live := s.agents[k]
+				s.mu.Unlock()
+				if live == nil {
+					bc.fail("machine offline")
+					return
+				}
+				if !agentSend(live, bc.done, SignalMsg{Type: TypeOffer, Session: sess, SDP: m.SDP}) {
+					bc.fail("machine offline")
+					return
+				}
 			}
 		}
 	}()
 
-	// Writer: drain bc.out to the browser.
-	send(ctx, c, bc.out, SignalMsg{})
+	// Writer: drain bc.out to the browser until bc.done (or r.Context()) fires.
+	writeUntil(r.Context(), bc.done, c, bc.out, SignalMsg{})
 }
 
-// send writes an optional first message, then drains out until ctx is done.
-func send(ctx context.Context, c *websocket.Conn, out <-chan SignalMsg, first SignalMsg) {
+// agentSend hands a message to an agent's writer without blocking forever. It
+// gives up if the browser is done (browserDone), if the agent is torn down
+// (ac.done), or after sendTimeout. Returns false if the message could not be
+// delivered (caller should treat the machine as offline).
+func agentSend(ac *agentConn, browserDone <-chan struct{}, m SignalMsg) bool {
+	t := time.NewTimer(sendTimeout)
+	defer t.Stop()
+	select {
+	case ac.out <- m:
+		return true
+	case <-ac.done:
+		return false
+	case <-browserDone:
+		return false
+	case <-t.C:
+		return false
+	}
+}
+
+// writeUntil writes an optional first message, then drains out to the socket
+// until done or reqCtx fires. On shutdown it flushes any already-queued messages
+// (e.g. a final TypeError) before closing, so the peer learns why. The writer —
+// not the reader — owns the socket close; cancelling the read context in
+// coder/websocket closes the socket abruptly and would drop the queued error.
+func writeUntil(reqCtx context.Context, done <-chan struct{}, c *websocket.Conn, out <-chan SignalMsg, first SignalMsg) {
 	if first.Type != "" {
 		data, _ := first.encode()
-		if err := c.Write(ctx, websocket.MessageText, data); err != nil {
+		if err := c.Write(reqCtx, websocket.MessageText, data); err != nil {
 			return
 		}
 	}
@@ -174,10 +344,32 @@ func send(ctx context.Context, c *websocket.Conn, out <-chan SignalMsg, first Si
 		select {
 		case m := <-out:
 			data, _ := m.encode()
-			if err := c.Write(ctx, websocket.MessageText, data); err != nil {
+			if err := c.Write(reqCtx, websocket.MessageText, data); err != nil {
 				return
 			}
-		case <-ctx.Done():
+		case <-done:
+			flushAndClose(c, out)
+			return
+		case <-reqCtx.Done():
+			flushAndClose(c, out)
+			return
+		}
+	}
+}
+
+// flushAndClose writes any already-queued messages, then closes the socket.
+func flushAndClose(c *websocket.Conn, out <-chan SignalMsg) {
+	flushCtx, cancel := context.WithTimeout(context.Background(), flushTimeout)
+	defer cancel()
+	for {
+		select {
+		case m := <-out:
+			data, _ := m.encode()
+			if err := c.Write(flushCtx, websocket.MessageText, data); err != nil {
+				c.Close(websocket.StatusNormalClosure, "")
+				return
+			}
+		default:
 			c.Close(websocket.StatusNormalClosure, "")
 			return
 		}
