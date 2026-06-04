@@ -30,3 +30,23 @@ DataChannel is up, the server is out of the loop.
     cd go && go run ./cmd/tr-signal --addr :8443
 
 Endpoints: `/agent/signal`, `/attach` (both WSS), `/healthz`.
+
+## Agent + local dev (Plan 3)
+
+`go/cmd/tr-agent` — the machine side. It registers on `tr-signal`, accepts an
+attach, opens a P2P WebRTC DataChannel, runs the Noise `KK` responder, and bridges
+it to a real PTY. Production launches `tmux new -A -s main` (persistence; install
+with `brew install tmux`); `--shell sh` runs a plain shell.
+
+Local loop:
+
+    make build
+    ./bin/tr-signal --addr :8443 &
+    ./bin/tr-agent enroll --signal http://localhost:8443
+    ./bin/tr-agent pair-dev --owner-pub <owner-hex>   # dev pre-pin (QR pairing is Plan 4)
+    ./bin/tr-agent up --shell sh
+
+The full path — browser-stand-in → `tr-signal` → real shell over P2P — is proven
+hermetically by `go test ./internal/agent/ -run TestEndToEnd`.
+
+Note: interactive QR/token pairing is built in Plan 4 alongside the browser.
