@@ -80,6 +80,7 @@ func cmdUp(args []string) {
 	name := fs.String("name", hostname(), "machine display name")
 	signalURL := fs.String("signal", "http://localhost:8443", "signaling server base URL")
 	shell := fs.String("shell", "tmux:new:-A:-s:main", "launch command, ':'-separated")
+	stunFlag := fs.String("stun", "", "comma-separated STUN URLs (e.g. stun:host:3478); empty = host candidates only")
 	_ = fs.Parse(args)
 
 	cfg, err := agent.LoadOrInit(*dir, *name, *signalURL)
@@ -94,7 +95,7 @@ func cmdUp(args []string) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	rt := agent.NewRuntime(cfg, launch, nil) // nil STUN = host candidates (local); set for real NAT
+	rt := agent.NewRuntime(cfg, launch, splitStun(*stunFlag))
 	fmt.Printf("tr-agent up: machine %s, signaling %s\n", cfg.MachineID, cfg.SignalURL)
 	if err := rt.Up(ctx); err != nil && ctx.Err() == nil {
 		fatal(err)
@@ -112,4 +113,19 @@ func hostname() string {
 func fatal(err error) {
 	fmt.Fprintln(os.Stderr, "error:", err)
 	os.Exit(1)
+}
+
+// splitStun turns a comma-separated STUN flag into a slice; empty -> nil.
+func splitStun(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	var out []string
+	for _, u := range strings.Split(s, ",") {
+		if u = strings.TrimSpace(u); u != "" {
+			out = append(out, u)
+		}
+	}
+	return out
 }

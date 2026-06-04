@@ -13,7 +13,7 @@ import (
 
 // AttachAll attaches every named machine and returns their sessions + a cleanup.
 // On any failure it cleans up the ones already attached.
-func AttachAll(ctx context.Context, dir string, names []string, id *Identity) ([]*MuxSession, func(), error) {
+func AttachAll(ctx context.Context, dir string, names []string, id *Identity, stun []string) ([]*MuxSession, func(), error) {
 	var sessions []*MuxSession
 	var cleanups []func()
 	cleanupAll := func() {
@@ -27,7 +27,7 @@ func AttachAll(ctx context.Context, dir string, names []string, id *Identity) ([
 			cleanupAll()
 			return nil, nil, err
 		}
-		mc, sess, cleanup, err := Attach(ctx, *m, id, nil) // nil STUN = host candidates (local)
+		mc, sess, cleanup, err := Attach(ctx, *m, id, stun)
 		if err != nil {
 			cleanupAll()
 			return nil, nil, fmt.Errorf("attach %s: %w", name, err)

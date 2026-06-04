@@ -91,11 +91,13 @@ func cmdList(args []string) {
 func cmdAttach(args []string) {
 	fs := flag.NewFlagSet("attach", flag.ExitOnError)
 	dir := fs.String("dir", defaultDir(), "config directory")
+	stunFlag := fs.String("stun", "", "comma-separated STUN URLs (e.g. stun:host:3478); empty = host candidates only")
 	_ = fs.Parse(args)
 	names := fs.Args()
 	if len(names) == 0 {
 		fatal(fmt.Errorf("usage: tr attach <machine> [machine...]"))
 	}
+	stun := splitStun(*stunFlag)
 	idn, err := client.LoadOrCreateIdentity(*dir)
 	if err != nil {
 		fatal(err)
@@ -109,7 +111,7 @@ func cmdAttach(args []string) {
 		if err != nil {
 			fatal(err)
 		}
-		mc, sess, cleanup, err := client.Attach(ctx, *m, idn, nil)
+		mc, sess, cleanup, err := client.Attach(ctx, *m, idn, stun)
 		if err != nil {
 			fatal(err)
 		}
@@ -120,7 +122,7 @@ func cmdAttach(args []string) {
 		return
 	}
 
-	sessions, cleanup, err := client.AttachAll(ctx, *dir, names, idn)
+	sessions, cleanup, err := client.AttachAll(ctx, *dir, names, idn, stun)
 	if err != nil {
 		fatal(err)
 	}
@@ -133,4 +135,20 @@ func cmdAttach(args []string) {
 func fatal(err error) {
 	fmt.Fprintln(os.Stderr, "error:", err)
 	os.Exit(1)
+}
+
+// splitStun turns a comma-separated STUN flag into a slice; empty -> nil (host
+// candidates only).
+func splitStun(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	var out []string
+	for _, u := range strings.Split(s, ",") {
+		if u = strings.TrimSpace(u); u != "" {
+			out = append(out, u)
+		}
+	}
+	return out
 }
