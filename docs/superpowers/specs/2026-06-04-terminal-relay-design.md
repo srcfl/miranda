@@ -39,6 +39,18 @@ but keeps an independent security boundary. A general-purpose remote terminal is
 more sensitive than energy telemetry and should not be coupled to that product's
 codebase or release cycle.
 
+## Domains
+
+- **PoC (now):** served under `srcfl.xyz` (already owned) — web client at
+  `term.srcfl.xyz`, relay at `relay.srcfl.xyz`. WebAuthn RP ID = `srcfl.xyz`.
+- **Future (production):** `passterm.io` (~$50/yr) once the PoC proves out — web
+  client at `passterm.io`, relay at `relay.passterm.io`. Buy only after the PoC.
+- **Consequence of moving domains:** the passkey Relying Party — and therefore the
+  `prf` output — is scoped to the RP ID. Changing from `srcfl.xyz` to `passterm.io`
+  changes the derived `owner_id`, so all passkeys must be re-registered and all
+  agents re-paired. Fine for a throwaway PoC, but srcfl.xyz pairings do **not**
+  migrate; treat that phase as disposable.
+
 ## Architecture
 
 ```
@@ -75,12 +87,12 @@ Three components, each with one clear job:
 - **Learns only:** `owner_id` (opaque 32-byte pseudonym, not a human name),
   `machine_id` (opaque), and unavoidable metadata (liveness, frame timing/size).
   **Never** learns: keystrokes, output, machine display names, or what runs.
-- Deployed behind Cloudflare on a stable domain. Transport is WSS (not the
+- Deployed behind Cloudflare at `relay.srcfl.xyz`. Transport is WSS (not the
   long-poll request/response model from `ftw-relay`, which is wrong for
   interactive low-latency I/O). Routing/registration patterns are lifted from
   `ftw-relay`.
 
-### 3. Browser client (vanilla JS + xterm.js) — served from `term.<domain>`
+### 3. Browser client (vanilla JS + xterm.js) — served from `term.srcfl.xyz`
 
 - **WebAuthn** registers a passkey with the `prf` extension (Relying Party = the
   stable web origin). `prf` support is detected at registration; if absent, the
@@ -144,13 +156,13 @@ nothing can be MITM'd by the blind relay — in **one tap**, no code typing, no
 fingerprint comparison.
 
 ```
-  On the machine:                       On any device with your passkey:
+  On the machine:                          On any device with your passkey:
   $ tr-agent enroll
-  ┌─────────────────────────┐          1. open the link (or scan the QR)
-  │  Scan or open:           │          2. Touch ID  (your passkey)
-  │  https://term.x/pair#a9F…│   ───▶   3. "Pair macbook?"  → Approve
-  │  [ ASCII QR code ]       │
-  └─────────────────────────┘          ✓ paired
+  ┌───────────────────────────────┐       1. open the link (or scan the QR)
+  │  Scan or open:                 │       2. Touch ID  (your passkey)
+  │  https://term.srcfl.xyz/pair#a9…│      3. "Pair macbook?"  → Approve
+  │  [ ASCII QR code ]             │
+  └───────────────────────────────┘       ✓ paired
 ```
 
 - The agent prints a link **and** a scannable ASCII QR containing a one-time,
@@ -165,9 +177,9 @@ fingerprint comparison.
   "fresh device needs the agent host key pinned for `KK`" problem — pairing is
   exactly where that pin happens.
 
-First-time friction, total: create a passkey on `term.x` **once, ever** (Touch
-ID); then per machine: run the agent, scan, Touch ID. After that, attaching is
-just "open `term.x` and it's there."
+First-time friction, total: create a passkey on `term.srcfl.xyz` **once, ever**
+(Touch ID); then per machine: run the agent, scan, Touch ID. After that, attaching
+is just "open `term.srcfl.xyz` and it's there."
 
 ## Attach data flow
 
