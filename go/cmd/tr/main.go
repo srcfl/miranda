@@ -92,15 +92,11 @@ func cmdAttach(args []string) {
 	fs := flag.NewFlagSet("attach", flag.ExitOnError)
 	dir := fs.String("dir", defaultDir(), "config directory")
 	_ = fs.Parse(args)
-	rest := fs.Args()
-	if len(rest) != 1 {
-		fatal(fmt.Errorf("usage: tr attach <machine>"))
+	names := fs.Args()
+	if len(names) == 0 {
+		fatal(fmt.Errorf("usage: tr attach <machine> [machine...]"))
 	}
 	idn, err := client.LoadOrCreateIdentity(*dir)
-	if err != nil {
-		fatal(err)
-	}
-	m, err := client.GetMachine(*dir, rest[0])
 	if err != nil {
 		fatal(err)
 	}
@@ -108,13 +104,28 @@ func cmdAttach(args []string) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	mc, sess, cleanup, err := client.Attach(ctx, *m, idn, nil) // nil STUN = host candidates (local)
+	if len(names) == 1 {
+		m, err := client.GetMachine(*dir, names[0])
+		if err != nil {
+			fatal(err)
+		}
+		mc, sess, cleanup, err := client.Attach(ctx, *m, idn, nil)
+		if err != nil {
+			fatal(err)
+		}
+		defer cleanup()
+		if err := client.RunInteractive(ctx, mc, sess, m.Name); err != nil && ctx.Err() == nil {
+			fatal(err)
+		}
+		return
+	}
+
+	sessions, cleanup, err := client.AttachAll(ctx, *dir, names, idn)
 	if err != nil {
 		fatal(err)
 	}
 	defer cleanup()
-
-	if err := client.RunInteractive(ctx, mc, sess, m.Name); err != nil && ctx.Err() == nil {
+	if err := client.RunInteractiveMux(ctx, sessions); err != nil && ctx.Err() == nil {
 		fatal(err)
 	}
 }
