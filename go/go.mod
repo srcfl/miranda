@@ -3,12 +3,12 @@ module github.com/srcful/terminal-relay/go
 go 1.26.3
 
 require (
+	github.com/coder/websocket v1.8.14
 	github.com/flynn/noise v1.1.0
 	golang.org/x/crypto v0.52.0
 )
 
 require (
-	github.com/coder/websocket v1.8.14 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	github.com/pion/datachannel v1.6.0 // indirect
