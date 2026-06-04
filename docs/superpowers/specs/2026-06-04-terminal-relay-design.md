@@ -134,6 +134,28 @@ Three components, each with one clear job:
 - Crypto: `@noble/curves` + `@noble/ciphers` + `@noble/hashes`
   (X25519 / ChaCha20-Poly1305 / HKDF). Noise suite: `Noise_KK_25519_ChaChaPoly_SHA256`.
 
+### 4. Clients & the cross-machine multiplexer
+
+The browser is one client, not the only one. The product is a **cross-machine
+multiplexer**: one terminal workspace spanning all your machines.
+
+- **`tr` CLI client (primary)** — `tr attach <machine>` runs in your existing
+  terminal emulator: derive owner key, signal, open the P2P DataChannel, run the
+  Noise initiator, and bridge the DataChannel ⇄ local terminal in raw mode. It
+  reuses the same Go peer code as the agent (offerer + Noise initiator) — no
+  browser dependencies. It grows into a **focus-switcher**: hold N machine sessions
+  at once, one in focus, hop between MacBook / Mac mini / Linux with a hotkey or
+  picker.
+- **Browser client** — the same capability for devices without a CLI (iPhone
+  Safari), via `RTCPeerConnection` + xterm.js + passkey.
+
+**Two levels, no nesting:** per machine, **tmux** owns that host's windows/panes
+and persistence (and multi-attaches, so the CLI, the browser, and a local
+`tmux attach` all mirror the same live session). Across machines, the **`tr`
+client** owns which machine is in focus. A machine like the MacBook runs *both*
+the agent (reachable + native-feeling locally) and the client. Cross-platform is
+free — `tr-agent`/`tr` are the same Go binaries on macOS and Linux.
+
 ## Security model
 
 The crux of the project. A terminal is the crown jewels (you type secrets, run
