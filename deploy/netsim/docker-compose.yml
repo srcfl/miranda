@@ -1,0 +1,71 @@
+name: tr-netsim
+
+# Topology: agent (lan_a) and client (lan_b) sit behind separate NAT routers and
+# share NO network, so their host candidates are mutually unroutable. They reach
+# signal + coturn only via NAT (srflx). With no TURN, a successful attach proves
+# real UDP hole-punching across two NATs.
+networks:
+  pub:
+    ipam: { config: [{ subnet: 10.88.0.0/24 }] }
+  # internal: the host will not route these LANs to anything else, so the ONLY
+  # path out (and to the peer) is through the NAT router that bridges to pub.
+  lan_a:
+    internal: true
+    ipam: { config: [{ subnet: 10.88.10.0/24 }] }
+  lan_b:
+    internal: true
+    ipam: { config: [{ subnet: 10.88.20.0/24 }] }
+
+services:
+  signal:
+    build: { context: ../.., dockerfile: deploy/netsim/Dockerfile }
+    image: tr-netsim
+    command: ["tr-signal", "--addr", ":8443"]
+    networks:
+      pub: { ipv4_address: 10.88.0.10 }
+
+  coturn:
+    image: coturn/coturn
+    command: ["-n", "--listening-port=3478", "--no-tls", "--no-dtls", "--no-cli", "--listening-ip=0.0.0.0", "--log-file=stdout", "--verbose"]
+    networks:
+      pub: { ipv4_address: 10.88.0.20 }
+
+  nat_a:
+    image: tr-netsim
+    entrypoint: ["/nat-entrypoint.sh"]
+    cap_add: [NET_ADMIN]
+    sysctls: ["net.ipv4.ip_forward=1"]
+    environment: { BLOCK: "10.88.20.0/24" }
+    networks:
+      pub: { ipv4_address: 10.88.0.2 }
+      lan_a: { ipv4_address: 10.88.10.2 }
+
+  nat_b:
+    image: tr-netsim
+    entrypoint: ["/nat-entrypoint.sh"]
+    cap_add: [NET_ADMIN]
+    sysctls: ["net.ipv4.ip_forward=1"]
+    environment: { BLOCK: "10.88.10.0/24" }
+    networks:
+      pub: { ipv4_address: 10.88.0.3 }
+      lan_b: { ipv4_address: 10.88.20.2 }
+
+  agent:
+    image: tr-netsim
+    entrypoint: ["/node-entrypoint.sh"]
+    command: ["sleep", "infinity"]
+    cap_add: [NET_ADMIN]
+    environment: { NAT_GW: "10.88.10.2", TR_ICE_DEBUG: "1" }
+    depends_on: [signal, coturn, nat_a]
+    networks:
+      lan_a: { ipv4_address: 10.88.10.5 }
+
+  client:
+    image: tr-netsim
+    entrypoint: ["/node-entrypoint.sh"]
+    command: ["sleep", "infinity"]
+    cap_add: [NET_ADMIN]
+    environment: { NAT_GW: "10.88.20.2", TR_ICE_DEBUG: "1" }
+    depends_on: [signal, coturn, nat_b]
+    networks:
+      lan_b: { ipv4_address: 10.88.20.5 }

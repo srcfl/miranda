@@ -4,10 +4,29 @@ package peer
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"sync"
 
 	"github.com/pion/webrtc/v4"
 )
+
+// attachICEDebug logs gathered ICE candidates and connection-state changes to
+// stderr when TR_ICE_DEBUG is set. Useful to confirm srflx (NAT-traversal)
+// candidates are gathered and which path ICE selects.
+func attachICEDebug(pc *webrtc.PeerConnection) {
+	if os.Getenv("TR_ICE_DEBUG") == "" {
+		return
+	}
+	pc.OnICECandidate(func(c *webrtc.ICECandidate) {
+		if c != nil {
+			fmt.Fprintf(os.Stderr, "[ice] local candidate type=%s %s:%d\n", c.Typ, c.Address, c.Port)
+		}
+	})
+	pc.OnICEConnectionStateChange(func(s webrtc.ICEConnectionState) {
+		fmt.Fprintf(os.Stderr, "[ice] connection state=%s\n", s)
+	})
+}
 
 // ErrDataChannelClosed is returned by Recv when the DataChannel is closed
 // (locally or by the remote peer) before a message arrives.
@@ -77,6 +96,7 @@ func NewOfferer(stun []string) (*webrtc.PeerConnection, <-chan *DataChannel, err
 	if err != nil {
 		return nil, nil, err
 	}
+	attachICEDebug(pc)
 	dc, err := pc.CreateDataChannel("terminal", nil)
 	if err != nil {
 		_ = pc.Close()
@@ -94,6 +114,7 @@ func NewAnswerer(stun []string) (*webrtc.PeerConnection, <-chan *DataChannel, er
 	if err != nil {
 		return nil, nil, err
 	}
+	attachICEDebug(pc)
 	opened := make(chan *DataChannel, 1)
 	pc.OnDataChannel(func(dc *webrtc.DataChannel) {
 		w := wrap(dc)
