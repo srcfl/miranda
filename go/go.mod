@@ -8,6 +8,7 @@ require (
 	github.com/flynn/noise v1.1.0
 	github.com/pion/webrtc/v4 v4.2.14
 	golang.org/x/crypto v0.52.0
+	golang.org/x/term v0.43.0
 )
 
 require (
