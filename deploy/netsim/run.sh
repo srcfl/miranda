@@ -40,7 +40,7 @@ HPUB=$(echo "$CFG" | field x host_pub)
 echo "  machine_id=$MID host_pub=${HPUB:0:16}..."
 
 echo "== client keygen =="
-exec_t client tr keygen >/dev/null
+exec_t client trm keygen >/dev/null
 OPUB=$(exec_t client cat /root/.terminal-relay/owner.json | field x owner_pub)
 echo "  owner_pub=${OPUB:0:16}..."
 
@@ -51,10 +51,10 @@ sleep 2
 [ -n "$TURN_ARGS" ] && echo "== TURN fallback ENABLED =="
 
 echo "== client registers machine =="
-exec_t client tr add-machine --name box --id "$MID" --host-pub "$HPUB" --signal "$SIGNAL" >/dev/null
+exec_t client trm add-machine --name box --id "$MID" --host-pub "$HPUB" --signal "$SIGNAL" >/dev/null
 
 echo "== run a command across the two NATs =="
-OUT=$(exec_t client tr run --stun "$STUN" $TURN_ARGS --window 12s box "echo NAT_TRAVERSAL_OK; echo host=\$(hostname)" 2>&1 || true)
+OUT=$(exec_t client trm run --stun "$STUN" $TURN_ARGS --window 12s box "echo NAT_TRAVERSAL_OK; echo host=\$(hostname)" 2>&1 || true)
 echo "---- client output (incl. ICE debug) ----"
 echo "$OUT"
 echo "---- agent ICE debug ----"
