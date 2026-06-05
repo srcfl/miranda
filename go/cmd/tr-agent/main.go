@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"os"
@@ -10,8 +11,12 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
+
+	"github.com/mdp/qrterminal/v3"
 
 	"github.com/srcful/terminal-relay/go/internal/agent"
+	"github.com/srcful/terminal-relay/go/internal/pairing"
 	"github.com/srcful/terminal-relay/go/internal/peer"
 )
 
@@ -29,6 +34,8 @@ func main() {
 		cmdEnroll(os.Args[2:])
 	case "pair-dev":
 		cmdPairDev(os.Args[2:])
+	case "pair":
+		cmdPair(os.Args[2:])
 	case "up":
 		cmdUp(os.Args[2:])
 	default:
@@ -37,7 +44,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: tr-agent <enroll|pair-dev|up> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: tr-agent <enroll|pair-dev|pair|up> [flags]")
 	os.Exit(2)
 }
 
@@ -73,6 +80,46 @@ func cmdPairDev(args []string) {
 		fatal(err)
 	}
 	fmt.Printf("pinned owner %s\n", *ownerPub)
+}
+
+func cmdPair(args []string) {
+	fs := flag.NewFlagSet("pair", flag.ExitOnError)
+	dir := fs.String("dir", defaultDir(), "config directory")
+	name := fs.String("name", hostname(), "machine display name")
+	signalURL := fs.String("signal", "http://localhost:8443", "signaling server base URL")
+	_ = fs.Parse(args)
+
+	cfg, err := agent.LoadOrInit(*dir, *name, *signalURL)
+	if err != nil {
+		fatal(err)
+	}
+
+	token := pairing.NewToken()
+	code := pairing.EncodeCode(*signalURL, token)
+
+	fmt.Println("Pair this machine — run on your client:")
+	fmt.Printf("\n  trm pair %s\n\n", code)
+	qrterminal.GenerateHalfBlock(code, qrterminal.L, os.Stdout)
+	fmt.Printf("\nwaiting for pairing (2 min)…\n")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	mc, closeConn, err := pairing.DialPair(ctx, *signalURL, pairing.RoomID(token))
+	if err != nil {
+		fatal(err)
+	}
+	defer closeConn()
+
+	info := pairing.AgentInfo{HostPubHex: cfg.HostPubHex, MachineID: cfg.MachineID, Name: cfg.MachineName}
+	ownerPub, err := pairing.RunResponder(ctx, mc, token, info)
+	if err != nil {
+		fatal(err)
+	}
+	ownerHex := hex.EncodeToString(ownerPub)
+	if err := agent.PinOwner(*dir, ownerHex); err != nil {
+		fatal(err)
+	}
+	fmt.Printf("✓ paired — trusting owner %s…\n", ownerHex[:16])
 }
 
 func cmdUp(args []string) {

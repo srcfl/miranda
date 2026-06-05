@@ -6,6 +6,7 @@ require (
 	github.com/coder/websocket v1.8.14
 	github.com/creack/pty v1.1.24
 	github.com/flynn/noise v1.1.0
+	github.com/mdp/qrterminal/v3 v3.2.1
 	github.com/pion/webrtc/v4 v4.2.14
 	golang.org/x/crypto v0.52.0
 	golang.org/x/term v0.43.0
@@ -32,4 +33,5 @@ require (
 	golang.org/x/net v0.54.0 // indirect
 	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
+	rsc.io/qr v0.2.0 // indirect
 )
