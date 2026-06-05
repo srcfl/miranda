@@ -19,14 +19,14 @@ import (
 func RunInteractive(ctx context.Context, mc *peer.DataChannel, sess *noise.Session, machineName string) error {
 	fd := int(os.Stdin.Fd())
 	if !term.IsTerminal(fd) {
-		return fmt.Errorf("tr attach requires a TTY (stdin is not a terminal)")
+		return fmt.Errorf("trm attach requires a TTY (stdin is not a terminal)")
 	}
 	old, err := term.MakeRaw(fd)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = term.Restore(fd, old) }()
-	fmt.Fprintf(os.Stderr, "[tr] attached to %s — detach with the client, Ctrl-C inside the shell\r\n", machineName)
+	fmt.Fprintf(os.Stderr, "[trm] attached to %s — Ctrl-C goes to the shell; close the client to detach\r\n", machineName)
 
 	cols, rows, err := term.GetSize(fd)
 	if err != nil {

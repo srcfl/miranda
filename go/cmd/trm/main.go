@@ -42,7 +42,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: tr <keygen|add-machine|list|attach|run> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: trm <keygen|add-machine|list|attach|run> [flags]")
 	os.Exit(2)
 }
 
@@ -56,7 +56,7 @@ func cmdRun(args []string) {
 	_ = fs.Parse(args)
 	rest := fs.Args()
 	if len(rest) < 2 {
-		fatal(fmt.Errorf("usage: tr run <machine> <command...>"))
+		fatal(fmt.Errorf("usage: trm run <machine> <command...>"))
 	}
 	name := rest[0]
 	cmd := strings.Join(rest[1:], " ")
@@ -121,7 +121,7 @@ func cmdList(args []string) {
 		fatal(err)
 	}
 	if len(list) == 0 {
-		fmt.Println("no machines yet — add one with `tr add-machine`")
+		fmt.Println("no machines yet — add one with `trm add-machine`")
 		return
 	}
 	for _, m := range list {
@@ -132,11 +132,16 @@ func cmdList(args []string) {
 func cmdAttach(args []string) {
 	fs := flag.NewFlagSet("attach", flag.ExitOnError)
 	dir := fs.String("dir", defaultDir(), "config directory")
+	prefixFlag := fs.String("prefix", "ctrl-o", "multiplexer switch key (e.g. ctrl-o, ctrl-a, ctrl-space)")
 	ice := iceFlags(fs)
 	_ = fs.Parse(args)
 	names := fs.Args()
 	if len(names) == 0 {
-		fatal(fmt.Errorf("usage: tr attach <machine> [machine...]"))
+		fatal(fmt.Errorf("usage: trm attach <machine> [machine...]"))
+	}
+	prefix, prefixLabel, err := parsePrefix(*prefixFlag)
+	if err != nil {
+		fatal(err)
 	}
 	servers := ice()
 	idn, err := client.LoadOrCreateIdentity(*dir)
@@ -168,7 +173,7 @@ func cmdAttach(args []string) {
 		fatal(err)
 	}
 	defer cleanup()
-	if err := client.RunInteractiveMux(ctx, sessions); err != nil && ctx.Err() == nil {
+	if err := client.RunInteractiveMux(ctx, sessions, prefix, prefixLabel); err != nil && ctx.Err() == nil {
 		fatal(err)
 	}
 }
@@ -211,4 +216,23 @@ func splitCSV(s string) []string {
 		}
 	}
 	return out
+}
+
+// parsePrefix turns a key spec like "ctrl-o", "c-a", "^o", or "ctrl-space" into
+// its control byte and a human label for the hint.
+func parsePrefix(s string) (byte, string, error) {
+	x := strings.ToLower(strings.TrimSpace(s))
+	x = strings.TrimPrefix(x, "ctrl-")
+	x = strings.TrimPrefix(x, "c-")
+	x = strings.TrimPrefix(x, "^")
+	switch x {
+	case "space":
+		return 0x00, "Ctrl-Space", nil
+	case "]":
+		return 0x1d, "Ctrl-]", nil
+	}
+	if len(x) == 1 && x[0] >= 'a' && x[0] <= 'z' {
+		return x[0] & 0x1f, "Ctrl-" + strings.ToUpper(x), nil
+	}
+	return 0, "", fmt.Errorf("bad --prefix %q (use e.g. ctrl-o, ctrl-a, ctrl-space)", s)
 }

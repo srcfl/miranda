@@ -41,10 +41,11 @@ func AttachAll(ctx context.Context, dir string, names []string, id *Identity, ic
 }
 
 // RunInteractiveMux puts the terminal in raw mode and runs the mux over sessions.
-func RunInteractiveMux(ctx context.Context, sessions []*MuxSession) error {
+// prefix is the switch key; prefixLabel is its human name for the hint (e.g. "Ctrl-O").
+func RunInteractiveMux(ctx context.Context, sessions []*MuxSession, prefix byte, prefixLabel string) error {
 	fd := int(os.Stdin.Fd())
 	if !term.IsTerminal(fd) {
-		return fmt.Errorf("tr attach requires a TTY (stdin is not a terminal)")
+		return fmt.Errorf("trm attach requires a TTY (stdin is not a terminal)")
 	}
 	old, err := term.MakeRaw(fd)
 	if err != nil {
@@ -60,7 +61,7 @@ func RunInteractiveMux(ctx context.Context, sessions []*MuxSession) error {
 	for i, s := range sessions {
 		names[i] = s.Name
 	}
-	fmt.Fprintf(os.Stderr, "[tr] %d machines: %v — switch with Ctrl-] then 1-9 / n / q\r\n", len(sessions), names)
+	fmt.Fprintf(os.Stderr, "[trm] %d machines: %v — switch with %s then 1-9 / n / q\r\n", len(sessions), names, prefixLabel)
 
 	resizes := make(chan Size, 1)
 	winch := make(chan os.Signal, 1)
@@ -77,6 +78,6 @@ func RunInteractiveMux(ctx context.Context, sessions []*MuxSession) error {
 		}
 	}()
 
-	mux := NewMux(sessions, os.Stdout, DefaultPrefix, Size{Cols: uint16(cols), Rows: uint16(rows)})
+	mux := NewMux(sessions, os.Stdout, prefix, Size{Cols: uint16(cols), Rows: uint16(rows)})
 	return mux.Run(ctx, os.Stdin, resizes)
 }

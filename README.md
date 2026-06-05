@@ -81,12 +81,13 @@ The full client path is proven hermetically by
 
 `trm attach <m1> <m2> ...` attaches several machines at once and multiplexes them
 onto your terminal — one in focus, the rest live in the background. Switch with the
-prefix key **Ctrl-]** then:
+prefix key **Ctrl-O** (layout-independent; change it with `--prefix`, e.g.
+`--prefix ctrl-a`) then:
 
 - `1`–`9` — focus that machine
 - `n` — next machine
 - `q` — quit (detach all)
-- `Ctrl-]` again — send a literal Ctrl-] to the focused machine
+- `Ctrl-O` again — send a literal Ctrl-O to the focused machine
 
 Each machine keeps its own tmux (windows/panes + persistence); this layer only
 chooses which machine is in focus. Switching clears the screen and nudges the
