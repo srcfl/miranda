@@ -223,11 +223,18 @@ func (m *Mux) switchTo(idx int) {
 }
 
 // afterFocusChange does the post-focus-change side effects that must run WITHOUT
-// m.mu held: set the window title and nudge the newly-focused machine to redraw.
+// m.mu held: set the window title and force the newly-focused machine to repaint.
 func (m *Mux) afterFocusChange(idx int, size Size) {
 	m.setTitle(m.sessions[idx].Name)
-	// Nudge the newly-focused machine's tmux to redraw the current screen.
-	_ = m.sessions[idx].snd.send(noise.EncodeResize(size.Cols, size.Rows))
+	// Force a repaint: tmux only redraws on an ACTUAL size change, so send a size
+	// that differs by one row, then the real size. SIGWINCH fires both times and
+	// the screen ends at the correct dimensions. (A no-op for a plain shell, which
+	// doesn't repaint on resize — run agents under tmux for the full experience.)
+	snd := m.sessions[idx].snd
+	if size.Rows > 1 {
+		_ = snd.send(noise.EncodeResize(size.Cols, size.Rows-1))
+	}
+	_ = snd.send(noise.EncodeResize(size.Cols, size.Rows))
 }
 
 func (m *Mux) onSessionEnd(i int) {
