@@ -30,6 +30,7 @@ type Server struct {
 	mu       sync.Mutex
 	agents   map[string]*agentConn   // owner|machine -> live agent
 	sessions map[string]*browserConn // session id -> browser (global lookup)
+	pair     *pairRooms              // roomID -> waiting pairing party (blind bridge)
 }
 
 // agentConn is one agent control socket. It owns the set of browser sessions
@@ -127,13 +128,14 @@ func (bc *browserConn) fail(reason string) {
 func (bc *browserConn) close() { bc.once.Do(func() { close(bc.done) }) }
 
 func New() *Server {
-	return &Server{agents: map[string]*agentConn{}, sessions: map[string]*browserConn{}}
+	return &Server{agents: map[string]*agentConn{}, sessions: map[string]*browserConn{}, pair: newPairRooms()}
 }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/agent/signal", s.handleAgent)
 	mux.HandleFunc("/attach", s.handleAttach)
+	mux.HandleFunc("/pair", s.handlePair)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	return mux
 }
