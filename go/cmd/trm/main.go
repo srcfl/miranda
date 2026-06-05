@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/srcful/terminal-relay/go/internal/client"
+	"github.com/srcful/terminal-relay/go/internal/pairing"
 	"github.com/srcful/terminal-relay/go/internal/peer"
 )
 
@@ -28,6 +29,8 @@ func main() {
 	switch os.Args[1] {
 	case "keygen":
 		cmdKeygen(os.Args[2:])
+	case "pair":
+		cmdPair(os.Args[2:])
 	case "add-machine":
 		cmdAddMachine(os.Args[2:])
 	case "list":
@@ -42,7 +45,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: trm <keygen|add-machine|list|attach|run> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: trm <keygen|pair|add-machine|list|attach|run> [flags]")
 	os.Exit(2)
 }
 
@@ -92,6 +95,42 @@ func cmdKeygen(args []string) {
 		fatal(err)
 	}
 	fmt.Printf("owner public key:\n  %s\n\nPin it on each machine:\n  tr-agent pair-dev --owner-pub %s\n", id.OwnerPubHex, id.OwnerPubHex)
+}
+
+func cmdPair(args []string) {
+	fs := flag.NewFlagSet("pair", flag.ExitOnError)
+	dir := fs.String("dir", defaultDir(), "config directory")
+	_ = fs.Parse(args)
+	rest := fs.Args()
+	if len(rest) != 1 {
+		fatal(fmt.Errorf("usage: trm pair <code>   (the code printed by `tr-agent pair`)"))
+	}
+	signalURL, token, err := pairing.DecodeCode(rest[0])
+	if err != nil {
+		fatal(err)
+	}
+	idn, err := client.LoadOrCreateIdentity(*dir)
+	if err != nil {
+		fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	mc, closeConn, err := pairing.DialPair(ctx, signalURL, pairing.RoomID(token))
+	if err != nil {
+		fatal(err)
+	}
+	defer closeConn()
+
+	info, err := pairing.RunInitiator(ctx, mc, token, idn.OwnerPub())
+	if err != nil {
+		fatal(err)
+	}
+	m := client.Machine{Name: info.Name, MachineID: info.MachineID, HostPubHex: info.HostPubHex, SignalURL: signalURL}
+	if err := client.AddMachine(*dir, m); err != nil {
+		fatal(err)
+	}
+	fmt.Printf("✓ paired machine %q — try: trm attach %s\n", m.Name, m.Name)
 }
 
 func cmdAddMachine(args []string) {

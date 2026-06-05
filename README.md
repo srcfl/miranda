@@ -77,6 +77,19 @@ Local loop (all on one Mac):
 The full client path is proven hermetically by
 `go test ./internal/client/ -run TestEndToEnd`.
 
+### Pairing (Plan 5)
+
+One tap instead of copying keys by hand:
+
+    # on the machine:
+    tr-agent pair --signal http://localhost:8443      # prints a code + QR, then waits
+    # on the client:
+    trm pair <code>                                   # done — machine added
+
+Under the hood a one-time token is the PSK of an NNpsk0 handshake brokered (blind)
+through `tr-signal` by `roomID = H(token)`; the two sides exchange and pin their
+static keys. The signaling server never sees the token or any key.
+
 ### Multi-machine (Plan 4b)
 
 `trm attach <m1> <m2> ...` attaches several machines at once and multiplexes them
