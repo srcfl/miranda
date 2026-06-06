@@ -37,8 +37,8 @@ func TestTURNCredentials(t *testing.T) {
 	if err := json.NewDecoder(resp2.Body).Decode(&c); err != nil {
 		t.Fatal(err)
 	}
-	if turnTTL != 10*time.Minute {
-		t.Fatalf("turnTTL: want 10m, got %v", turnTTL)
+	if turnTTL != 12*time.Hour {
+		t.Fatalf("turnTTL: want 12h (must outlast a session), got %v", turnTTL)
 	}
 	if c.TTL != int((10 * time.Minute).Seconds()) {
 		t.Fatalf("json ttl: want 600, got %d", c.TTL)
