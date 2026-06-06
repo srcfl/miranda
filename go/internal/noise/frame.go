@@ -14,6 +14,7 @@ const (
 	FrameResize  FrameType = 0x02 // cols u16 BE ++ rows u16 BE
 	FrameHello   FrameType = 0x03 // UTF-8 JSON metadata
 	FrameWindows FrameType = 0x04 // UTF-8 JSON tmux window snapshot (agent -> client)
+	FrameControl FrameType = 0x05 // UTF-8 JSON tmux control command (client -> agent)
 )
 
 // EncodeData wraps raw PTY bytes in a DATA frame.
@@ -38,6 +39,11 @@ func EncodeHello(jsonBytes []byte) []byte {
 // EncodeWindows wraps a tmux window snapshot (JSON) in a WINDOWS frame.
 func EncodeWindows(jsonBytes []byte) []byte {
 	return append([]byte{byte(FrameWindows)}, jsonBytes...)
+}
+
+// EncodeControl wraps a tmux control command (JSON) in a CONTROL frame.
+func EncodeControl(jsonBytes []byte) []byte {
+	return append([]byte{byte(FrameControl)}, jsonBytes...)
 }
 
 // DecodeFrame splits a frame into its type and payload.

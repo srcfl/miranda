@@ -213,12 +213,14 @@ func (rt *Runtime) handleOffer(ctx context.Context, c *websocket.Conn, m signal.
 	}
 	defer pty.Close()
 
-	// For a tmux launch, push window-list snapshots so clients render an overview.
+	// For a tmux launch, push window-list snapshots so clients render an overview,
+	// and accept window control commands (select/new/rename/kill) for that session.
+	session := sessionFromLaunch(rt.launch)
 	var windows func() []byte
-	if session := sessionFromLaunch(rt.launch); session != "" {
+	if session != "" {
 		windows = func() []byte { return tmuxWindowsJSON(session) }
 	}
-	_ = RunAgentSession(attachCtx, dc, sess, pty, rt.cfg.MachineName, windows)
+	_ = RunAgentSession(attachCtx, dc, sess, pty, rt.cfg.MachineName, windows, session)
 }
 
 // agentSignalURL builds ws(s)://host/agent/signal?owner_id=..&machine_id=..

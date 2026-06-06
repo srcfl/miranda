@@ -53,6 +53,18 @@ func TestWindowsFrameRoundTrip(t *testing.T) {
 	}
 }
 
+func TestControlFrameRoundTrip(t *testing.T) {
+	j := []byte(`{"a":"select-window","t":"@3"}`)
+	enc := EncodeControl(j)
+	if enc[0] != byte(FrameControl) || byte(FrameControl) != 0x05 {
+		t.Fatalf("expected FrameControl tag 0x05, got %#x", enc[0])
+	}
+	typ, payload, err := DecodeFrame(enc)
+	if err != nil || typ != FrameControl || !bytes.Equal(payload, j) {
+		t.Fatalf("control frame mismatch")
+	}
+}
+
 func TestDecodeEmptyFrameErrors(t *testing.T) {
 	if _, _, err := DecodeFrame(nil); err == nil {
 		t.Fatal("expected error decoding empty frame")

@@ -4,9 +4,67 @@ package agent
 import (
 	"encoding/json"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 )
+
+var winIDRe = regexp.MustCompile(`^@[0-9]{1,9}$`)
+
+// runTmuxControl runs a client-requested tmux window command directly (no
+// keystroke injection, no prefix/Enter fragility). exec with explicit args (no
+// shell); the action is allow-listed, window targets are validated @ids, and the
+// name is sanitized — so an authenticated client can manage windows safely.
+func runTmuxControl(session string, payload []byte) {
+	var c struct {
+		A string `json:"a"` // action
+		T string `json:"t"` // target window_id (@N)
+		N string `json:"n"` // new name (rename)
+	}
+	if json.Unmarshal(payload, &c) != nil {
+		return
+	}
+	idOK := winIDRe.MatchString(c.T)
+	switch c.A {
+	case "select-window":
+		if idOK {
+			_ = exec.Command("tmux", "select-window", "-t", c.T).Run()
+		}
+	case "kill-window":
+		if idOK {
+			_ = exec.Command("tmux", "kill-window", "-t", c.T).Run()
+		}
+	case "rename-window":
+		if idOK {
+			_ = exec.Command("tmux", "rename-window", "-t", c.T, safeWinName(c.N)).Run()
+		}
+	case "new-window":
+		if session != "" {
+			_ = exec.Command("tmux", "new-window", "-t", session).Run()
+		}
+	case "next-window":
+		if session != "" {
+			_ = exec.Command("tmux", "next-window", "-t", session).Run()
+		}
+	case "previous-window":
+		if session != "" {
+			_ = exec.Command("tmux", "previous-window", "-t", session).Run()
+		}
+	}
+}
+
+func safeWinName(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == ' ' || r == '-' || r == '_' || r == '.' {
+			return r
+		}
+		return -1
+	}, s)
+	if len(s) > 32 {
+		s = s[:32]
+	}
+	return s
+}
 
 // winInfo mirrors one tmux window for the client overview (short keys = small frame).
 type winInfo struct {

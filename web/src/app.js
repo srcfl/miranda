@@ -1,7 +1,7 @@
 // web/src/app.js — the SPA: identity, a machine list, in-browser pairing, and a
 // live terminal. Data plane is P2P + Noise (see attach); the relay only brokers.
 import { HandshakeKK } from './noise/noise-kk.js';
-import { encodeData, encodeResize, decodeFrame, FRAME_DATA, FRAME_WINDOWS } from './noise/frame.js';
+import { encodeData, encodeResize, encodeControl, decodeFrame, FRAME_DATA, FRAME_WINDOWS } from './noise/frame.js';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -150,7 +150,9 @@ export async function attach(machine, termEl, onWindows) {
   window.__attached = true;
   return {
     term, pc, dc, ws,
-    sendText: (s) => send(encodeData(te.encode(s))), // feed keystrokes (e.g. tmux prefix sequences)
+    sendText: (s) => send(encodeData(te.encode(s))), // feed keystrokes
+    sendCtl: (obj) => send(encodeControl(te.encode(JSON.stringify(obj)))), // tmux window command
+
     close: () => { stopResize(); try { ws.close(); } catch {} try { pc.close(); } catch {} term.dispose(); },
   };
 }
@@ -282,12 +284,11 @@ function viewTerminal(root, machine) {
   const focus = () => { window.__term && window.__term.focus(); };
   // tmux control: prefix (Ctrl-B) + key, or prefix + ":cmd\n". Target windows by
   // stable window_id (@N), not index, to dodge renumber races.
-  const tmuxKey = (k) => { handle && handle.sendText('\x02' + k); focus(); };
-  // tmux command mode: prefix + ":cmd" + CR. Enter must be \r (what a terminal
-  // sends), not \n — with \n the command prompt never executes.
-  const tmuxCmd = (c) => { handle && handle.sendText('\x02:' + c + '\r'); focus(); };
-  const selectWin = (id) => tmuxCmd('select-window -t ' + id);
-  const newWin = () => tmuxKey('c');
+  // tmux window control: the AGENT runs the command directly (robust — no prefix
+  // dependence, no command-prompt/Enter fragility, no keystroke timing).
+  const ctl = (o) => { handle && handle.sendCtl(o); focus(); };
+  const selectWin = (id) => ctl({ a: 'select-window', t: id });
+  const newWin = () => ctl({ a: 'new-window' });
   const safeName = (s) => (s || '').replace(/[^\w .\-]/g, '').slice(0, 32);
 
   const termBox = el('div', { className: 'termbox' });
@@ -308,8 +309,8 @@ function viewTerminal(root, machine) {
       strip.append(
         el('span', { className: 'winbar-label' }, 'windows'),
         el('button', { className: 'tb-btn', onclick: newWin }, '＋'),
-        el('button', { className: 'tb-btn', onclick: () => tmuxKey('p') }, '‹'),
-        el('button', { className: 'tb-btn', onclick: () => tmuxKey('n') }, '›'));
+        el('button', { className: 'tb-btn', onclick: () => ctl({ a: 'previous-window' }) }, '‹'),
+        el('button', { className: 'tb-btn', onclick: () => ctl({ a: 'next-window' }) }, '›'));
       return;
     }
     const pills = el('div', { className: 'pills' });
@@ -339,8 +340,8 @@ function viewTerminal(root, machine) {
         el('div', { className: 'wcard-name' }, w.i + ': ' + (w.n || '')),
         el('div', { className: 'wcard-sub' }, (w.cmd || '') + (w.p > 1 ? ' · ' + w.p + ' panes' : '') + (w.b ? ' · 🔔' : w.a ? ' · •' : '')),
         el('div', { className: 'wcard-actions' },
-          el('span', { className: 'link', onclick: (e) => { e.stopPropagation(); const n = safeName(prompt('Rename window', w.n)); if (n) tmuxCmd('rename-window -t ' + w.id + ' ' + n); sheet.remove(); } }, 'rename'),
-          el('span', { className: 'link', onclick: (e) => { e.stopPropagation(); if (confirm('Close window ' + w.i + '?')) tmuxCmd('kill-window -t ' + w.id); sheet.remove(); } }, 'close')));
+          el('span', { className: 'link', onclick: (e) => { e.stopPropagation(); const n = safeName(prompt('Rename window', w.n)); if (n) ctl({ a: 'rename-window', t: w.id, n }); sheet.remove(); } }, 'rename'),
+          el('span', { className: 'link', onclick: (e) => { e.stopPropagation(); if (confirm('Close window ' + w.i + '?')) ctl({ a: 'kill-window', t: w.id }); sheet.remove(); } }, 'close')));
       grid.append(wc);
     }
     card.append(grid,

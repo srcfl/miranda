@@ -5,9 +5,11 @@ import {
   FRAME_DATA,
   FRAME_RESIZE,
   FRAME_WINDOWS,
+  FRAME_CONTROL,
   encodeData,
   encodeResize,
   encodeWindows,
+  encodeControl,
   decodeFrame,
   decodeResize,
 } from '../src/noise/frame.js';
@@ -35,6 +37,16 @@ test('windows frame round trip (byte-mirrors Go)', () => {
   assert.equal(enc[0], 0x04);
   const { type, payload } = decodeFrame(enc);
   assert.equal(type, FRAME_WINDOWS);
+  assert.deepEqual(payload, j);
+});
+
+test('control frame round trip (byte-mirrors Go)', () => {
+  const j = new TextEncoder().encode('{"a":"select-window","t":"@3"}');
+  const enc = encodeControl(j);
+  assert.equal(enc[0], FRAME_CONTROL);
+  assert.equal(enc[0], 0x05);
+  const { type, payload } = decodeFrame(enc);
+  assert.equal(type, FRAME_CONTROL);
   assert.deepEqual(payload, j);
 });
 
