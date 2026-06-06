@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/srcful/terminal-relay/go/internal/client"
+	"github.com/srcful/terminal-relay/go/internal/defaults"
 	"github.com/srcful/terminal-relay/go/internal/pairing"
 	"github.com/srcful/terminal-relay/go/internal/peer"
 )
@@ -139,7 +140,7 @@ func cmdAddMachine(args []string) {
 	name := fs.String("name", "", "machine name")
 	id := fs.String("id", "", "machine id (from `tr-agent enroll`)")
 	hostPub := fs.String("host-pub", "", "machine host public key (hex, from `tr-agent enroll`)")
-	signalURL := fs.String("signal", "http://localhost:8443", "signaling server base URL")
+	signalURL := fs.String("signal", defaults.SignalURL(), "signaling server base URL")
 	_ = fs.Parse(args)
 	if *name == "" || *id == "" || *hostPub == "" {
 		fatal(fmt.Errorf("--name, --id and --host-pub are required"))
@@ -226,7 +227,7 @@ func fatal(err error) {
 // closure that builds the ICE server list (call it after fs.Parse). TURN is the
 // opt-in symmetric-NAT fallback; Noise keeps it blind to content.
 func iceFlags(fs *flag.FlagSet) func() []peer.ICEServer {
-	stun := fs.String("stun", "", "comma-separated STUN URLs (e.g. stun:host:3478); empty = host candidates only")
+	stun := fs.String("stun", defaults.STUNURL(), "comma-separated STUN URLs (empty disables); default is ours")
 	turn := fs.String("turn", "", "comma-separated TURN URLs (opt-in fallback; e.g. turn:host:3478)")
 	user := fs.String("turn-user", "", "TURN username")
 	pass := fs.String("turn-pass", "", "TURN password")

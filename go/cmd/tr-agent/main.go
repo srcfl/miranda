@@ -16,6 +16,7 @@ import (
 	"github.com/mdp/qrterminal/v3"
 
 	"github.com/srcful/terminal-relay/go/internal/agent"
+	"github.com/srcful/terminal-relay/go/internal/defaults"
 	"github.com/srcful/terminal-relay/go/internal/pairing"
 	"github.com/srcful/terminal-relay/go/internal/peer"
 )
@@ -52,7 +53,7 @@ func cmdEnroll(args []string) {
 	fs := flag.NewFlagSet("enroll", flag.ExitOnError)
 	dir := fs.String("dir", defaultDir(), "config directory")
 	name := fs.String("name", hostname(), "machine display name")
-	signalURL := fs.String("signal", "http://localhost:8443", "signaling server base URL")
+	signalURL := fs.String("signal", defaults.SignalURL(), "signaling server base URL")
 	_ = fs.Parse(args)
 
 	cfg, err := agent.LoadOrInit(*dir, *name, *signalURL)
@@ -86,7 +87,7 @@ func cmdPair(args []string) {
 	fs := flag.NewFlagSet("pair", flag.ExitOnError)
 	dir := fs.String("dir", defaultDir(), "config directory")
 	name := fs.String("name", hostname(), "machine display name")
-	signalURL := fs.String("signal", "http://localhost:8443", "signaling server base URL")
+	signalURL := fs.String("signal", defaults.SignalURL(), "signaling server base URL")
 	_ = fs.Parse(args)
 
 	cfg, err := agent.LoadOrInit(*dir, *name, *signalURL)
@@ -126,7 +127,7 @@ func cmdUp(args []string) {
 	fs := flag.NewFlagSet("up", flag.ExitOnError)
 	dir := fs.String("dir", defaultDir(), "config directory")
 	name := fs.String("name", hostname(), "machine display name")
-	signalURL := fs.String("signal", "http://localhost:8443", "signaling server base URL")
+	signalURL := fs.String("signal", defaults.SignalURL(), "signaling server base URL")
 	shell := fs.String("shell", "tmux:new:-A:-s:main", "launch command, ':'-separated")
 	ice := iceFlags(fs)
 	_ = fs.Parse(args)
@@ -167,7 +168,7 @@ func fatal(err error) {
 // closure that builds the ICE server list (call it after fs.Parse). TURN is the
 // opt-in symmetric-NAT fallback; Noise keeps it blind to content.
 func iceFlags(fs *flag.FlagSet) func() []peer.ICEServer {
-	stun := fs.String("stun", "", "comma-separated STUN URLs (e.g. stun:host:3478); empty = host candidates only")
+	stun := fs.String("stun", defaults.STUNURL(), "comma-separated STUN URLs (empty disables); default is ours")
 	turn := fs.String("turn", "", "comma-separated TURN URLs (opt-in fallback; e.g. turn:host:3478)")
 	user := fs.String("turn-user", "", "TURN username")
 	pass := fs.String("turn-pass", "", "TURN password")
