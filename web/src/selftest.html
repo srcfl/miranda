@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>terminal-relay — browser crypto self-test</title>
+<!-- import map so the bare @noble/* imports in our modules resolve in-browser, no bundler -->
+<script type="importmap">
+{
+  "imports": {
+    "@noble/curves/ed25519": "https://esm.sh/@noble/curves@1.9.7/ed25519",
+    "@noble/ciphers/chacha": "https://esm.sh/@noble/ciphers@1.3.0/chacha",
+    "@noble/hashes/sha2": "https://esm.sh/@noble/hashes@1.8.0/sha2",
+    "@noble/hashes/hmac": "https://esm.sh/@noble/hashes@1.8.0/hmac",
+    "@noble/hashes/hkdf": "https://esm.sh/@noble/hashes@1.8.0/hkdf",
+    "@noble/hashes/utils": "https://esm.sh/@noble/hashes@1.8.0/utils"
+  }
+}
+</script>
+<style>
+  body { font: 14px ui-monospace, monospace; background: #0b0e14; color: #cbd5e1; padding: 24px; }
+  h1 { font-size: 16px; color: #e2e8f0; }
+  .pass { color: #4ade80; } .fail { color: #f87171; }
+  #summary { font-size: 18px; margin: 12px 0; }
+  pre { white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1>terminal-relay — browser crypto self-test</h1>
+<div id="summary">running…</div>
+<pre id="log"></pre>
+<script type="module">
+import { HandshakeKK } from './noise/noise-kk.js';
+import { encodeData, encodeResize, decodeFrame, decodeResize, FRAME_DATA, FRAME_RESIZE } from './noise/frame.js';
+import { deriveOwnerKey } from './identity/owner.js';
+import { runInitiator, runResponder } from './pairing/nnpsk0.js';
+import { roomID } from './pairing/code.js';
+import { safetyNumber } from './pairing/sas.js';
+import { x25519 } from '@noble/curves/ed25519';
+
+const logEl = document.getElementById('log');
+const sumEl = document.getElementById('summary');
+let pass = 0, fail = 0;
+const td = new TextDecoder(), te = new TextEncoder();
+function ok(name) { pass++; logEl.innerHTML += `<span class="pass">✔ ${name}</span>\n`; }
+function bad(name, e) { fail++; logEl.innerHTML += `<span class="fail">x ${name}: ${e}</span>\n`; }
+function eq(a, b, m) { if (a !== b) throw new Error(`${m}: ${a} !== ${b}`); }
+
+// in-memory async message pipe (mirrors the Node tests)
+function pipe() {
+  const a = [], b = [];
+  const mk = (out, inn) => ({
+    send: (msg) => { out.push(msg); },
+    recv: async () => { for (;;) { if (inn.length) return inn.shift(); await new Promise((r) => setTimeout(r, 1)); } },
+  });
+  return [mk(a, b), mk(b, a)];
+}
+
+async function run() {
+  // 1) frame codec
+  try {
+    const { type, payload } = decodeFrame(encodeData(te.encode('ls -la\n')));
+    eq(type, FRAME_DATA, 'frame type');
+    eq(td.decode(payload), 'ls -la\n', 'frame payload');
+    const r = decodeResize(decodeFrame(encodeResize(120, 40)).payload);
+    eq(r.cols, 120, 'resize cols'); eq(r.rows, 40, 'resize rows');
+    ok('frame codec round-trip');
+  } catch (e) { bad('frame codec', e.message); }
+
+  // 2) owner key from prf (deterministic, 32-byte)
+  try {
+    const prf = new Uint8Array(32).fill(7);
+    const a = deriveOwnerKey(prf), b = deriveOwnerKey(prf);
+    eq(a.priv.length, 32, 'owner priv len'); eq(a.pub.length, 32, 'owner pub len');
+    eq(a.pub.join(','), b.pub.join(','), 'owner deterministic');
+    ok('prf → owner key');
+  } catch (e) { bad('owner key', e.message); }
+
+  // 3) Noise KK handshake + transport (both directions)
+  try {
+    const i = { priv: x25519.utils.randomPrivateKey() }; i.pub = x25519.getPublicKey(i.priv);
+    const r = { priv: x25519.utils.randomPrivateKey() }; r.pub = x25519.getPublicKey(r.priv);
+    const ini = new HandshakeKK({ initiator: true, s: i, rs: r.pub });
+    const res = new HandshakeKK({ initiator: false, s: r, rs: i.pub });
+    const m0 = ini.writeMessage(te.encode('hi')); eq(td.decode(res.readMessage(m0)), 'hi', 'kk msg0');
+    const m1 = res.writeMessage(new Uint8Array(0)); ini.readMessage(m1);
+    eq(td.decode(res.decrypt(ini.encrypt(te.encode('i->r')))), 'i->r', 'kk i->r');
+    eq(td.decode(ini.decrypt(res.encrypt(te.encode('r->i')))), 'r->i', 'kk r->i');
+    ok('Noise KK handshake + transport');
+  } catch (e) { bad('Noise KK', e.message); }
+
+  // 4) NNpsk0 pairing handshake + safety number match
+  try {
+    const token = new Uint8Array(16).fill(0xAB);
+    const ownerPub = x25519.getPublicKey(x25519.utils.randomPrivateKey());
+    const info = { host_pub: '50'.repeat(32), machine_id: 'm1', name: 'box' };
+    const [clientMC, agentMC] = pipe();
+    const agentP = runResponder(agentMC, token, info);
+    const client = await runInitiator(clientMC, token, ownerPub);
+    const agent = await agentP;
+    eq(client.info.machine_id, 'm1', 'pairing info');
+    eq(safetyNumber(client.binding), safetyNumber(agent.binding), 'safety numbers match (no MITM)');
+    eq(roomID(token).length, 32, 'roomID hex len');
+    ok('NNpsk0 pairing + safety number');
+  } catch (e) { bad('NNpsk0 pairing', e.message); }
+
+  const allOK = fail === 0;
+  sumEl.innerHTML = allOK
+    ? `<span class="pass">ALL ${pass} CRYPTO TESTS PASS IN-BROWSER ✔</span>`
+    : `<span class="fail">${fail} FAILED, ${pass} passed</span>`;
+  document.title = allOK ? 'SELFTEST OK' : 'SELFTEST FAIL';
+  window.__selftest = { pass, fail, allOK };
+}
+run();
+</script>
+</body>
+</html>
