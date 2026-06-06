@@ -58,9 +58,13 @@ export async function attach(machine, termEl) {
   // non-trickle ICE: gather all candidates, then send the offer
   diag.step = 'creating-offer';
   await pc.setLocalDescription(await pc.createOffer());
+  // non-trickle: send once gathering completes OR after a cap (use whatever
+  // candidates we have — a slow/unreachable STUN must not hang the connect).
   await new Promise((res) => {
     if (pc.iceGatheringState === 'complete') return res();
-    pc.addEventListener('icegatheringstatechange', () => { diag.gather = pc.iceGatheringState; pc.iceGatheringState === 'complete' && res(); });
+    const done = () => { clearTimeout(t); res(); };
+    const t = setTimeout(() => { diag.gather = 'timeout'; done(); }, 3000);
+    pc.addEventListener('icegatheringstatechange', () => { diag.gather = pc.iceGatheringState; if (pc.iceGatheringState === 'complete') done(); });
   });
   diag.step = 'offer-sent';
   ws.send(JSON.stringify({ type: 'offer', sdp: pc.localDescription.sdp }));
