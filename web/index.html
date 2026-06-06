@@ -6,7 +6,7 @@
 <title>terminal-relay</title>
 <link rel="stylesheet" href="/vendor/xterm.css" />
 <!-- import map -> locally-vendored deps (NEVER load security-critical crypto from a CDN at runtime) -->
-<script type="importmap">
+<script type="importmap" nonce="__CSP_NONCE__">
 {
   "imports": {
     "@noble/curves/ed25519": "/vendor/noble-curves-ed25519.js",
@@ -55,9 +55,6 @@
 </head>
 <body>
 <div id="app"></div>
-<script type="module">
-import { start } from './src/app.js';
-start(document.getElementById('app'));
-</script>
+<script type="module" src="/src/boot.js" nonce="__CSP_NONCE__"></script>
 </body>
 </html>

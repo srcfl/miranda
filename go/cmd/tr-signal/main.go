@@ -2,10 +2,13 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"flag"
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -54,24 +57,53 @@ func newHTTPServer(addr string, handler http.Handler) *http.Server {
 // (see SECURITY.md, "the code you run").
 func withStatic(sig http.Handler, dir string) http.Handler {
 	fs := http.FileServer(http.Dir(dir))
+	indexPath := filepath.Join(dir, "index.html")
 	signalPaths := map[string]bool{"/agent/signal": true, "/attach": true, "/pair": true, "/turn-credentials": true, "/healthz": true}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if signalPaths[r.URL.Path] {
 			sig.ServeHTTP(w, r)
 			return
 		}
-		setStaticSecurityHeaders(w)
+		// index.html carries an inline import map; serve it with a per-request
+		// nonce so script-src can stay 'self' (no 'unsafe-inline').
+		if r.URL.Path == "/" || r.URL.Path == "/index.html" {
+			serveIndex(w, indexPath)
+			return
+		}
+		setStaticSecurityHeaders(w, "")
 		fs.ServeHTTP(w, r)
 	})
 }
 
-func setStaticSecurityHeaders(w http.ResponseWriter) {
+// serveIndex serves index.html with a fresh per-request nonce on its inline
+// import map, and a matching CSP — so the only inline script that can run is our
+// own import map, and an injected script can neither execute nor exfiltrate the
+// passkey-derived owner key.
+func serveIndex(w http.ResponseWriter, path string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	nonce := base64.StdEncoding.EncodeToString(b)
+	setStaticSecurityHeaders(w, nonce)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(strings.ReplaceAll(string(data), "__CSP_NONCE__", nonce)))
+}
+
+func setStaticSecurityHeaders(w http.ResponseWriter, nonce string) {
 	// The hosted SPA is a client-code trust root: it derives the owner key and
 	// runs the terminal crypto. Keep the browser sandbox tight around our own
 	// static files while allowing HTTPS/WSS relay connections and QR camera scan.
+	scriptSrc := "script-src 'self'"
+	if nonce != "" {
+		scriptSrc += " 'nonce-" + nonce + "'" // for the inline import map
+	}
 	w.Header().Set("Content-Security-Policy", strings.Join([]string{
 		"default-src 'self'",
-		"script-src 'self'",
+		scriptSrc,
 		"style-src 'self' 'unsafe-inline'",
 		"img-src 'self' data: blob:",
 		"connect-src 'self' https: wss:",
