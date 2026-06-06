@@ -19,31 +19,67 @@ import (
 // answers the WebRTC offer, runs the Noise responder, and bridges to a shell.
 type Runtime struct {
 	cfg    *Config
-	launch []string          // shell command, e.g. {"tmux","new","-A","-s","main"} or {"sh"}
-	ice    []peer.ICEServer  // STUN/TURN servers; nil for local (host candidates)
+	launch []string         // shell command, e.g. {"tmux","new","-A","-s","main"} or {"sh"}
+	ice    []peer.ICEServer // STUN/TURN servers; nil for local (host candidates)
+
+	baseBackoff time.Duration       // first reconnect delay (grows on repeated dial failures)
+	maxBackoff  time.Duration       // cap
+	Logf        func(string, ...any) // optional reconnect/status log (set by the CLI)
 }
 
 func NewRuntime(cfg *Config, launch []string, ice []peer.ICEServer) *Runtime {
-	return &Runtime{cfg: cfg, launch: launch, ice: ice}
+	return &Runtime{cfg: cfg, launch: launch, ice: ice, baseBackoff: time.Second, maxBackoff: 30 * time.Second}
 }
 
-// Up registers on the signaling channel under {pinned owner, machine id} and
-// serves attaches until ctx is cancelled or the connection drops.
+// Up keeps the agent registered on the signaling channel under {pinned owner,
+// machine id}, serving attaches. It RECONNECTS with backoff if the connection
+// drops (Cloudflare idle timeout, relay restart, network blip) so the machine
+// stays reachable; it returns only when ctx is cancelled (clean shutdown) or no
+// owner is paired.
 func (rt *Runtime) Up(ctx context.Context) error {
 	if len(rt.cfg.PairedOwners) == 0 {
 		return errNoOwner
 	}
+	backoff := rt.baseBackoff
+	for {
+		connected, err := rt.serveOnce(ctx)
+		if ctx.Err() != nil {
+			return nil // clean shutdown
+		}
+		if connected {
+			backoff = rt.baseBackoff // a live connection dropped -> retry promptly
+		}
+		if rt.Logf != nil {
+			rt.Logf("signaling disconnected (%v); reconnecting in %s", err, backoff)
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(backoff):
+		}
+		if !connected { // dial keeps failing (relay down) -> exponential backoff
+			if backoff *= 2; backoff > rt.maxBackoff {
+				backoff = rt.maxBackoff
+			}
+		}
+	}
+}
+
+// serveOnce dials the signaling channel and serves offers until the connection
+// drops. The bool reports whether the dial succeeded (a live connection that
+// later dropped), so Up can reconnect promptly vs. back off a down relay.
+func (rt *Runtime) serveOnce(ctx context.Context) (bool, error) {
 	owner := rt.cfg.PairedOwners[0]
 	c, _, err := websocket.Dial(ctx, agentSignalURL(rt.cfg.SignalURL, owner, rt.cfg.MachineID), nil)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer c.CloseNow()
 
 	for {
 		_, data, err := c.Read(ctx)
 		if err != nil {
-			return err
+			return true, err
 		}
 		var m signal.SignalMsg
 		if json.Unmarshal(data, &m) != nil {

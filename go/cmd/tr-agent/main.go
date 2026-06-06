@@ -147,6 +147,7 @@ func cmdUp(args []string) {
 	defer stop()
 
 	rt := agent.NewRuntime(cfg, launch, ice())
+	rt.Logf = func(f string, a ...any) { fmt.Fprintf(os.Stderr, "tr-agent: "+f+"\n", a...) }
 	fmt.Printf("tr-agent up: machine %s, signaling %s\n", cfg.MachineID, cfg.SignalURL)
 	if err := rt.Up(ctx); err != nil && ctx.Err() == nil {
 		fatal(err)
