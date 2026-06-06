@@ -106,9 +106,9 @@ func cmdPair(args []string) {
 	qrterminal.GenerateHalfBlock(pairURL, qrterminal.L, os.Stdout)
 	fmt.Printf("\n  …or open: %s\n", pairURL)
 	fmt.Printf("  …or on the CLI:  trm pair %s\n", code)
-	fmt.Printf("\nwaiting for pairing (2 min)…\n")
+	fmt.Printf("\nwaiting for pairing (5 min)…\n")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	mc, closeConn, err := pairing.DialPair(ctx, *signalURL, pairing.RoomID(token))
 	if err != nil {

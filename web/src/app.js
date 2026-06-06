@@ -6,7 +6,8 @@ import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 import { Terminal } from '@xterm/xterm';
 import { listMachines, addMachine } from './store.js';
 import { pairWithCode } from './pair.js';
-import { registerPasskey, signInPasskey, devOwnerKey, passkeySupported, hasEnrolledPasskey, isLocalhost } from './identity.js';
+import { registerPasskey, signInPasskey, devOwnerKey, passkeySupported, isLocalhost } from './identity.js';
+import jsQR from '/vendor/jsqr.js';
 
 const te = new TextEncoder();
 
@@ -134,13 +135,49 @@ function viewMachines(root) {
     grid));
 }
 
+// codeFromScan extracts the pairing code from a scanned QR, which encodes
+// Web + "/#" + code (take the part after '#'); falls back to the raw text.
+function codeFromScan(text) {
+  const i = (text || '').indexOf('#');
+  return (i >= 0 ? text.slice(i + 1) : text).trim();
+}
+
+// scanQR opens the rear camera and decodes QR frames, calling onCode on the
+// first hit. Returns a stop() function. (iOS Safari has no BarcodeDetector, so
+// we decode frames with jsQR on a canvas.)
+async function scanQR(videoEl, onCode, onError) {
+  let stream = null, raf = 0, stopped = false;
+  const stop = () => { stopped = true; cancelAnimationFrame(raf); if (stream) stream.getTracks().forEach((t) => t.stop()); };
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+  } catch (e) { onError('camera unavailable: ' + (e && e.message || e)); return stop; }
+  videoEl.setAttribute('playsinline', '');
+  videoEl.muted = true;
+  videoEl.srcObject = stream;
+  await videoEl.play().catch(() => {});
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  const tick = () => {
+    if (stopped) return;
+    if (videoEl.readyState >= 2 && videoEl.videoWidth) {
+      canvas.width = videoEl.videoWidth; canvas.height = videoEl.videoHeight;
+      ctx.drawImage(videoEl, 0, 0);
+      const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const res = jsQR(img.data, img.width, img.height);
+      if (res && res.data) { stop(); onCode(res.data); return; }
+    }
+    raf = requestAnimationFrame(tick);
+  };
+  tick();
+  return stop;
+}
+
 function viewPair(root, prefill = '', auto = false) {
-  const input = el('input', { className: 'code', placeholder: 'paste the code from `tr-agent pair`', value: prefill });
   const status = el('div', { className: 'status' });
-  const doPair = async () => {
-    const code = input.value.trim();
+  const pairCode = async (raw) => {
+    const code = (raw || '').trim();
     if (!code) return;
-    go.disabled = true;
+    mount(root, el('div', { className: 'view' }, el('h1', {}, 'pairing…'), status));
     status.textContent = 'pairing…';
     try {
       const { machine, safetyNumber } = await pairWithCode(code, ownerKey().pub);
@@ -153,17 +190,35 @@ function viewPair(root, prefill = '', auto = false) {
         el('div', { className: 'muted' }, 'Check this safety number matches the one on the machine.'),
         el('button', { className: 'btn', onclick: () => viewMachines(root) }, 'Done'));
     } catch (e) {
-      go.disabled = false;
-      status.textContent = 'pairing failed: ' + (e && e.message || e);
+      status.innerHTML = '';
+      status.append(el('div', { className: 'muted' }, 'pairing failed: ' + (e && e.message || e)),
+        el('button', { className: 'btn', onclick: () => viewPair(root) }, 'Try again'));
     }
   };
-  const go = el('button', { className: 'btn', onclick: doPair }, 'Pair');
+
+  const startScan = async () => {
+    const video = el('video', { className: 'scanner' });
+    const sStatus = el('div', { className: 'status' });
+    let stop = null;
+    mount(root, el('div', { className: 'view' },
+      el('h1', {}, 'scan the QR'),
+      el('p', { className: 'muted' }, 'Point at the QR shown by `tr-agent pair`.'),
+      video, sStatus,
+      el('button', { className: 'link', onclick: () => { if (stop) stop(); viewPair(root); } }, '✕ cancel')));
+    stop = await scanQR(video, (text) => pairCode(codeFromScan(text)), (err) => { sStatus.textContent = err; });
+  };
+
+  if (auto && prefill) { pairCode(prefill); return; } // arrived via QR URL -> pair now
+
+  const input = el('input', { className: 'code', placeholder: 'or paste the code', value: prefill });
   mount(root, el('div', { className: 'view' },
-    el('h1', {}, auto ? 'pairing…' : 'pair a machine'),
-    el('p', { className: 'muted' }, auto ? 'Scanned from a machine — pairing it now.' : 'Run `tr-agent pair` on the machine, then scan its QR or paste the code.'),
-    input, go, status,
-    el('button', { className: 'link', onclick: () => viewMachines(root) }, '← machines')));
-  if (auto && prefill) doPair(); // arrived via QR -> pair straight away
+    el('h1', {}, 'pair a machine'),
+    el('p', { className: 'muted' }, 'Run `tr-agent pair` on the machine, then scan its QR.'),
+    el('button', { className: 'btn', onclick: startScan }, '📷 Scan QR'),
+    input,
+    el('button', { className: 'link', onclick: () => pairCode(input.value) }, 'pair with pasted code'),
+    status,
+    el('button', { className: 'link back', onclick: () => viewMachines(root) }, '← machines')));
 }
 
 function viewTerminal(root, machine) {
@@ -182,37 +237,44 @@ function afterSignIn(root, pendingFrag) {
 
 function viewIdentityGate(root, pendingFrag) {
   const status = el('div', { className: 'status' });
-  const enrolled = hasEnrolledPasskey();
-  const useDev = () => { setOwner(devOwnerKey()); localStorage.setItem('tr_identity_mode', 'dev'); afterSignIn(root, pendingFrag); };
-  const usePasskey = async () => {
-    pk.disabled = true;
-    status.textContent = enrolled ? 'Touch ID / Face ID…' : 'creating your passkey…';
-    try {
-      const k = enrolled ? await signInPasskey() : await registerPasskey();
-      setOwner(k);
-      localStorage.setItem('tr_identity_mode', 'passkey');
-      afterSignIn(root, pendingFrag);
-    } catch (e) {
-      pk.disabled = false;
+  const done = (k, mode) => { setOwner(k); localStorage.setItem('tr_identity_mode', mode); afterSignIn(root, pendingFrag); };
+  const useDev = () => done(devOwnerKey(), 'dev');
+  const busy = (on) => root.querySelectorAll('button').forEach((b) => { b.disabled = on; });
+
+  // Log IN first: a discoverable get() surfaces your iCloud-synced passkey, so
+  // EVERY device derives the SAME owner_id. Only offer Create if login finds none
+  // (creating per-device would mint a different passkey -> a different identity).
+  const create = async () => {
+    busy(true); status.textContent = 'creating your passkey…';
+    try { done(await registerPasskey(), 'passkey'); }
+    catch (e) { busy(false); status.textContent = 'could not create a passkey: ' + (e && e.message || e); }
+  };
+  const login = async () => {
+    busy(true); status.textContent = 'Face ID / Touch ID…';
+    try { done(await signInPasskey(), 'passkey'); }
+    catch (e) {
+      busy(false);
       status.innerHTML = '';
       status.append(
-        el('div', { className: 'muted' }, 'passkey sign-in failed: ' + (e && e.message || e)),
-        el('button', { className: 'link', onclick: useDev }, 'Continue with a local dev key (this device only)'));
+        el('div', { className: 'muted' }, 'No passkey found on this account (' + (e && e.message || e) + ').'),
+        el('button', { className: 'btn', onclick: create }, 'Create a passkey'));
     }
   };
-  const pk = el('button', { className: 'btn', onclick: usePasskey }, enrolled ? 'Sign in with passkey' : 'Create your passkey');
+
   const kids = [
     el('h1', {}, 'terminal-relay'),
-    el('p', { className: 'muted' }, 'Your terminals, on every device — peer-to-peer, end-to-end encrypted. Your identity is a passkey; the relay never sees it.'),
+    el('p', { className: 'muted' }, 'Your terminals, on every device — peer-to-peer, end-to-end encrypted. Log in on any device and your machines appear. The relay never sees your identity.'),
   ];
-  if (passkeySupported && !isLocalhost()) kids.push(pk);
-  if (!passkeySupported || isLocalhost()) {
+  if (passkeySupported && !isLocalhost()) {
+    kids.push(el('button', { className: 'btn', onclick: login }, 'Log in with passkey'));
+    kids.push(el('p', { className: 'muted' }, 'New here? Logging in offers to create one.'));
+  }
+  if (isLocalhost() || !passkeySupported) {
     kids.push(el('button', { className: passkeySupported ? 'link' : 'btn', onclick: useDev },
       isLocalhost() ? 'Continue with a local dev key (localhost)' : 'Continue with a local dev key'));
   }
   kids.push(status);
   mount(root, el('div', { className: 'view' }, ...kids));
-  pk.focus?.();
 }
 
 export function start(root) {
