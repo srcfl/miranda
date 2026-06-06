@@ -47,24 +47,20 @@ export async function registerPasskey() {
   return signInPasskey();
 }
 
-// signInPasskey runs a get() ceremony (Face ID / Touch ID) and derives the key.
+// signInPasskey runs a DISCOVERABLE get() ceremony (Face ID / Touch ID): with no
+// allowCredentials, the platform surfaces the iCloud-synced passkey directly
+// (rather than the cross-device "scan QR / hardware key" fallback that a stale
+// local credential id would trigger), then derives the key from its prf output.
 export async function signInPasskey() {
-  const credId = localStorage.getItem('tr_cred_id');
-  const publicKey = {
+  const assertion = await navigator.credentials.get({ publicKey: {
     challenge: crypto.getRandomValues(new Uint8Array(32)),
     rpId: RP_ID,
     userVerification: 'required',
-  };
-  if (credId) {
-    publicKey.allowCredentials = [{ type: 'public-key', id: unb64url(credId) }];
-    publicKey.extensions = { prf: { evalByCredential: { [credId]: { first: SALT } } } };
-  } else {
-    publicKey.extensions = { prf: { eval: { first: SALT } } }; // synced 2nd device, no local id yet
-  }
-  const assertion = await navigator.credentials.get({ publicKey });
+    extensions: { prf: { eval: { first: SALT } } },
+  } });
   const prf = assertion.getClientExtensionResults().prf?.results?.first;
   if (!prf) throw new Error('NO_PRF');
-  if (!credId) localStorage.setItem('tr_cred_id', b64url(assertion.rawId));
+  localStorage.setItem('tr_cred_id', b64url(assertion.rawId));
   return deriveOwnerKey(new Uint8Array(prf));
 }
 
