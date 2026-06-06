@@ -16,6 +16,7 @@ import (
 	"github.com/srcful/terminal-relay/go/internal/defaults"
 	"github.com/srcful/terminal-relay/go/internal/pairing"
 	"github.com/srcful/terminal-relay/go/internal/peer"
+	"github.com/srcful/terminal-relay/go/internal/sas"
 )
 
 func defaultDir() string {
@@ -123,7 +124,7 @@ func cmdPair(args []string) {
 	}
 	defer closeConn()
 
-	info, err := pairing.RunInitiator(ctx, mc, token, idn.OwnerPub())
+	info, binding, err := pairing.RunInitiator(ctx, mc, token, idn.OwnerPub())
 	if err != nil {
 		fatal(err)
 	}
@@ -132,6 +133,7 @@ func cmdPair(args []string) {
 		fatal(err)
 	}
 	fmt.Printf("✓ paired machine %q — try: trm attach %s\n", m.Name, m.Name)
+	fmt.Printf("  safety number: %s  (must match the machine's)\n", sas.FromBinding(binding))
 }
 
 func cmdAddMachine(args []string) {

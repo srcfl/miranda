@@ -19,6 +19,7 @@ import (
 	"github.com/srcful/terminal-relay/go/internal/defaults"
 	"github.com/srcful/terminal-relay/go/internal/pairing"
 	"github.com/srcful/terminal-relay/go/internal/peer"
+	"github.com/srcful/terminal-relay/go/internal/sas"
 )
 
 func defaultDir() string {
@@ -112,7 +113,7 @@ func cmdPair(args []string) {
 	defer closeConn()
 
 	info := pairing.AgentInfo{HostPubHex: cfg.HostPubHex, MachineID: cfg.MachineID, Name: cfg.MachineName}
-	ownerPub, err := pairing.RunResponder(ctx, mc, token, info)
+	ownerPub, binding, err := pairing.RunResponder(ctx, mc, token, info)
 	if err != nil {
 		fatal(err)
 	}
@@ -121,6 +122,7 @@ func cmdPair(args []string) {
 		fatal(err)
 	}
 	fmt.Printf("✓ paired — trusting owner %s…\n", ownerHex[:16])
+	fmt.Printf("  safety number: %s  (must match the client's)\n", sas.FromBinding(binding))
 }
 
 func cmdUp(args []string) {

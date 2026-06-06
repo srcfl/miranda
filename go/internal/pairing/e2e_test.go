@@ -35,7 +35,7 @@ func TestPairThroughSignalingServer(t *testing.T) {
 			return
 		}
 		defer closeConn()
-		op, err := pairing.RunResponder(ctx, mc, token, info)
+		op, _, err := pairing.RunResponder(ctx, mc, token, info)
 		if err == nil {
 			gotOwner <- op
 		}
@@ -52,7 +52,7 @@ func TestPairThroughSignalingServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closeConn()
-	got, err := pairing.RunInitiator(ctx, mc, tok, ownerPub)
+	got, _, err := pairing.RunInitiator(ctx, mc, tok, ownerPub)
 	if err != nil {
 		t.Fatalf("client pair: %v", err)
 	}

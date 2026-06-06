@@ -35,55 +35,58 @@ func newHandshake(initiator bool, token []byte) (*noise.HandshakeState, error) {
 	})
 }
 
-// RunInitiator is the client side: it sends ownerPub and returns the agent's info.
-func RunInitiator(ctx context.Context, mc peer.MsgConn, token, ownerPub []byte) (*AgentInfo, error) {
+// RunInitiator is the client side: it sends ownerPub and returns the agent's
+// info plus the Noise channel binding (a transcript hash identical on both ends
+// iff there was no MITM — use sas.FromBinding to show a safety number).
+func RunInitiator(ctx context.Context, mc peer.MsgConn, token, ownerPub []byte) (*AgentInfo, []byte, error) {
 	hs, err := newHandshake(true, token)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	msg1, _, _, err := hs.WriteMessage(nil, ownerPub)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := mc.Send(msg1); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	msg2, err := mc.Recv(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	payload, _, _, err := hs.ReadMessage(nil, msg2)
 	if err != nil {
-		return nil, fmt.Errorf("pairing handshake failed (wrong code?): %w", err)
+		return nil, nil, fmt.Errorf("pairing handshake failed (wrong code?): %w", err)
 	}
 	var info AgentInfo
 	if err := json.Unmarshal(payload, &info); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return &info, nil
+	return &info, hs.ChannelBinding(), nil
 }
 
-// RunResponder is the agent side: it returns the client's owner key and sends info.
-func RunResponder(ctx context.Context, mc peer.MsgConn, token []byte, info AgentInfo) ([]byte, error) {
+// RunResponder is the agent side: it returns the client's owner key plus the
+// Noise channel binding (see RunInitiator).
+func RunResponder(ctx context.Context, mc peer.MsgConn, token []byte, info AgentInfo) ([]byte, []byte, error) {
 	hs, err := newHandshake(false, token)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	msg1, err := mc.Recv(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	ownerPub, _, _, err := hs.ReadMessage(nil, msg1)
 	if err != nil {
-		return nil, fmt.Errorf("pairing handshake failed (wrong code?): %w", err)
+		return nil, nil, fmt.Errorf("pairing handshake failed (wrong code?): %w", err)
 	}
 	infoJSON, _ := json.Marshal(info)
 	msg2, _, _, err := hs.WriteMessage(nil, infoJSON)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := mc.Send(msg2); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return ownerPub, nil
+	return ownerPub, hs.ChannelBinding(), nil
 }

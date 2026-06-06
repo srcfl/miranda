@@ -83,6 +83,9 @@ the network is hostile — provided the trust roots below are intact.
   never terminal bytes.
 - **Watch the wire.** The data plane is a direct DataChannel; the relay never
   receives it. `deploy/netsim` reproduces real NAT scenarios locally.
+- **Compare the safety number at pairing.** `tr-agent pair` and `trm pair` each
+  print a `safety number: xxxx-xxxx-xxxx-xxxx`. If both ends show the same value,
+  you have visibly confirmed there is no MITM — even if the pairing token leaked.
 
 ## Roadmap to full, independent trust
 
@@ -92,10 +95,12 @@ These are the steps that let *anyone* — not just us — trust the relay-free m
 - [ ] **Signed, checksummed releases** (and an installer that verifies them — never
       trust binaries from the relay).
 - [ ] **Reproducible builds** (the binary you run matches the audited source).
-- [ ] **Verifiable session authenticity (SAS).** Show a short "safety number"
-      derived from the Noise handshake hash on both ends; if they match, you have
-      visibly confirmed there is no MITM (in addition to the cryptographic
-      guarantee). Optional, for the paranoid.
+- [x] **Verifiable pairing authenticity (safety number).** `tr-agent pair` and
+      `trm pair` each print a 64-bit **safety number** derived from the Noise
+      handshake transcript hash. With no MITM both ends show the same number;
+      a man-in-the-middle (e.g. with a leaked token) produces two different
+      handshakes → mismatched numbers, which you catch by eye. (Session-time SAS
+      on `attach` is a planned extension.)
 - [ ] **Independent third-party security audit** of the crypto and protocol.
 - [ ] **Metadata minimization** (e.g. rotating/blinded `owner_id`s) where feasible.
 
