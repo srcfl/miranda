@@ -19,6 +19,21 @@ type Config struct {
 	MachineName  string   `json:"machine_name"`  // human label (travels E2E only)
 	SignalURL    string   `json:"signal_url"`    // e.g. http://localhost:8443
 	PairedOwners []string `json:"paired_owners"` // hex owner pubkeys
+	Dir          string   `json:"-"`             // source directory (for hot-reloading owners)
+}
+
+// ReloadOwners reads the current paired-owner set from dir's config.json. Used by
+// the running agent to pick up newly-paired owners without a restart.
+func ReloadOwners(dir string) ([]string, error) {
+	data, err := os.ReadFile(configPath(dir))
+	if err != nil {
+		return nil, err
+	}
+	var c Config
+	if err := json.Unmarshal(data, &c); err != nil {
+		return nil, err
+	}
+	return c.PairedOwners, nil
 }
 
 func configPath(dir string) string { return filepath.Join(dir, "config.json") }
@@ -59,6 +74,7 @@ func LoadOrInit(dir, machineName, signalURL string) (*Config, error) {
 	if err := save(dir, cfg); err != nil {
 		return nil, err
 	}
+	cfg.Dir = dir
 	return cfg, nil
 }
 

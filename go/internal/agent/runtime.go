@@ -23,13 +23,14 @@ type Runtime struct {
 	launch []string         // shell command, e.g. {"tmux","new","-A","-s","main"} or {"sh"}
 	ice    []peer.ICEServer // STUN/TURN servers; nil for local (host candidates)
 
-	baseBackoff time.Duration       // first reconnect delay (grows on repeated dial failures)
-	maxBackoff  time.Duration       // cap
-	Logf        func(string, ...any) // optional reconnect/status log (set by the CLI)
+	baseBackoff    time.Duration        // first reconnect delay (grows on repeated dial failures)
+	maxBackoff     time.Duration        // cap
+	reloadInterval time.Duration        // how often to re-read config for newly-paired owners
+	Logf           func(string, ...any) // optional reconnect/status log (set by the CLI)
 }
 
 func NewRuntime(cfg *Config, launch []string, ice []peer.ICEServer) *Runtime {
-	return &Runtime{cfg: cfg, launch: launch, ice: ice, baseBackoff: time.Second, maxBackoff: 30 * time.Second}
+	return &Runtime{cfg: cfg, launch: launch, ice: ice, baseBackoff: time.Second, maxBackoff: 30 * time.Second, reloadInterval: 3 * time.Second}
 }
 
 // Up keeps the agent registered on the signaling channel for EVERY paired owner
@@ -38,21 +39,45 @@ func NewRuntime(cfg *Config, launch []string, ice []peer.ICEServer) *Runtime {
 // that RECONNECTS with backoff if it drops (Cloudflare idle timeout, relay
 // restart, network blip). Returns only when ctx is cancelled or no owner paired.
 func (rt *Runtime) Up(ctx context.Context) error {
-	owners := rt.cfg.PairedOwners
-	if len(owners) == 0 {
+	if len(rt.cfg.PairedOwners) == 0 {
 		return errNoOwner
 	}
-	var wg sync.WaitGroup
-	for _, owner := range owners {
-		owner := owner
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			rt.serveOwner(ctx, owner)
-		}()
+	var mu sync.Mutex
+	served := map[string]bool{}
+	start := func(owner string) {
+		mu.Lock()
+		defer mu.Unlock()
+		if served[owner] {
+			return
+		}
+		served[owner] = true
+		if rt.Logf != nil {
+			rt.Logf("serving owner %s", short(owner))
+		}
+		go rt.serveOwner(ctx, owner)
 	}
-	wg.Wait()
-	return nil
+	for _, o := range rt.cfg.PairedOwners {
+		start(o)
+	}
+	// Hot-reload: pick up owners added by `tr-agent pair` WITHOUT a restart, so
+	// pairing a new device (or a new passkey identity) just works.
+	t := time.NewTicker(rt.reloadInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-t.C:
+			if rt.cfg.Dir == "" {
+				continue
+			}
+			if owners, err := ReloadOwners(rt.cfg.Dir); err == nil {
+				for _, o := range owners {
+					start(o)
+				}
+			}
+		}
+	}
 }
 
 // serveOwner maintains one owner's registration, reconnecting with backoff.

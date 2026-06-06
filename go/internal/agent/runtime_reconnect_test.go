@@ -89,6 +89,61 @@ func TestUpReconnectsAfterDrop(t *testing.T) {
 	}
 }
 
+// Pairing a new device/identity must take effect WITHOUT restarting the agent:
+// `tr-agent up` should pick up an owner added to config.json at runtime.
+func TestUpHotReloadsNewlyPairedOwner(t *testing.T) {
+	var mu sync.Mutex
+	seen := map[string]bool{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen[r.URL.Query().Get("owner_id")] = true
+		mu.Unlock()
+		if c, err := websocket.Accept(w, r, nil); err == nil {
+			_, _, _ = c.Read(r.Context())
+		}
+	}))
+	defer srv.Close()
+	saw := func(owner string) bool { mu.Lock(); defer mu.Unlock(); return seen[owner] }
+	waitFor := func(owner string, d time.Duration) bool {
+		deadline := time.Now().Add(d)
+		for time.Now().Before(deadline) {
+			if saw(owner) {
+				return true
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		return false
+	}
+
+	dir := t.TempDir()
+	if _, err := LoadOrInit(dir, "m", srv.URL); err != nil {
+		t.Fatal(err)
+	}
+	if err := PinOwner(dir, "aaaaaaaa"); err != nil { // first device
+		t.Fatal(err)
+	}
+	cfg, err := LoadOrInit(dir, "m", srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt := NewRuntime(cfg, []string{"sh"}, nil)
+	rt.baseBackoff, rt.maxBackoff, rt.reloadInterval = 10*time.Millisecond, 10*time.Millisecond, 30*time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	go func() { _ = rt.Up(ctx) }()
+
+	if !waitFor("aaaaaaaa", 700*time.Millisecond) {
+		t.Fatal("agent never registered the initial owner")
+	}
+	if err := PinOwner(dir, "bbbbbbbb"); err != nil { // pair a NEW device at runtime
+		t.Fatal(err)
+	}
+	if !waitFor("bbbbbbbb", 1*time.Second) {
+		t.Fatal("agent did not hot-reload the newly-paired owner")
+	}
+}
+
 // Up returns cleanly (nil) when the context is cancelled, not an error.
 func TestUpReturnsNilOnCancel(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
