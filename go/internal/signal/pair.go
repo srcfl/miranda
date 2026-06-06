@@ -3,12 +3,15 @@ package signal
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sync"
 	"time"
 
 	"github.com/coder/websocket"
 )
+
+var errPairCapacity = errors.New("pair capacity reached")
 
 // pairWaiter is a connection waiting in a room for its partner. done is a shared
 // completion signal: it is closed exactly once when the bridge ends, so the
@@ -34,13 +37,17 @@ func newPairRooms() *pairRooms { return &pairRooms{waiting: map[string]*pairWait
 // The first arrival waits; the second hands itself to the first and returns
 // immediately. The driver owns teardown of BOTH conns and closes done when the
 // bridge ends, so the non-driving handler is released too.
-func (p *pairRooms) rendezvous(room string, c *websocket.Conn) (*websocket.Conn, chan struct{}, bool) {
+func (p *pairRooms) rendezvous(room string, c *websocket.Conn, maxRooms int) (*websocket.Conn, chan struct{}, bool, error) {
 	p.mu.Lock()
 	if w, ok := p.waiting[room]; ok {
 		delete(p.waiting, room)
 		p.mu.Unlock()
 		w.partner <- c
-		return w.conn, w.done, false // partner drives; we wait on the shared done
+		return w.conn, w.done, false, nil // partner drives; we wait on the shared done
+	}
+	if maxRooms > 0 && len(p.waiting) >= maxRooms {
+		p.mu.Unlock()
+		return nil, nil, false, errPairCapacity
 	}
 	w := &pairWaiter{conn: c, partner: make(chan *websocket.Conn, 1), done: make(chan struct{})}
 	p.waiting[room] = w
@@ -48,19 +55,19 @@ func (p *pairRooms) rendezvous(room string, c *websocket.Conn) (*websocket.Conn,
 
 	select {
 	case other := <-w.partner:
-		return other, w.done, true // we drive the bridge
+		return other, w.done, true, nil // we drive the bridge
 	case <-time.After(2 * time.Minute):
 		p.mu.Lock()
 		if p.waiting[room] == w {
 			delete(p.waiting, room)
 			p.mu.Unlock()
-			return nil, w.done, false
+			return nil, w.done, false, nil
 		}
 		// A second party already claimed this room (it deleted us from the map
 		// and sent on w.partner) in the same instant the timer fired. Drive the
 		// bridge for it instead of orphaning it on <-done.
 		p.mu.Unlock()
-		return <-w.partner, w.done, true
+		return <-w.partner, w.done, true, nil
 	}
 }
 
@@ -77,7 +84,11 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	other, done, drive := s.pair.rendezvous(room, c)
+	other, done, drive, err := s.pair.rendezvous(room, c, s.maxPairRooms)
+	if err != nil {
+		c.Close(websocket.StatusTryAgainLater, err.Error())
+		return
+	}
 	if other == nil {
 		c.Close(websocket.StatusGoingAway, "pair timeout")
 		return

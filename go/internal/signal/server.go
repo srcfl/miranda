@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"sync"
 	"time"
@@ -22,6 +23,19 @@ const sendTimeout = 2 * time.Second
 // flushTimeout bounds the graceful drain of queued messages (e.g. a final
 // TypeError "machine offline") before the socket is closed.
 const flushTimeout = 2 * time.Second
+
+const (
+	maxSignalMessageBytes   = 256 << 10
+	defaultMaxAgentSessions = 128
+	defaultMaxPairRooms     = 1024
+	capacityReason          = "server capacity reached"
+)
+
+var (
+	errSignalTooLarge = errors.New("signal message too large")
+	errAgentGone      = errors.New("agent gone")
+	errAgentCapacity  = errors.New(capacityReason)
+)
 
 // acceptOpts allows WebSocket connections from any origin. Browsers send an
 // Origin header (e.g. https://term.sourceful-labs.net connecting to
@@ -44,6 +58,9 @@ type Server struct {
 	// creds for this URL. The secret is shared with coturn only — never shipped.
 	TURNSecret string
 	TURNURL    string
+
+	maxAgentSessions int
+	maxPairRooms     int
 }
 
 // agentConn is one agent control socket. It owns the set of browser sessions
@@ -70,16 +87,19 @@ func newAgentConn() *agentConn {
 // bind attaches a browser session to this agent. Returns false if the agent has
 // already been torn down (its socket is gone / it was replaced), in which case
 // the caller must treat the machine as offline.
-func (ac *agentConn) bind(sess string, bc *browserConn) bool {
+func (ac *agentConn) bind(sess string, bc *browserConn, maxSessions int) error {
 	ac.mu.Lock()
 	defer ac.mu.Unlock()
 	select {
 	case <-ac.done:
-		return false
+		return errAgentGone
 	default:
 	}
+	if maxSessions > 0 && len(ac.sessions) >= maxSessions {
+		return errAgentCapacity
+	}
 	ac.sessions[sess] = bc
-	return true
+	return nil
 }
 
 func (ac *agentConn) unbind(sess string) {
@@ -141,7 +161,13 @@ func (bc *browserConn) fail(reason string) {
 func (bc *browserConn) close() { bc.once.Do(func() { close(bc.done) }) }
 
 func New() *Server {
-	return &Server{agents: map[string]*agentConn{}, sessions: map[string]*browserConn{}, pair: newPairRooms()}
+	return &Server{
+		agents:           map[string]*agentConn{},
+		sessions:         map[string]*browserConn{},
+		pair:             newPairRooms(),
+		maxAgentSessions: defaultMaxAgentSessions,
+		maxPairRooms:     defaultMaxPairRooms,
+	}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -162,6 +188,22 @@ func newSessionID() string {
 	return hex.EncodeToString(b)
 }
 
+func acceptSignal(w http.ResponseWriter, r *http.Request) (*websocket.Conn, error) {
+	c, err := websocket.Accept(w, r, acceptOpts)
+	if err != nil {
+		return nil, err
+	}
+	c.SetReadLimit(maxSignalMessageBytes)
+	return c, nil
+}
+
+func decodeInboundSignal(data []byte) (SignalMsg, error) {
+	if len(data) > maxSignalMessageBytes {
+		return SignalMsg{}, errSignalTooLarge
+	}
+	return decodeSignal(data)
+}
+
 func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 	owner := r.URL.Query().Get("owner_id")
 	machine := r.URL.Query().Get("machine_id")
@@ -169,7 +211,7 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing owner_id/machine_id", http.StatusBadRequest)
 		return
 	}
-	c, err := websocket.Accept(w, r, acceptOpts)
+	c, err := acceptSignal(w, r)
 	if err != nil {
 		return
 	}
@@ -214,7 +256,7 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 				ac.teardown() // agent socket died -> tear down bound browsers
 				return
 			}
-			m, err := decodeSignal(data)
+			m, err := decodeInboundSignal(data)
 			if err != nil {
 				continue
 			}
@@ -240,7 +282,7 @@ func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing owner_id/machine_id", http.StatusBadRequest)
 		return
 	}
-	c, err := websocket.Accept(w, r, acceptOpts)
+	c, err := acceptSignal(w, r)
 	if err != nil {
 		return
 	}
@@ -253,14 +295,26 @@ func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
 	ac := s.agents[k]
 	s.mu.Unlock()
 	if ac == nil {
-		data, _ := SignalMsg{Type: TypeError, Reason: "machine offline"}.encode()
-		_ = c.Write(readCtx, websocket.MessageText, data)
-		c.Close(websocket.StatusGoingAway, "machine offline")
+		writeSignalErrorAndClose(readCtx, c, "machine offline", websocket.StatusGoingAway)
 		return
 	}
 
 	sess := newSessionID()
 	bc := newBrowserConn()
+
+	// Bind this session to the agent so the agent's teardown (death or
+	// re-registration) tells us the machine went offline and shuts us down.
+	if err := ac.bind(sess, bc, s.maxAgentSessions); err != nil {
+		reason := "machine offline"
+		code := websocket.StatusGoingAway
+		if err == errAgentCapacity {
+			reason = capacityReason
+			code = websocket.StatusTryAgainLater
+		}
+		writeSignalErrorAndClose(readCtx, c, reason, code)
+		return
+	}
+
 	s.mu.Lock()
 	s.sessions[sess] = bc
 	s.mu.Unlock()
@@ -271,15 +325,6 @@ func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
 		ac.unbind(sess)
 		bc.close()
 	}()
-
-	// Bind this session to the agent so the agent's teardown (death or
-	// re-registration) tells us the machine went offline and shuts us down.
-	if !ac.bind(sess, bc) {
-		data, _ := SignalMsg{Type: TypeError, Reason: "machine offline"}.encode()
-		_ = c.Write(readCtx, websocket.MessageText, data)
-		c.Close(websocket.StatusGoingAway, "machine offline")
-		return
-	}
 
 	// Notify the agent that a browser wants it. Never a bare blocking send: bound
 	// to the agent's done and a timeout so a wedged agent can't hang this attach.
@@ -297,7 +342,7 @@ func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
 				bc.close()
 				return
 			}
-			m, err := decodeSignal(data)
+			m, err := decodeInboundSignal(data)
 			if err != nil {
 				continue
 			}
@@ -323,6 +368,12 @@ func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
 
 	// Writer: drain bc.out to the browser until bc.done (or r.Context()) fires.
 	writeUntil(r.Context(), bc.done, c, bc.out, SignalMsg{})
+}
+
+func writeSignalErrorAndClose(ctx context.Context, c *websocket.Conn, reason string, code websocket.StatusCode) {
+	data, _ := SignalMsg{Type: TypeError, Reason: reason}.encode()
+	_ = c.Write(ctx, websocket.MessageText, data)
+	c.Close(code, reason)
 }
 
 // agentSend hands a message to an agent's writer without blocking forever. It
