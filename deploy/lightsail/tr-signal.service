@@ -4,7 +4,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/tr-signal --addr :80
+ExecStart=/usr/local/bin/tr-signal --addr :80 --webroot /opt/tr-web
 Restart=always
 RestartSec=2
 User=trsignal
