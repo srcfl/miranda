@@ -41,7 +41,7 @@ func main() {
 // (see SECURITY.md, "the code you run").
 func withStatic(sig http.Handler, dir string) http.Handler {
 	fs := http.FileServer(http.Dir(dir))
-	signalPaths := map[string]bool{"/agent/signal": true, "/attach": true, "/pair": true, "/healthz": true}
+	signalPaths := map[string]bool{"/agent/signal": true, "/attach": true, "/pair": true, "/turn-credentials": true, "/healthz": true}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if signalPaths[r.URL.Path] {
 			sig.ServeHTTP(w, r)
