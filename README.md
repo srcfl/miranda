@@ -1,113 +1,152 @@
 # terminal-relay
 
-A terminal you reach from any browser by authenticating with a passkey — like
-SSH, without thinking SSH. End-to-end encrypted, **peer-to-peer**, persistent
-tmux sessions, passkey-derived identity synced across your devices.
+> **Your terminals, on every machine you own, reachable from anywhere — with no
+> SSH keys to juggle, no ports to forward, and a relay you don't have to trust.**
+> Mostly harmless. Definitely magic.
 
-**You do not have to trust the relay.** Terminal data flows directly between your
-devices, end-to-end encrypted; the relay only brokers the connection and sees
-ciphertext + routing metadata. The exact, falsifiable trust model — what the
-relay can and cannot do, what you must trust, and how to verify it — is in
-[`SECURITY.md`](SECURITY.md). That trust story is the core of the project.
+---
 
-See `docs/superpowers/specs/` for the design and `docs/superpowers/plans/` for
-the implementation roadmap.
+## The Why (or: a story about juggling)
 
-## Crypto core (Plan 1)
+This was born out of frustration, which — as the Guide notes — is how most useful
+things in the universe come to be, the rest being born out of either boredom or a
+profound misunderstanding of the laws of thermodynamics.
 
-- `go/internal/noise` — `Noise_KK_25519_ChaChaPoly_SHA256` over `flynn/noise`.
-- `web/src/noise` — the same handshake, from-spec on `@noble`.
-- `go/internal/identity` + `web/src/identity` — `prf` → X25519 owner key.
-- `testdata/` — deterministic vectors certifying Go↔JS interop.
+The specific frustration was this: there is, on any given day, **a small herd of
+Claude Code sessions** scattered across a laptop, an office Mac mini, and a Linux
+box that exists mainly to be warm. One of them is doing the interesting thing. The
+others are also doing the interesting thing, somewhere, probably, and getting to
+the right one involved an amount of `ssh`-ing, tunnel-poking, and quiet swearing
+that is not, strictly speaking, *magic*.
 
-Run the tests:
+A few stubborn convictions fell out of that:
 
-    cd go && go test ./...
-    cd web && npm install && npm test
+- **I love my terminal and I am not leaving.** The terminal isn't a fallback for
+  when the GUI breaks. It's the best window we've got. I want to stay in it.
+- **The tool must not belong to one robot.** Claude Code, Codex, whatever comes
+  next — they're all just things that run *in a terminal*. So don't build for the
+  robot. Build for the window. The terminal already is the universal interface;
+  it has been since before graphical anything, and (Lindy says) will be long after.
+- **Don't reinvent the engine.** `tmux` is good. `tmux` has been good since
+  approximately the dawn of time and will be good when we are all dust. We are not
+  going to out-clever forty years of session-multiplexing on a Tuesday. We keep
+  the proven engine and build *around* it.
+- **It should feel like magic** — open a thing on any device, and there are your
+  machines, alive, exactly as you left them. The reaction we're after is the one
+  where you tilt your head and go *"…wait, why has nobody done this already?"*
+- **Modern, not antique.** No password files, no copied keys, no "paste this 4096-bit
+  blob into authorized_keys." **Passkeys.** Real end-to-end crypto. The newest safe
+  web tech, used properly.
+- **As serverless as physics allows.** There's a relay, because two machines behind
+  two NATs need an introduction. But it's a *blind matchmaker* — it never sees your
+  traffic, and you never have to trust it (see below). One day the relay itself
+  could be decentralized. The Guide files that under *Improbable, But Not As
+  Improbable As You'd Think*.
 
-## Signaling server (Plan 2)
+So: **SSH, without thinking about SSH.** A terminal that exists on every device.
+Peer-to-peer, end-to-end encrypted, passkey-shaped, tmux-powered. The number we
+were aiming for, naturally, was 42.
 
-`go/cmd/tr-signal` — brokers the WebRTC handshake (SDP offer/answer) between a
-browser and an agent matched by `{owner_id, machine_id}`. It carries **no terminal
-data**: terminal bytes flow peer-to-peer over a WebRTC DataChannel (strict P2P,
-STUN-only, no TURN), with the Plan-1 Noise channel running inside. Once the
-DataChannel is up, the server is out of the loop.
+---
 
-    cd go && go run ./cmd/tr-signal --addr :8443
+## Don't Panic (the trust bit, which is the whole point)
 
-Endpoints: `/agent/signal`, `/attach` (both WSS), `/healthz`.
+There's a relay. **You don't have to trust it.**
 
-## Agent + local dev (Plan 3)
+Your terminal traffic flows **peer-to-peer**, end-to-end encrypted (Noise `KK`).
+The relay only introduces the two ends and then gets out of the way — it sees
+ciphertext and routing metadata, never your keystrokes, never your output, and it
+*cannot* impersonate you or your machines. At pairing time both ends show a
+**safety number**; if they match, you've seen with your own eyes that no one is in
+the middle.
 
-`go/cmd/tr-agent` — the machine side. It registers on `tr-signal`, accepts an
-attach, opens a P2P WebRTC DataChannel, runs the Noise `KK` responder, and bridges
-it to a real PTY. Production launches `tmux new -A -s main` (persistence; install
-with `brew install tmux`); `--shell sh` runs a plain shell.
+The exact, falsifiable model — what the relay can and can't do, what you *do* have
+to trust, and how to verify all of it — lives in **[`SECURITY.md`](SECURITY.md)**.
+That document is not an afterthought. It is the project.
 
-Local loop:
+---
 
-    make build
-    ./bin/tr-signal --addr :8443 &
-    ./bin/tr-agent enroll --signal http://localhost:8443
-    ./bin/tr-agent pair-dev --owner-pub <owner-hex>   # dev pre-pin (QR pairing is Plan 4)
-    ./bin/tr-agent up --shell sh
+## Status (honest, per the trust ethos)
 
-The full path — browser-stand-in → `tr-signal` → real shell over P2P — is proven
-hermetically by `go test ./internal/agent/ -run TestEndToEnd`.
+- ✅ **Works today:** the `trm` CLI — pair a machine with one code/QR, attach to a
+  real shell over P2P, multiplex across all your machines, persistent `tmux`
+  sessions. A hosted relay is live at `relay.sourceful-labs.net`.
+- 🚧 **Coming:** the browser client (passkeys + WebRTC + xterm.js → from your
+  phone), one-line install, signed releases, a third-party audit, and (one day) a
+  decentralized relay.
 
-Note: interactive QR/token pairing is built in Plan 4 alongside the browser.
+## Quickstart
 
-## CLI client `trm` (Plan 4)
+```bash
+# build the CLIs (Go 1.26+; tmux for persistence)
+make install                 # -> ~/.local/bin: trm, tr-agent, tr-signal
 
-`go/cmd/trm` — `trm attach <machine>` opens a P2P terminal to one of your machines
-from your own terminal. (Named `trm` — "terminal relay multiplexer" — to avoid the
-collision with the POSIX `tr` utility.) Identity is a local owner key
-(`~/.terminal-relay/owner.json`); machines are pinned by host key in `machines.json`.
+# on a machine you want to reach:
+tr-agent pair               # prints a pairing code + QR, then waits
+tr-agent up &               # run the agent (persistent tmux sessions)
 
-Install the CLIs onto your PATH with `make install` (→ `~/.local/bin`), or run them
-from `./bin/`.
+# on your client (laptop, another machine):
+trm pair <code>             # ...the code from above; compare the safety numbers
+trm attach <machine>        # you're in. a real shell, over P2P.
+```
 
-Local loop (all on one Mac):
+Several machines at once — the cross-machine multiplexer:
 
-    make build
-    ./bin/tr-signal --addr :8443 &
-    # machine side:
-    ./bin/tr-agent enroll --signal http://localhost:8443      # prints machine_id + host_pub
-    ./bin/trm keygen                                          # prints owner pub
-    ./bin/tr-agent pair-dev --owner-pub <owner-pub>           # machine trusts you
-    ./bin/tr-agent up --shell sh &                            # (or tmux for persistence)
-    # client side:
-    ./bin/trm add-machine --name box --id <machine_id> --host-pub <host_pub> --signal http://localhost:8443
-    ./bin/trm attach box                                     # real shell over P2P
+```bash
+trm attach laptop macmini linux
+# Ctrl-O then 1-9 / n / q to switch machines (change the key with --prefix)
+```
 
-The full client path is proven hermetically by
-`go test ./internal/client/ -run TestEndToEnd`.
+Everything defaults to our relay + STUN, so no flags are needed. Point at your own
+infrastructure with `--signal` / `TR_SIGNAL` and `--stun` / `TR_STUN`.
 
-### Pairing (Plan 5)
+## How it works (the short version)
 
-One tap instead of copying keys by hand:
+```
+  your client            relay (blind matchmaker)         your machine
+  ┌───────────┐  WSS: who/where (SDP)  ┌────────┐  WSS   ┌──────────────┐
+  │ trm        │ ─────────────────────▶│ signal │◀────── │ tr-agent      │
+  │ + Noise    │ ◀─────────────────────│no data │ ─────▶ │ + Noise + tmux│
+  └─────┬──────┘                        └────────┘        └──────┬───────┘
+        └════════ WebRTC DataChannel (direct P2P) ═══════════════┘
+                  Noise KK runs INSIDE it — the relay only sees ciphertext
+```
 
-    # on the machine:
-    tr-agent pair --signal http://localhost:8443      # prints a code + QR, then waits
-    # on the client:
-    trm pair <code>                                   # done — machine added
+- **Identity** is a passkey-derived key (browser) or a local key (CLI). The relay
+  never holds your private key.
+- **Pairing** uses a one-time token (the QR/code) as the PSK of a Noise `NNpsk0`
+  handshake; the relay only ever sees `hash(token)`.
+- **Per machine:** `tmux` — persistence, windows, panes; the Lindy-approved engine.
+- **Across machines:** the `trm` client switches focus. tmux owns a machine's
+  windows; `trm` owns *which machine*. No tmux-in-tmux.
 
-Under the hood a one-time token is the PSK of an NNpsk0 handshake brokered (blind)
-through `tr-signal` by `roomID = H(token)`; the two sides exchange and pin their
-static keys. The signaling server never sees the token or any key.
+## Repo layout
 
-### Multi-machine (Plan 4b)
+| Path | What |
+|---|---|
+| `go/internal/noise` | Noise `KK` (Go + JS interop vectors) |
+| `go/internal/pairing` | NNpsk0 one-tap pairing + safety number |
+| `go/internal/signal` | the blind signaling/matchmaking server |
+| `go/internal/peer` | WebRTC P2P DataChannel glue |
+| `go/internal/agent`, `go/cmd/tr-agent` | the machine-side agent |
+| `go/internal/client`, `go/cmd/trm` | the `trm` CLI multiplexer |
+| `deploy/lightsail` | how the hosted relay is deployed |
+| `deploy/netsim` | Docker harness that reproduces real NAT traversal |
+| `docs/superpowers/` | design spec + implementation plans |
 
-`trm attach <m1> <m2> ...` attaches several machines at once and multiplexes them
-onto your terminal — one in focus, the rest live in the background. Switch with the
-prefix key **Ctrl-O** (layout-independent; change it with `--prefix`, e.g.
-`--prefix ctrl-a`) then:
+## Build & test
 
-- `1`–`9` — focus that machine
-- `n` — next machine
-- `q` — quit (detach all)
-- `Ctrl-O` again — send a literal Ctrl-O to the focused machine
+```bash
+cd go && go test ./...          # all green; -race clean
+cd deploy/netsim && ./run.sh    # NAT traversal, locally (TURN=1 for the relay path)
+```
 
-Each machine keeps its own tmux (windows/panes + persistence); this layer only
-chooses which machine is in focus. Switching clears the screen and nudges the
-focused machine's tmux to redraw.
+## License
+
+MIT — see [`LICENSE`](LICENSE).
+
+---
+
+*The Guide also says, of the terminal: "It is the only known interface in the
+galaxy that has never once been improved by adding a second monitor."* That last
+part may be apocryphal.
