@@ -49,8 +49,8 @@ func TestTURNCredentials(t *testing.T) {
 		t.Fatalf("username should be a future expiry, got %q", c.Username)
 	}
 	expiry := time.Unix(exp, 0)
-	if expiry.Before(time.Now().Add(9*time.Minute)) || expiry.After(time.Now().Add(11*time.Minute)) {
-		t.Fatalf("username expiry should be about 10m out, got %s", expiry)
+	if expiry.Before(time.Now().Add(turnTTL-time.Minute)) || expiry.After(time.Now().Add(turnTTL+time.Minute)) {
+		t.Fatalf("username expiry should be ~turnTTL (%v) out, got %s", turnTTL, expiry)
 	}
 	// password = base64(HMAC-SHA1(secret, username)) — what coturn will verify
 	mac := hmac.New(sha1.New, []byte("shared-with-coturn"))
