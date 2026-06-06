@@ -10,6 +10,7 @@
     "@noble/ciphers": "^1.2.0",
     "@noble/curves": "^1.8.0",
     "@noble/hashes": "^1.7.0",
+    "@xterm/addon-fit": "^0.10.0",
     "@xterm/xterm": "^5.5.0",
     "jsqr": "^1.4.0"
   }

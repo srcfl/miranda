@@ -4,6 +4,7 @@ import { HandshakeKK } from './noise/noise-kk.js';
 import { encodeData, encodeResize, decodeFrame, FRAME_DATA } from './noise/frame.js';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 import { Terminal } from '@xterm/xterm';
+import { FitAddon } from '@xterm/addon-fit';
 import { listMachines, addMachine } from './store.js';
 import { pairWithCode } from './pair.js';
 import { confirmPairingSafety, machineAfterConfirmedPairing, pendingPairingConfirmation } from './pairing/confirm.js';
@@ -47,7 +48,12 @@ export async function attach(machine, termEl) {
   const ownerHex = bytesToHex(owner.pub);
 
   const term = new Terminal({ fontSize: 13, cursorBlink: true, theme: { background: '#0b0e14' } });
+  const fitAddon = new FitAddon();
+  term.loadAddon(fitAddon);
   term.open(termEl);
+  const refit = () => { try { fitAddon.fit(); } catch {} };
+  refit();
+  setTimeout(refit, 80); // catch layout/font settling
   term.write('[trm] connecting to ' + (machine.name || machine.machine_id) + '…\r\n');
 
   const diag = { step: 'start', ws: 'init', gather: '', iceConn: '', conn: '', dc: 'init' };
@@ -102,9 +108,23 @@ export async function attach(machine, termEl) {
   hs.readMessage(await recv());
 
   const send = (framed) => dc.send(hs.encrypt(framed));
-  send(encodeResize(term.cols, term.rows));
   term.onData((d) => send(encodeData(te.encode(d))));
   term.onResize(({ cols, rows }) => send(encodeResize(cols, rows)));
+  refit(); // fit now that the bridge is live -> emits the initial RESIZE
+  send(encodeResize(term.cols, term.rows));
+
+  // keep the terminal fitted to the viewport (desktop resize, iOS rotate/keyboard)
+  let rT;
+  const onViewport = () => { clearTimeout(rT); rT = setTimeout(refit, 120); };
+  window.addEventListener('resize', onViewport);
+  window.visualViewport && window.visualViewport.addEventListener('resize', onViewport);
+  window.addEventListener('orientationchange', onViewport);
+  const stopResize = () => {
+    clearTimeout(rT);
+    window.removeEventListener('resize', onViewport);
+    window.visualViewport && window.visualViewport.removeEventListener('resize', onViewport);
+    window.removeEventListener('orientationchange', onViewport);
+  };
   (async () => {
     for (;;) {
       let ct;
@@ -128,7 +148,7 @@ export async function attach(machine, termEl) {
   return {
     term, pc, dc, ws,
     sendText: (s) => send(encodeData(te.encode(s))), // feed keystrokes (e.g. tmux prefix sequences)
-    close: () => { try { ws.close(); } catch {} try { pc.close(); } catch {} term.dispose(); },
+    close: () => { stopResize(); try { ws.close(); } catch {} try { pc.close(); } catch {} term.dispose(); },
   };
 }
 
