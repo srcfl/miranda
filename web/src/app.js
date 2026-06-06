@@ -6,6 +6,7 @@ import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 import { Terminal } from '@xterm/xterm';
 import { listMachines, addMachine } from './store.js';
 import { pairWithCode } from './pair.js';
+import { confirmPairingSafety, machineAfterConfirmedPairing, pendingPairingConfirmation } from './pairing/confirm.js';
 import { registerPasskey, signInPasskey, devOwnerKey, passkeySupported, isLocalhost } from './identity.js';
 import jsQR from '/vendor/jsqr.js';
 
@@ -197,14 +198,24 @@ function viewPair(root, prefill = '', auto = false) {
     status.textContent = 'pairing…';
     try {
       const { machine, safetyNumber } = await pairWithCode(code, ownerKey().pub);
-      addMachine(machine);
+      const pending = pendingPairingConfirmation(machine, safetyNumber);
       window.__lastSafety = safetyNumber;
       status.innerHTML = '';
       status.append(
-        el('div', { className: 'ok' }, '✓ paired ' + (machine.name || machine.machine_id)),
-        el('div', { className: 'sas' }, safetyNumber),
-        el('div', { className: 'muted' }, 'Check this safety number matches the one on the machine.'),
-        el('button', { className: 'btn', onclick: () => viewMachines(root) }, 'Done'));
+        el('div', { className: 'ok' }, 'Compare safety numbers before trusting ' + (machine.name || machine.machine_id)),
+        el('div', { className: 'sas' }, pending.safetyNumber),
+        el('div', { className: 'muted' }, 'Find the safety number printed by `tr-agent pair` on the machine. Continue only if every group matches this number exactly.'),
+        el('div', { className: 'actions' },
+          el('button', { className: 'btn', onclick: () => {
+            const confirmed = confirmPairingSafety(pending);
+            const persisted = machineAfterConfirmedPairing(confirmed);
+            addMachine(persisted);
+            status.innerHTML = '';
+            status.append(
+              el('div', { className: 'ok' }, '✓ paired ' + (persisted.name || persisted.machine_id)),
+              el('button', { className: 'btn', onclick: () => viewMachines(root) }, 'Done'));
+          } }, 'Safety number matches'),
+          el('button', { className: 'link', onclick: () => viewPair(root) }, 'Cancel pairing')));
     } catch (e) {
       status.innerHTML = '';
       status.append(el('div', { className: 'muted' }, 'pairing failed: ' + (e && e.message || e)),
