@@ -56,12 +56,15 @@ func main() {
 
 func newHTTPServer(addr string, handler http.Handler) *http.Server {
 	return &http.Server{
-		Addr:              addr,
-		Handler:           handler,
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      15 * time.Second,
-		IdleTimeout:       60 * time.Second,
+		Addr:    addr,
+		Handler: handler,
+		// ReadHeaderTimeout bounds slow-loris header reads (gosec G112). We must
+		// NOT set ReadTimeout/WriteTimeout: the signaling + attach connections are
+		// long-lived WebSockets, and a whole-request deadline cuts them mid-stream
+		// (~15s churn that breaks any attach spanning it). coder/websocket owns its
+		// own per-message read/write deadlines.
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
 	}
 }
 

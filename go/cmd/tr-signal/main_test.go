@@ -20,16 +20,18 @@ func TestNewHTTPServerSetsTimeouts(t *testing.T) {
 	if srv.Handler != handler {
 		t.Fatal("handler was not preserved")
 	}
-	if srv.ReadHeaderTimeout != 5*time.Second {
+	if srv.ReadHeaderTimeout != 10*time.Second {
 		t.Fatalf("ReadHeaderTimeout: got %v", srv.ReadHeaderTimeout)
 	}
-	if srv.ReadTimeout != 15*time.Second {
-		t.Fatalf("ReadTimeout: got %v", srv.ReadTimeout)
+	// ReadTimeout/WriteTimeout MUST be 0: they are whole-connection deadlines
+	// that would cut the long-lived signaling + attach WebSockets mid-stream.
+	if srv.ReadTimeout != 0 {
+		t.Fatalf("ReadTimeout must be 0 (would cut WebSockets), got %v", srv.ReadTimeout)
 	}
-	if srv.WriteTimeout != 15*time.Second {
-		t.Fatalf("WriteTimeout: got %v", srv.WriteTimeout)
+	if srv.WriteTimeout != 0 {
+		t.Fatalf("WriteTimeout must be 0 (would cut WebSockets), got %v", srv.WriteTimeout)
 	}
-	if srv.IdleTimeout != 60*time.Second {
+	if srv.IdleTimeout != 2*time.Minute {
 		t.Fatalf("IdleTimeout: got %v", srv.IdleTimeout)
 	}
 }
