@@ -16,7 +16,10 @@ import (
 )
 
 func main() {
-	addr := flag.String("addr", ":8443", "listen address (TLS terminated by the fronting proxy)")
+	addr := flag.String("addr", ":8443", "plain HTTP listen address (front it with a TLS proxy, or also set --tls-*)")
+	tlsAddr := flag.String("tls-addr", "", "if set with --tls-cert/--tls-key, also serve HTTPS here (e.g. :443) for Cloudflare Full (strict)")
+	tlsCert := flag.String("tls-cert", "", "TLS certificate file (PEM)")
+	tlsKey := flag.String("tls-key", "", "TLS private key file (PEM)")
 	webroot := flag.String("webroot", "", "if set, serve the static SPA from this directory on non-signaling paths")
 	turnURL := flag.String("turn-url", "", "TURN url to hand out (e.g. turn:relay.example:3478); secret via TR_TURN_SECRET env")
 	flag.Parse()
@@ -31,6 +34,18 @@ func main() {
 	if *webroot != "" {
 		handler = withStatic(s.Handler(), *webroot)
 		log.Printf("tr-signal serving SPA from %s", *webroot)
+	}
+	// Serve HTTPS directly when a cert is provided (Cloudflare "Full (strict)":
+	// the CF->origin leg is then encrypted). Runs alongside the plain listener so
+	// the cutover from "Flexible" (CF->origin :80) has no downtime.
+	if *tlsAddr != "" && *tlsCert != "" && *tlsKey != "" {
+		go func() {
+			ts := newHTTPServer(*tlsAddr, handler)
+			log.Printf("tr-signal HTTPS listening on %s", *tlsAddr)
+			if err := ts.ListenAndServeTLS(*tlsCert, *tlsKey); err != nil {
+				log.Fatal(err)
+			}
+		}()
 	}
 	srv := newHTTPServer(*addr, handler)
 	log.Printf("tr-signal listening on %s (signaling only; no terminal data)", *addr)
