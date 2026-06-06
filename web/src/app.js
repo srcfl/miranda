@@ -249,10 +249,29 @@ function viewPair(root, prefill = '', auto = false) {
 }
 
 function viewTerminal(root, machine) {
-  const back = el('button', { className: 'link back', onclick: () => { try { handle && handle.close(); } catch {}; viewMachines(root); } }, '← machines');
+  let handle = null;
+  const close = () => { try { handle && handle.close(); } catch {} };
+
   const termBox = el('div', { className: 'termbox' });
-  mount(root, el('div', { className: 'view term' }, back, termBox));
-  let handle;
+  const back = el('button', { className: 'tb-btn', onclick: () => { close(); viewMachines(root); } }, '‹ Machines');
+  const sw = el('button', { className: 'tb-btn', title: 'switch machine', onclick: () => openSwitcher() }, '⇄');
+  const view = el('div', { className: 'view term' },
+    el('div', { className: 'topbar' }, back, el('div', { className: 'tb-title' }, machine.name || machine.machine_id), sw),
+    termBox);
+  mount(root, view);
+
+  // quick-switcher: jump straight to another machine without going back to the list
+  function openSwitcher() {
+    const card = el('div', { className: 'sheet-card' }, el('div', { className: 'sheet-title' }, 'switch machine'));
+    const sheet = el('div', { className: 'sheet', onclick: (e) => { if (e.target === sheet) sheet.remove(); } }, card);
+    for (const m of listMachines().filter((x) => x.machine_id !== machine.machine_id)) {
+      card.append(el('button', { className: 'sheet-item', onclick: () => { sheet.remove(); close(); viewTerminal(root, m); } }, m.name || m.machine_id));
+    }
+    card.append(el('button', { className: 'sheet-item add', onclick: () => { sheet.remove(); close(); viewPair(root); } }, '＋ Pair a machine'));
+    card.append(el('button', { className: 'link', onclick: () => sheet.remove() }, 'cancel'));
+    view.append(sheet);
+  }
+
   attach(machine, termBox).then((h) => { handle = h; }).catch((e) => termBox.append(el('div', { className: 'status' }, 'connect failed: ' + (e && e.message || e))));
 }
 
