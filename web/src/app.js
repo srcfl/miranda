@@ -125,7 +125,11 @@ export async function attach(machine, termEl) {
     return out;
   };
   window.__attached = true;
-  return { term, pc, dc, ws, close: () => { try { ws.close(); } catch {} try { pc.close(); } catch {} term.dispose(); } };
+  return {
+    term, pc, dc, ws,
+    sendText: (s) => send(encodeData(te.encode(s))), // feed keystrokes (e.g. tmux prefix sequences)
+    close: () => { try { ws.close(); } catch {} try { pc.close(); } catch {} term.dispose(); },
+  };
 }
 
 // --- UI -------------------------------------------------------------------
@@ -255,8 +259,18 @@ function viewTerminal(root, machine) {
   const termBox = el('div', { className: 'termbox' });
   const back = el('button', { className: 'tb-btn', onclick: () => { close(); viewMachines(root); } }, '‹ Machines');
   const sw = el('button', { className: 'tb-btn', title: 'switch machine', onclick: () => openSwitcher() }, '⇄');
+  // multiple sessions per machine = tmux windows. Send the tmux prefix (Ctrl-B,
+  // the default) + a command over the live channel — no protocol change, and the
+  // windows persist + sync across every device attached to this machine.
+  const tmux = (key) => { handle && handle.sendText('\x02' + key); window.__term && window.__term.focus(); };
+  const winbar = el('div', { className: 'winbar' },
+    el('span', { className: 'winbar-label' }, 'windows'),
+    el('button', { className: 'tb-btn', title: 'new window', onclick: () => tmux('c') }, '＋'),
+    el('button', { className: 'tb-btn', title: 'previous window', onclick: () => tmux('p') }, '‹'),
+    el('button', { className: 'tb-btn', title: 'next window', onclick: () => tmux('n') }, '›'));
   const view = el('div', { className: 'view term' },
     el('div', { className: 'topbar' }, back, el('div', { className: 'tb-title' }, machine.name || machine.machine_id), sw),
+    winbar,
     termBox);
   mount(root, view);
 

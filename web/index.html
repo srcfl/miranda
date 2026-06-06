@@ -31,6 +31,9 @@
     padding: calc(env(safe-area-inset-top) + 8px) 10px 8px; }
   .tb-btn { background: none; border: 0; color: var(--fg); font: inherit; font-size: 15px; cursor: pointer; padding: 8px; min-width: 44px; }
   .tb-title { flex: 1; text-align: center; font-weight: 600; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .winbar { display: flex; align-items: center; gap: 4px; padding: 4px 8px; background: #0b0e14; border-bottom: 1px solid var(--line); }
+  .winbar-label { color: var(--mut); font-size: 12px; margin-right: 6px; }
+  .winbar .tb-btn { font-size: 14px; padding: 6px 12px; min-width: 0; }
   .sheet { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: flex; align-items: flex-end; justify-content: center; z-index: 20; }
   .sheet-card { background: var(--card); border: 1px solid var(--line); border-radius: 16px 16px 0 0; width: 100%; max-width: 520px;
     padding: 16px 16px calc(env(safe-area-inset-bottom) + 16px); }
