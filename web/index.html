@@ -5,7 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>terminal-relay</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css" />
-<!-- import map: bare @noble/* and @xterm imports resolve from a CDN (no bundler) -->
 <script type="importmap">
 {
   "imports": {
@@ -20,19 +19,41 @@
 }
 </script>
 <style>
-  html, body { margin: 0; height: 100%; background: #0b0e14; }
-  #term { height: 100vh; padding: 6px; }
+  :root { --bg:#0b0e14; --fg:#cbd5e1; --mut:#64748b; --acc:#4ade80; --card:#11161f; --line:#1e293b; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+    font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif; }
+  #app { height: 100vh; }
+  .view { max-width: 760px; margin: 0 auto; padding: 40px 20px; }
+  .view.term { max-width: none; padding: 8px; height: 100vh; display: flex; flex-direction: column; }
+  h1 { font-size: 22px; font-weight: 650; margin: 0 0 4px; }
+  .muted { color: var(--mut); margin: 0 0 20px; font-size: 14px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 18px;
+    color: var(--fg); text-align: left; cursor: pointer; transition: border-color .15s, transform .05s; font: inherit; }
+  .card:hover { border-color: var(--acc); }
+  .card:active { transform: scale(.98); }
+  .card .name { font-weight: 600; font-size: 16px; }
+  .card .sub { color: var(--mut); font-size: 12px; margin-top: 4px; font-family: ui-monospace, monospace; }
+  .card.add { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; border-style: dashed; }
+  .card.add .plus { font-size: 24px; color: var(--acc); }
+  .code { width: 100%; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--line);
+    background: #0d121b; color: var(--fg); font: 13px ui-monospace, monospace; margin-bottom: 12px; }
+  .btn { background: var(--acc); color: #052e16; border: 0; border-radius: 10px; padding: 10px 18px;
+    font: inherit; font-weight: 650; cursor: pointer; }
+  .link { background: none; border: 0; color: var(--mut); cursor: pointer; font: inherit; padding: 8px 0; display: inline-block; margin-top: 16px; }
+  .link.back { align-self: flex-start; margin: 0 0 6px; }
+  .status { margin-top: 16px; font-size: 14px; }
+  .ok { color: var(--acc); font-weight: 600; }
+  .sas { font-family: ui-monospace, monospace; font-size: 18px; margin: 8px 0; letter-spacing: 1px; }
+  .termbox { flex: 1; min-height: 0; }
 </style>
 </head>
 <body>
-<div id="term"></div>
+<div id="app"></div>
 <script type="module">
-import { attach, ownerKey } from './src/app.js';
-import { bytesToHex } from '@noble/hashes/utils';
-// expose for dev/validation; a real UI (machine picker, pairing, passkey) comes next
-window.__ownerPub = bytesToHex(ownerKey().pub);
-window.trAttach = (machine) => attach(machine, document.getElementById('term'));
-window.__ready = true;
+import { start } from './src/app.js';
+start(document.getElementById('app'));
 </script>
 </body>
 </html>

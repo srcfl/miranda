@@ -1,16 +1,18 @@
-// go/web/src/app.js — browser attach: signaling + WebRTC P2P + Noise KK + xterm.
-// Mirrors the Go client (internal/client Attach + ClientBridge). Milestone 2:
-// a live shell in a browser tab. Dev owner key (localStorage); passkey is later.
+// web/src/app.js — the SPA: identity, a machine list, in-browser pairing, and a
+// live terminal. Data plane is P2P + Noise (see attach); the relay only brokers.
 import { HandshakeKK } from './noise/noise-kk.js';
 import { encodeData, encodeResize, decodeFrame, FRAME_DATA } from './noise/frame.js';
 import { x25519 } from '@noble/curves/ed25519';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 import { Terminal } from '@xterm/xterm';
+import { listMachines, addMachine } from './store.js';
+import { pairWithCode } from './pair.js';
 
 const te = new TextEncoder();
 
-// Dev owner identity, persisted in localStorage. (Passkey/prf comes in a later
-// milestone; this is the CLI-style local key for now.)
+// --- identity -------------------------------------------------------------
+// Dev owner key in localStorage. Milestone 4 swaps this for a passkey (prf)
+// while keeping the same {priv, pub} shape.
 export function ownerKey() {
   let h = localStorage.getItem('tr_owner');
   if (!h) {
@@ -23,8 +25,7 @@ export function ownerKey() {
 
 const wsBase = (signalURL) => 'ws' + signalURL.slice(4); // http->ws, https->wss
 
-// attach opens a P2P terminal to `machine` ({signal, machine_id, host_pub, name})
-// and renders it into termEl. Returns a handle with test hooks.
+// --- attach (P2P + Noise + xterm) ----------------------------------------
 export async function attach(machine, termEl) {
   const owner = ownerKey();
   const ownerHex = bytesToHex(owner.pub);
@@ -55,16 +56,15 @@ export async function attach(machine, termEl) {
   diag.step = 'ws-connecting';
   await new Promise((r) => (ws.onopen = () => { diag.ws = 'open'; r(); }));
 
-  // non-trickle ICE: gather all candidates, then send the offer
   diag.step = 'creating-offer';
   await pc.setLocalDescription(await pc.createOffer());
-  // non-trickle: send once gathering completes OR after a cap (use whatever
-  // candidates we have — a slow/unreachable STUN must not hang the connect).
+  // non-trickle: send once gathering completes OR after a cap (a slow/unreachable
+  // STUN must not hang the connect).
   await new Promise((res) => {
     if (pc.iceGatheringState === 'complete') return res();
-    const done = () => { clearTimeout(t); res(); };
-    const t = setTimeout(() => { diag.gather = 'timeout'; done(); }, 3000);
-    pc.addEventListener('icegatheringstatechange', () => { diag.gather = pc.iceGatheringState; if (pc.iceGatheringState === 'complete') done(); });
+    const finish = () => { clearTimeout(t); res(); };
+    const t = setTimeout(() => { diag.gather = 'timeout'; finish(); }, 3000);
+    pc.addEventListener('icegatheringstatechange', () => { diag.gather = pc.iceGatheringState; if (pc.iceGatheringState === 'complete') finish(); });
   });
   diag.step = 'offer-sent';
   ws.send(JSON.stringify({ type: 'offer', sdp: pc.localDescription.sdp }));
@@ -73,7 +73,6 @@ export async function attach(machine, termEl) {
   await new Promise((res) => (dc.onopen = () => { diag.dc = 'open'; res(); }));
   diag.step = 'handshaking';
 
-  // discrete-message recv over the DataChannel
   const inbox = [];
   let waiter = null;
   dc.onmessage = (ev) => {
@@ -82,12 +81,10 @@ export async function attach(machine, termEl) {
   };
   const recv = () => new Promise((r) => (inbox.length ? r(inbox.shift()) : (waiter = r)));
 
-  // Noise KK initiator: owner static key + the pinned agent host key
   const hs = new HandshakeKK({ initiator: true, s: owner, rs: hexToBytes(machine.host_pub) });
   dc.send(hs.writeMessage(new Uint8Array(0)));
   hs.readMessage(await recv());
 
-  // bridge: xterm <-> Noise <-> DataChannel
   const send = (framed) => dc.send(hs.encrypt(framed));
   send(encodeResize(term.cols, term.rows));
   term.onData((d) => send(encodeData(te.encode(d))));
@@ -102,7 +99,7 @@ export async function attach(machine, termEl) {
   })();
 
   term.focus();
-  // test hooks (used by the Chrome validation)
+  // test hooks
   window.__term = term;
   window.__send = (s) => send(encodeData(te.encode(s)));
   window.__termText = () => {
@@ -112,5 +109,76 @@ export async function attach(machine, termEl) {
     return out;
   };
   window.__attached = true;
-  return { term, pc, dc, ws };
+  return { term, pc, dc, ws, close: () => { try { ws.close(); } catch {} try { pc.close(); } catch {} term.dispose(); } };
+}
+
+// --- UI -------------------------------------------------------------------
+const el = (tag, props = {}, ...kids) => {
+  const n = Object.assign(document.createElement(tag), props);
+  for (const k of kids) n.append(k);
+  return n;
+};
+
+function mount(root, node) { root.replaceChildren(node); }
+
+function viewMachines(root) {
+  const grid = el('div', { className: 'grid' });
+  for (const m of listMachines()) {
+    grid.append(el('button', { className: 'card machine', onclick: () => viewTerminal(root, m) },
+      el('div', { className: 'name' }, m.name || m.machine_id),
+      el('div', { className: 'sub' }, m.machine_id.slice(0, 12) + '…')));
+  }
+  grid.append(el('button', { className: 'card add', onclick: () => viewPair(root) },
+    el('div', { className: 'plus' }, '＋'), el('div', { className: 'sub' }, 'Pair a machine')));
+  mount(root, el('div', { className: 'view' },
+    el('h1', {}, 'your machines'),
+    el('p', { className: 'muted' }, 'Reach a shell on any of them — peer-to-peer, end-to-end encrypted.'),
+    grid));
+}
+
+function viewPair(root, prefill = '') {
+  const input = el('input', { className: 'code', placeholder: 'paste the code from `tr-agent pair`', value: prefill });
+  const status = el('div', { className: 'status' });
+  const go = el('button', { className: 'btn', onclick: async () => {
+    const code = input.value.trim();
+    if (!code) return;
+    status.textContent = 'pairing…';
+    try {
+      const { machine, safetyNumber } = await pairWithCode(code, ownerKey().pub);
+      addMachine(machine);
+      window.__lastSafety = safetyNumber;
+      status.innerHTML = '';
+      status.append(
+        el('div', { className: 'ok' }, '✓ paired ' + (machine.name || machine.machine_id)),
+        el('div', { className: 'sas' }, 'safety number: ' + safetyNumber),
+        el('div', { className: 'muted' }, 'It must match the one shown on the machine.'),
+        el('button', { className: 'btn', onclick: () => viewMachines(root) }, 'Done'));
+    } catch (e) {
+      status.textContent = 'pairing failed: ' + (e && e.message || e);
+    }
+  } }, 'Pair');
+  mount(root, el('div', { className: 'view' },
+    el('h1', {}, 'pair a machine'),
+    el('p', { className: 'muted' }, 'Run `tr-agent pair` on the machine, then paste its code.'),
+    input, go, status,
+    el('button', { className: 'link', onclick: () => viewMachines(root) }, '← machines')));
+}
+
+function viewTerminal(root, machine) {
+  const back = el('button', { className: 'link back', onclick: () => { try { handle && handle.close(); } catch {}; viewMachines(root); } }, '← machines');
+  const termBox = el('div', { className: 'termbox' });
+  mount(root, el('div', { className: 'view term' }, back, termBox));
+  let handle;
+  attach(machine, termBox).then((h) => { handle = h; }).catch((e) => termBox.append(el('div', { className: 'status' }, 'connect failed: ' + (e && e.message || e))));
+}
+
+export function start(root) {
+  window.__ownerPub = bytesToHex(ownerKey().pub);
+  // a code can arrive via the URL fragment (#<code>) — e.g. scanning the QR
+  const frag = decodeURIComponent((location.hash || '').replace(/^#/, ''));
+  if (frag) { viewPair(root, frag); } else { viewMachines(root); }
+  window.__ready = true;
+  // expose for validation
+  window.trAttach = (m) => attach(m, root.querySelector('.termbox') || root);
+  window.trPair = (code) => pairWithCode(code, ownerKey().pub);
 }
