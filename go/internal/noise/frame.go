@@ -10,9 +10,10 @@ import (
 type FrameType byte
 
 const (
-	FrameData   FrameType = 0x01 // raw PTY bytes
-	FrameResize FrameType = 0x02 // cols u16 BE ++ rows u16 BE
-	FrameHello  FrameType = 0x03 // UTF-8 JSON metadata
+	FrameData    FrameType = 0x01 // raw PTY bytes
+	FrameResize  FrameType = 0x02 // cols u16 BE ++ rows u16 BE
+	FrameHello   FrameType = 0x03 // UTF-8 JSON metadata
+	FrameWindows FrameType = 0x04 // UTF-8 JSON tmux window snapshot (agent -> client)
 )
 
 // EncodeData wraps raw PTY bytes in a DATA frame.
@@ -32,6 +33,11 @@ func EncodeResize(cols, rows uint16) []byte {
 // EncodeHello wraps JSON metadata in a HELLO frame.
 func EncodeHello(jsonBytes []byte) []byte {
 	return append([]byte{byte(FrameHello)}, jsonBytes...)
+}
+
+// EncodeWindows wraps a tmux window snapshot (JSON) in a WINDOWS frame.
+func EncodeWindows(jsonBytes []byte) []byte {
+	return append([]byte{byte(FrameWindows)}, jsonBytes...)
 }
 
 // DecodeFrame splits a frame into its type and payload.

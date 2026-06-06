@@ -4,8 +4,10 @@ import assert from 'node:assert/strict';
 import {
   FRAME_DATA,
   FRAME_RESIZE,
+  FRAME_WINDOWS,
   encodeData,
   encodeResize,
+  encodeWindows,
   decodeFrame,
   decodeResize,
 } from '../src/noise/frame.js';
@@ -24,6 +26,16 @@ test('resize frame round trip', () => {
   const { cols, rows } = decodeResize(payload);
   assert.equal(cols, 120);
   assert.equal(rows, 40);
+});
+
+test('windows frame round trip (byte-mirrors Go)', () => {
+  const j = new TextEncoder().encode('{"v":1,"active":"@0","win":[{"id":"@0","i":0,"n":"main"}]}');
+  const enc = encodeWindows(j);
+  assert.equal(enc[0], FRAME_WINDOWS);
+  assert.equal(enc[0], 0x04);
+  const { type, payload } = decodeFrame(enc);
+  assert.equal(type, FRAME_WINDOWS);
+  assert.deepEqual(payload, j);
 });
 
 test('decoding empty frame throws', () => {

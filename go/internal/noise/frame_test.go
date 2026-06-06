@@ -38,6 +38,21 @@ func TestResizeFrameRoundTrip(t *testing.T) {
 	}
 }
 
+func TestWindowsFrameRoundTrip(t *testing.T) {
+	j := []byte(`{"v":1,"active":"@0","win":[{"id":"@0","i":0,"n":"main"}]}`)
+	enc := EncodeWindows(j)
+	if enc[0] != byte(FrameWindows) {
+		t.Fatalf("expected FrameWindows tag 0x04, got %#x", enc[0])
+	}
+	typ, payload, err := DecodeFrame(enc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if typ != FrameWindows || !bytes.Equal(payload, j) {
+		t.Fatalf("windows frame mismatch: type=%d payload=%q", typ, payload)
+	}
+}
+
 func TestDecodeEmptyFrameErrors(t *testing.T) {
 	if _, _, err := DecodeFrame(nil); err == nil {
 		t.Fatal("expected error decoding empty frame")

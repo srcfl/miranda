@@ -4,6 +4,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"sync"
+	"time"
 
 	"github.com/srcful/terminal-relay/go/internal/noise"
 	"github.com/srcful/terminal-relay/go/internal/peer"
@@ -22,9 +24,18 @@ type Shell interface {
 // RunAgentSession bridges an established Noise session to a shell using the
 // Plan-1 frame protocol: it sends HELLO (machine name) once, then pumps DATA in
 // both directions and applies RESIZE. Returns when either side ends.
-func RunAgentSession(ctx context.Context, mc peer.MsgConn, sess *noise.Session, sh Shell, machineName string) error {
+func RunAgentSession(ctx context.Context, mc peer.MsgConn, sess *noise.Session, sh Shell, machineName string, windowsJSON func() []byte) error {
+	// noise.Session.Encrypt is not concurrency-safe (nonce counter), and several
+	// goroutines now send (HELLO, shell->peer, the windows poller) — serialize.
+	var sendMu sync.Mutex
+	safeSend := func(framed []byte) error {
+		sendMu.Lock()
+		defer sendMu.Unlock()
+		return send(mc, sess, framed)
+	}
+
 	hello, _ := json.Marshal(map[string]string{"name": machineName})
-	if err := send(mc, sess, noise.EncodeHello(hello)); err != nil {
+	if err := safeSend(noise.EncodeHello(hello)); err != nil {
 		return err
 	}
 
@@ -34,6 +45,31 @@ func RunAgentSession(ctx context.Context, mc peer.MsgConn, sess *noise.Session, 
 	sctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	// Window overview: poll the tmux window list and push a WINDOWS snapshot to
+	// the client on change (1s low-rate; hooks are a later latency optimization).
+	if windowsJSON != nil {
+		go func() {
+			var last string
+			t := time.NewTicker(time.Second)
+			defer t.Stop()
+			emit := func() {
+				if b := windowsJSON(); b != nil && string(b) != last {
+					last = string(b)
+					_ = safeSend(noise.EncodeWindows(b))
+				}
+			}
+			emit()
+			for {
+				select {
+				case <-sctx.Done():
+					return
+				case <-t.C:
+					emit()
+				}
+			}
+		}()
+	}
+
 	errc := make(chan error, 2)
 
 	// shell -> peer
@@ -42,7 +78,7 @@ func RunAgentSession(ctx context.Context, mc peer.MsgConn, sess *noise.Session, 
 		for {
 			n, err := sh.Read(buf)
 			if n > 0 {
-				if e := send(mc, sess, noise.EncodeData(buf[:n])); e != nil {
+				if e := safeSend(noise.EncodeData(buf[:n])); e != nil {
 					errc <- e
 					return
 				}

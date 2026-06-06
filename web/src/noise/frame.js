@@ -3,6 +3,7 @@
 export const FRAME_DATA = 0x01;
 export const FRAME_RESIZE = 0x02;
 export const FRAME_HELLO = 0x03;
+export const FRAME_WINDOWS = 0x04;
 
 export function encodeData(bytes) {
   const out = new Uint8Array(1 + bytes.length);
@@ -23,6 +24,13 @@ export function encodeResize(cols, rows) {
 export function encodeHello(jsonBytes) {
   const out = new Uint8Array(1 + jsonBytes.length);
   out[0] = FRAME_HELLO;
+  out.set(jsonBytes, 1);
+  return out;
+}
+
+export function encodeWindows(jsonBytes) {
+  const out = new Uint8Array(1 + jsonBytes.length);
+  out[0] = FRAME_WINDOWS;
   out.set(jsonBytes, 1);
   return out;
 }
