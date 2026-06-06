@@ -2,26 +2,24 @@
 // live terminal. Data plane is P2P + Noise (see attach); the relay only brokers.
 import { HandshakeKK } from './noise/noise-kk.js';
 import { encodeData, encodeResize, decodeFrame, FRAME_DATA } from './noise/frame.js';
-import { x25519 } from '@noble/curves/ed25519';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 import { Terminal } from '@xterm/xterm';
 import { listMachines, addMachine } from './store.js';
 import { pairWithCode } from './pair.js';
+import { registerPasskey, signInPasskey, devOwnerKey, passkeySupported, hasEnrolledPasskey, isLocalhost } from './identity.js';
 
 const te = new TextEncoder();
 
 // --- identity -------------------------------------------------------------
-// Dev owner key in localStorage. Milestone 4 swaps this for a passkey (prf)
-// while keeping the same {priv, pub} shape.
+// Resolved once at the sign-in gate and cached; ownerKey() stays synchronous so
+// attach()/pairWithCode() are untouched (passkey get() is async + needs a user
+// gesture, so it can't run inside a sync call).
+let _owner = null;
 export function ownerKey() {
-  let h = localStorage.getItem('tr_owner');
-  if (!h) {
-    h = bytesToHex(x25519.utils.randomPrivateKey());
-    localStorage.setItem('tr_owner', h);
-  }
-  const priv = hexToBytes(h);
-  return { priv, pub: x25519.getPublicKey(priv) };
+  if (!_owner) throw new Error('not signed in');
+  return _owner;
 }
+function setOwner(k) { _owner = k; window.__ownerPub = bytesToHex(k.pub); }
 
 const wsBase = (signalURL) => 'ws' + signalURL.slice(4); // http->ws, https->wss
 
@@ -176,19 +174,58 @@ function viewTerminal(root, machine) {
   attach(machine, termBox).then((h) => { handle = h; }).catch((e) => termBox.append(el('div', { className: 'status' }, 'connect failed: ' + (e && e.message || e))));
 }
 
-export function start(root) {
-  window.__ownerPub = bytesToHex(ownerKey().pub);
-  // a code can arrive via the URL fragment (#<code>) — e.g. scanning the QR.
-  // Pair straight away, then strip the fragment so a reload doesn't re-pair.
-  const frag = decodeURIComponent((location.hash || '').replace(/^#/, ''));
-  if (frag) {
-    history.replaceState(null, '', location.pathname + location.search);
-    viewPair(root, frag, true);
-  } else {
-    viewMachines(root);
+// after sign-in: replay a scanned pairing code, else show machines
+function afterSignIn(root, pendingFrag) {
+  if (pendingFrag) viewPair(root, pendingFrag, true);
+  else viewMachines(root);
+}
+
+function viewIdentityGate(root, pendingFrag) {
+  const status = el('div', { className: 'status' });
+  const enrolled = hasEnrolledPasskey();
+  const useDev = () => { setOwner(devOwnerKey()); localStorage.setItem('tr_identity_mode', 'dev'); afterSignIn(root, pendingFrag); };
+  const usePasskey = async () => {
+    pk.disabled = true;
+    status.textContent = enrolled ? 'Touch ID / Face ID…' : 'creating your passkey…';
+    try {
+      const k = enrolled ? await signInPasskey() : await registerPasskey();
+      setOwner(k);
+      localStorage.setItem('tr_identity_mode', 'passkey');
+      afterSignIn(root, pendingFrag);
+    } catch (e) {
+      pk.disabled = false;
+      status.innerHTML = '';
+      status.append(
+        el('div', { className: 'muted' }, 'passkey sign-in failed: ' + (e && e.message || e)),
+        el('button', { className: 'link', onclick: useDev }, 'Continue with a local dev key (this device only)'));
+    }
+  };
+  const pk = el('button', { className: 'btn', onclick: usePasskey }, enrolled ? 'Sign in with passkey' : 'Create your passkey');
+  const kids = [
+    el('h1', {}, 'terminal-relay'),
+    el('p', { className: 'muted' }, 'Your terminals, on every device — peer-to-peer, end-to-end encrypted. Your identity is a passkey; the relay never sees it.'),
+  ];
+  if (passkeySupported && !isLocalhost()) kids.push(pk);
+  if (!passkeySupported || isLocalhost()) {
+    kids.push(el('button', { className: passkeySupported ? 'link' : 'btn', onclick: useDev },
+      isLocalhost() ? 'Continue with a local dev key (localhost)' : 'Continue with a local dev key'));
   }
+  kids.push(status);
+  mount(root, el('div', { className: 'view' }, ...kids));
+  pk.focus?.();
+}
+
+export function start(root) {
+  // a code can arrive via the URL fragment (#<code>) — e.g. scanning the QR.
+  // Stash it and strip the fragment; replay it after sign-in (pairing needs the key).
+  const frag = decodeURIComponent((location.hash || '').replace(/^#/, ''));
+  if (frag) history.replaceState(null, '', location.pathname + location.search);
+
+  viewIdentityGate(root, frag); // do NOT auto-run the ceremony — needs a user gesture
   window.__ready = true;
-  // expose for validation
+
+  // test/validation hooks (used after sign-in)
+  window.__useDevKey = () => { setOwner(devOwnerKey()); localStorage.setItem('tr_identity_mode', 'dev'); viewMachines(root); };
   window.trAttach = (m) => attach(m, root.querySelector('.termbox') || root);
   window.trPair = (code) => pairWithCode(code, ownerKey().pub);
 }
