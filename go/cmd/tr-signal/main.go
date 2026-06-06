@@ -40,6 +40,9 @@ func withStatic(sig http.Handler, dir string) http.Handler {
 			sig.ServeHTTP(w, r)
 			return
 		}
+		// The SPA iterates fast; don't let the CDN/browser serve a stale client.
+		// (A future release can switch to content-hashed, long-cached assets.)
+		w.Header().Set("Cache-Control", "no-store")
 		fs.ServeHTTP(w, r)
 	})
 }
