@@ -4,13 +4,14 @@
 // existing deriveOwnerKey() so the owner_id follows you across devices and is
 // gated by Face ID / Touch ID. The relay never sees any of this.
 import { deriveOwnerKey } from './identity/owner.js';
+import { resolveRPID } from './rp.js';
 import { x25519 } from '@noble/curves/ed25519';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 
 const enc = new TextEncoder();
-// rp.id = the registrable parent domain, so one passkey works across
-// term./app./relay.sourceful-labs.net without re-enrolling. localhost for dev.
-const RP_ID = location.hostname === 'localhost' ? 'localhost' : 'sourceful-labs.net';
+// rp.id is scoped to the exact production app host. Localhost remains separate
+// for dev. Do not use the parent domain as the RP trust root.
+const RP_ID = resolveRPID(location.hostname);
 const SALT = enc.encode('terminal-relay/owner/v1'); // prf eval salt — FIXED forever
 const USER_ID = enc.encode('terminal-relay/owner'); // fixed, no PII; re-enroll overwrites
 
