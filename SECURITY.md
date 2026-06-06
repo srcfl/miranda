@@ -4,7 +4,7 @@ terminal-relay lets you reach a real shell on your machines from anywhere. The
 whole point is that **you do not have to trust the relay** (our hosted signaling
 server, the Cloudflare proxy in front of it, an optional TURN relay, or the
 network in between). This document states precisely what that means, what you
-*do* have to trust, and how to verify the claims.
+_do_ have to trust, and how to verify the claims.
 
 We do not say "100% secure" — no system is. We make a **precise, falsifiable
 guarantee** and are honest about the residual exposure. The honesty is the point:
@@ -56,6 +56,11 @@ the network is hostile — provided the trust roots below are intact.
    is game over (that is true of SSH too).
 4. **The code you run.** This is why open source + verifiable builds matter (see
    roadmap). Do **not** install binaries fetched blindly from the relay.
+5. **The browser JavaScript served by `term.sourceful-labs.net`.** When the SPA is
+   served from `tr-signal`, that JavaScript is a trust root just like an installed
+   binary. A compromised Cloudflare zone, origin host, deploy key, or build output
+   could ship client code that reads terminal data before encryption or derives
+   the owner key after a valid WebAuthn ceremony.
 
 ## Residual exposure (honest, by design)
 
@@ -73,6 +78,39 @@ the network is hostile — provided the trust roots below are intact.
 - **Compromised endpoints / Keychain.** Out of scope — the same trust you already
   place in your own devices.
 
+## Live deployment operations
+
+The live browser deployment is `https://term.sourceful-labs.net`; signaling may
+also be exposed on `https://relay.sourceful-labs.net` for CLIs and agents. Apply
+these controls to every Cloudflare hostname that routes to `tr-signal`.
+
+- **Rate-limit public rendezvous endpoints.** `/turn-credentials`, `/pair`,
+  `/attach`, and `/agent/signal` are intentionally public and unauthenticated at
+  the HTTP layer. Protect them in Cloudflare WAF rate limiting rules before broad
+  use. Treat `/pair`, `/attach`, and `/agent/signal` as WebSocket endpoints: the
+  edge can rate-limit the initial HTTP upgrade request, but it will not inspect
+  frames after the socket is established.
+- **Monitor TURN as a paid abuse surface.** `/turn-credentials` issues coturn REST
+  credentials when `TR_TURN_SECRET` and `--turn-url` are configured. The current
+  credential TTL is 12 hours, so an exposed credential can consume relay bandwidth
+  until expiry. Watch both Cloudflare request volume and coturn allocation logs;
+  rotate the shared secret and close TURN firewall ports if abuse appears.
+- **Serve the SPA with defensive headers.** If `tr-signal --webroot` serves the
+  browser app, set CSP and security headers at Cloudflare or in the origin before
+  relying on the browser flow for real machines. The CSP must still allow module
+  scripts/assets from the same origin and `connect-src` to the live signaling
+  hostnames.
+- **Keep the WebAuthn RP ID boundary small and intentional.** The browser code
+  currently uses `sourceful-labs.net` as the RP ID so passkeys work across
+  subdomains. That means any trusted web origin under `sourceful-labs.net` capable
+  of running terminal-relay client code is inside the owner-key trust boundary.
+  Do not delegate arbitrary subdomains or host untrusted JavaScript under this
+  registrable domain without revisiting the RP ID and re-enrollment plan.
+- **Require pairing safety-number confirmation.** A scanned/pasted pairing code is
+  not enough for high-assurance pairing. The operator and browser/CLI user must
+  compare the printed `safety number: xxxx-xxxx-xxxx-xxxx` out of band and abort
+  on any mismatch.
+
 ## How to verify (don't take our word for it)
 
 - **Read the code.** The crypto is small, standard, and isolated:
@@ -89,7 +127,7 @@ the network is hostile — provided the trust roots below are intact.
 
 ## Roadmap to full, independent trust
 
-These are the steps that let *anyone* — not just us — trust the relay-free model:
+These are the steps that let _anyone_ — not just us — trust the relay-free model:
 
 - [ ] **Open source** the client, agent, relay, and crypto (so it is auditable).
 - [ ] **Signed, checksummed releases** (and an installer that verifies them — never
