@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>terminal-relay</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css" />
+<!-- import map: bare @noble/* and @xterm imports resolve from a CDN (no bundler) -->
+<script type="importmap">
+{
+  "imports": {
+    "@noble/curves/ed25519": "https://esm.sh/@noble/curves@1.9.7/ed25519",
+    "@noble/ciphers/chacha": "https://esm.sh/@noble/ciphers@1.3.0/chacha",
+    "@noble/hashes/sha2": "https://esm.sh/@noble/hashes@1.8.0/sha2",
+    "@noble/hashes/hmac": "https://esm.sh/@noble/hashes@1.8.0/hmac",
+    "@noble/hashes/hkdf": "https://esm.sh/@noble/hashes@1.8.0/hkdf",
+    "@noble/hashes/utils": "https://esm.sh/@noble/hashes@1.8.0/utils",
+    "@xterm/xterm": "https://esm.sh/@xterm/xterm@5.5.0"
+  }
+}
+</script>
+<style>
+  html, body { margin: 0; height: 100%; background: #0b0e14; }
+  #term { height: 100vh; padding: 6px; }
+</style>
+</head>
+<body>
+<div id="term"></div>
+<script type="module">
+import { attach, ownerKey } from './src/app.js';
+import { bytesToHex } from '@noble/hashes/utils';
+// expose for dev/validation; a real UI (machine picker, pairing, passkey) comes next
+window.__ownerPub = bytesToHex(ownerKey().pub);
+window.trAttach = (machine) => attach(machine, document.getElementById('term'));
+window.__ready = true;
+</script>
+</body>
+</html>

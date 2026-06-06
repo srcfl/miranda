@@ -73,7 +73,7 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing room", http.StatusBadRequest)
 		return
 	}
-	c, err := websocket.Accept(w, r, nil)
+	c, err := websocket.Accept(w, r, acceptOpts)
 	if err != nil {
 		return
 	}

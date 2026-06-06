@@ -23,6 +23,14 @@ const sendTimeout = 2 * time.Second
 // TypeError "machine offline") before the socket is closed.
 const flushTimeout = 2 * time.Second
 
+// acceptOpts allows WebSocket connections from any origin. Browsers send an
+// Origin header (e.g. https://term.sourceful-labs.net connecting to
+// relay.sourceful-labs.net is cross-origin), and coder/websocket rejects
+// cross-origin by default. This is safe here: the relay is blind and carries no
+// ambient authority (no cookies/sessions), so there is nothing for a cross-site
+// request to forge — all authentication lives in the Noise/owner-key layer.
+var acceptOpts = &websocket.AcceptOptions{OriginPatterns: []string{"*"}}
+
 // Server brokers SDP between agents and browsers. It never carries terminal
 // data — only SignalMsg (SDP + routing). Once a DataChannel is up P2P, the two
 // signaling sockets for that session are no longer needed.
@@ -155,7 +163,7 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing owner_id/machine_id", http.StatusBadRequest)
 		return
 	}
-	c, err := websocket.Accept(w, r, nil)
+	c, err := websocket.Accept(w, r, acceptOpts)
 	if err != nil {
 		return
 	}
@@ -226,7 +234,7 @@ func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing owner_id/machine_id", http.StatusBadRequest)
 		return
 	}
-	c, err := websocket.Accept(w, r, nil)
+	c, err := websocket.Accept(w, r, acceptOpts)
 	if err != nil {
 		return
 	}
