@@ -23,7 +23,7 @@ over a direct P2P WebRTC DataChannel with Noise inside. The "from my iPhone" dre
    `owner.js deriveOwnerKey`. RP = the serving origin. Dev fallback: local key.
 5. **Multi-machine + polish.** Machine list/picker, reconnect, mobile/iOS Safari.
 6. **Serve + deploy.** Static hosting at `term.sourceful-labs.net` (Cloudflare Pages
-   or the Lightsail box); RP-ID = `sourceful-labs.net`.
+   or the Lightsail box); RP-ID = `term.sourceful-labs.net`.
 
 ## Files
 
