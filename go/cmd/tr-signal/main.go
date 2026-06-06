@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/srcful/terminal-relay/go/internal/signal"
@@ -59,9 +60,32 @@ func withStatic(sig http.Handler, dir string) http.Handler {
 			sig.ServeHTTP(w, r)
 			return
 		}
-		// The SPA iterates fast; don't let the CDN/browser serve a stale client.
-		// (A future release can switch to content-hashed, long-cached assets.)
-		w.Header().Set("Cache-Control", "no-store")
+		setStaticSecurityHeaders(w)
 		fs.ServeHTTP(w, r)
 	})
+}
+
+func setStaticSecurityHeaders(w http.ResponseWriter) {
+	// The hosted SPA is a client-code trust root: it derives the owner key and
+	// runs the terminal crypto. Keep the browser sandbox tight around our own
+	// static files while allowing HTTPS/WSS relay connections and QR camera scan.
+	w.Header().Set("Content-Security-Policy", strings.Join([]string{
+		"default-src 'self'",
+		"script-src 'self'",
+		"style-src 'self' 'unsafe-inline'",
+		"img-src 'self' data: blob:",
+		"connect-src 'self' https: wss:",
+		"media-src 'self' blob:",
+		"object-src 'none'",
+		"base-uri 'none'",
+		"frame-ancestors 'none'",
+		"form-action 'none'",
+	}, "; "))
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("Permissions-Policy", "camera=(self), microphone=(), geolocation=(), payment=(), usb=(), serial=()")
+	// The SPA currently has unhashed /src and /vendor paths. Prefer freshness over
+	// stale trusted-code delivery until a content-hashed build exists.
+	w.Header().Set("Cache-Control", "no-store")
 }
