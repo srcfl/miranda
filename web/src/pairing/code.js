@@ -26,6 +26,13 @@ export function decodeCode(code) {
   const b64 = code.replace(/-/g, '+').replace(/_/g, '/');
   const json = atob(b64);
   const p = JSON.parse(json);
+  // Validate the token exactly like the Go reference (DecodeCode in code.go):
+  // hex.DecodeString + len(token) != 16 -> "bad pairing code token".
+  // A token of exactly 16 bytes is 32 hex chars; anything else fails closed
+  // so a JS browser never silently derives a wrong/all-zeros psk + roomID.
+  if (typeof p.t !== 'string' || !/^[0-9a-fA-F]{32}$/.test(p.t)) {
+    throw new Error('bad pairing code token');
+  }
   return { signalURL: p.s, token: hexToBytesLocal(p.t) };
 }
 function hexToBytesLocal(h) {
