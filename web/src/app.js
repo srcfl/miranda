@@ -136,12 +136,13 @@ function viewMachines(root) {
     grid));
 }
 
-function viewPair(root, prefill = '') {
+function viewPair(root, prefill = '', auto = false) {
   const input = el('input', { className: 'code', placeholder: 'paste the code from `tr-agent pair`', value: prefill });
   const status = el('div', { className: 'status' });
-  const go = el('button', { className: 'btn', onclick: async () => {
+  const doPair = async () => {
     const code = input.value.trim();
     if (!code) return;
+    go.disabled = true;
     status.textContent = 'pairing…';
     try {
       const { machine, safetyNumber } = await pairWithCode(code, ownerKey().pub);
@@ -150,18 +151,21 @@ function viewPair(root, prefill = '') {
       status.innerHTML = '';
       status.append(
         el('div', { className: 'ok' }, '✓ paired ' + (machine.name || machine.machine_id)),
-        el('div', { className: 'sas' }, 'safety number: ' + safetyNumber),
-        el('div', { className: 'muted' }, 'It must match the one shown on the machine.'),
+        el('div', { className: 'sas' }, safetyNumber),
+        el('div', { className: 'muted' }, 'Check this safety number matches the one on the machine.'),
         el('button', { className: 'btn', onclick: () => viewMachines(root) }, 'Done'));
     } catch (e) {
+      go.disabled = false;
       status.textContent = 'pairing failed: ' + (e && e.message || e);
     }
-  } }, 'Pair');
+  };
+  const go = el('button', { className: 'btn', onclick: doPair }, 'Pair');
   mount(root, el('div', { className: 'view' },
-    el('h1', {}, 'pair a machine'),
-    el('p', { className: 'muted' }, 'Run `tr-agent pair` on the machine, then paste its code.'),
+    el('h1', {}, auto ? 'pairing…' : 'pair a machine'),
+    el('p', { className: 'muted' }, auto ? 'Scanned from a machine — pairing it now.' : 'Run `tr-agent pair` on the machine, then scan its QR or paste the code.'),
     input, go, status,
     el('button', { className: 'link', onclick: () => viewMachines(root) }, '← machines')));
+  if (auto && prefill) doPair(); // arrived via QR -> pair straight away
 }
 
 function viewTerminal(root, machine) {
@@ -174,9 +178,15 @@ function viewTerminal(root, machine) {
 
 export function start(root) {
   window.__ownerPub = bytesToHex(ownerKey().pub);
-  // a code can arrive via the URL fragment (#<code>) — e.g. scanning the QR
+  // a code can arrive via the URL fragment (#<code>) — e.g. scanning the QR.
+  // Pair straight away, then strip the fragment so a reload doesn't re-pair.
   const frag = decodeURIComponent((location.hash || '').replace(/^#/, ''));
-  if (frag) { viewPair(root, frag); } else { viewMachines(root); }
+  if (frag) {
+    history.replaceState(null, '', location.pathname + location.search);
+    viewPair(root, frag, true);
+  } else {
+    viewMachines(root);
+  }
   window.__ready = true;
   // expose for validation
   window.trAttach = (m) => attach(m, root.querySelector('.termbox') || root);

@@ -11,6 +11,9 @@ const (
 	Signal = "https://relay.sourceful-labs.net"
 	// STUN is the default STUN server for NAT traversal (srflx discovery).
 	STUN = "stun:stun.l.google.com:19302"
+	// Web is where the browser SPA is hosted. Pairing QR codes encode
+	// Web + "/#" + code so scanning with a phone opens the SPA ready to pair.
+	Web = "https://term.sourceful-labs.net"
 )
 
 // SignalURL returns the effective signaling URL: TR_SIGNAL env, else the baked default.
@@ -27,4 +30,12 @@ func STUNURL() string {
 		return v
 	}
 	return STUN
+}
+
+// WebURL returns the effective SPA base URL: TR_WEB env, else the baked default.
+func WebURL() string {
+	if v := os.Getenv("TR_WEB"); v != "" {
+		return v
+	}
+	return Web
 }

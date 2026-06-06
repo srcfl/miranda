@@ -89,6 +89,7 @@ func cmdPair(args []string) {
 	dir := fs.String("dir", defaultDir(), "config directory")
 	name := fs.String("name", hostname(), "machine display name")
 	signalURL := fs.String("signal", defaults.SignalURL(), "signaling server base URL")
+	webURL := fs.String("web", defaults.WebURL(), "browser SPA base URL (the QR opens this)")
 	_ = fs.Parse(args)
 
 	cfg, err := agent.LoadOrInit(*dir, *name, *signalURL)
@@ -98,10 +99,13 @@ func cmdPair(args []string) {
 
 	token := pairing.NewToken()
 	code := pairing.EncodeCode(*signalURL, token)
+	pairURL := strings.TrimRight(*webURL, "/") + "/#" + code
 
-	fmt.Println("Pair this machine — run on your client:")
-	fmt.Printf("\n  trm pair %s\n\n", code)
-	qrterminal.GenerateHalfBlock(code, qrterminal.L, os.Stdout)
+	fmt.Println("Pair this machine:")
+	fmt.Print("\n  📱 Scan with your phone's camera — it opens the app ready to pair:\n\n")
+	qrterminal.GenerateHalfBlock(pairURL, qrterminal.L, os.Stdout)
+	fmt.Printf("\n  …or open: %s\n", pairURL)
+	fmt.Printf("  …or on the CLI:  trm pair %s\n", code)
 	fmt.Printf("\nwaiting for pairing (2 min)…\n")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
