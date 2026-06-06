@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/creack/pty"
@@ -20,6 +21,16 @@ type PTY struct {
 // {"tmux","new","-A","-s","main"}; tests pass {"sh"}.
 func StartPTY(ctx context.Context, argv []string) (*PTY, error) {
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	// The client is xterm.js; set TERM so tmux/clear/vim work. Without this, an
+	// agent launched by launchd/systemd (no TERM in its env) gives the child an
+	// empty terminal type -> "terminal does not support clear".
+	env := make([]string, 0, len(os.Environ())+1)
+	for _, e := range os.Environ() {
+		if !strings.HasPrefix(e, "TERM=") {
+			env = append(env, e)
+		}
+	}
+	cmd.Env = append(env, "TERM=xterm-256color")
 	f, err := pty.Start(cmd)
 	if err != nil {
 		return nil, err
