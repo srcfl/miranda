@@ -4,12 +4,57 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
 )
+
+// The agent must register under EVERY paired owner so any of your devices
+// (laptop CLI, phone, ...) can reach the machine — not just the first-paired one.
+func TestUpRegistersAllOwners(t *testing.T) {
+	var mu sync.Mutex
+	seen := map[string]bool{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen[r.URL.Query().Get("owner_id")] = true
+		mu.Unlock()
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		_, _, _ = c.Read(r.Context()) // hold the registration open until the test ends
+	}))
+	defer srv.Close()
+
+	cfg := &Config{
+		SignalURL:    srv.URL,
+		MachineID:    "m1",
+		PairedOwners: []string{"aaaaaaaa", "bbbbbbbb"}, // two devices
+	}
+	rt := NewRuntime(cfg, []string{"sh"}, nil)
+	rt.baseBackoff, rt.maxBackoff = 10*time.Millisecond, 10*time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Millisecond)
+	defer cancel()
+	go func() { _ = rt.Up(ctx) }()
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		ok := seen["aaaaaaaa"] && seen["bbbbbbbb"]
+		mu.Unlock()
+		if ok {
+			return // both owners registered — pass
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	t.Fatalf("agent did not register under both owners; saw %v", seen)
+}
 
 // The agent must survive a dropped signaling connection (Cloudflare idle timeout,
 // relay restart, network blip) by reconnecting — not exit. This server accepts

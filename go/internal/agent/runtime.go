@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -31,30 +32,46 @@ func NewRuntime(cfg *Config, launch []string, ice []peer.ICEServer) *Runtime {
 	return &Runtime{cfg: cfg, launch: launch, ice: ice, baseBackoff: time.Second, maxBackoff: 30 * time.Second}
 }
 
-// Up keeps the agent registered on the signaling channel under {pinned owner,
-// machine id}, serving attaches. It RECONNECTS with backoff if the connection
-// drops (Cloudflare idle timeout, relay restart, network blip) so the machine
-// stays reachable; it returns only when ctx is cancelled (clean shutdown) or no
-// owner is paired.
+// Up keeps the agent registered on the signaling channel for EVERY paired owner
+// under {owner, machine id}, serving attaches — so any of your devices (laptop
+// CLI, phone, ...) can reach this machine. Each owner gets its own connection
+// that RECONNECTS with backoff if it drops (Cloudflare idle timeout, relay
+// restart, network blip). Returns only when ctx is cancelled or no owner paired.
 func (rt *Runtime) Up(ctx context.Context) error {
-	if len(rt.cfg.PairedOwners) == 0 {
+	owners := rt.cfg.PairedOwners
+	if len(owners) == 0 {
 		return errNoOwner
 	}
+	var wg sync.WaitGroup
+	for _, owner := range owners {
+		owner := owner
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rt.serveOwner(ctx, owner)
+		}()
+	}
+	wg.Wait()
+	return nil
+}
+
+// serveOwner maintains one owner's registration, reconnecting with backoff.
+func (rt *Runtime) serveOwner(ctx context.Context, owner string) {
 	backoff := rt.baseBackoff
 	for {
-		connected, err := rt.serveOnce(ctx)
+		connected, err := rt.serveOnce(ctx, owner)
 		if ctx.Err() != nil {
-			return nil // clean shutdown
+			return
 		}
 		if connected {
 			backoff = rt.baseBackoff // a live connection dropped -> retry promptly
 		}
 		if rt.Logf != nil {
-			rt.Logf("signaling disconnected (%v); reconnecting in %s", err, backoff)
+			rt.Logf("owner %s disconnected (%v); reconnecting in %s", short(owner), err, backoff)
 		}
 		select {
 		case <-ctx.Done():
-			return nil
+			return
 		case <-time.After(backoff):
 		}
 		if !connected { // dial keeps failing (relay down) -> exponential backoff
@@ -65,11 +82,11 @@ func (rt *Runtime) Up(ctx context.Context) error {
 	}
 }
 
-// serveOnce dials the signaling channel and serves offers until the connection
-// drops. The bool reports whether the dial succeeded (a live connection that
-// later dropped), so Up can reconnect promptly vs. back off a down relay.
-func (rt *Runtime) serveOnce(ctx context.Context) (bool, error) {
-	owner := rt.cfg.PairedOwners[0]
+// serveOnce dials the signaling channel for one owner and serves offers until
+// the connection drops. The bool reports whether the dial succeeded (a live
+// connection that later dropped), so the caller can reconnect promptly vs. back
+// off a down relay.
+func (rt *Runtime) serveOnce(ctx context.Context, owner string) (bool, error) {
 	c, _, err := websocket.Dial(ctx, agentSignalURL(rt.cfg.SignalURL, owner, rt.cfg.MachineID), nil)
 	if err != nil {
 		return false, err
@@ -86,12 +103,19 @@ func (rt *Runtime) serveOnce(ctx context.Context) (bool, error) {
 			continue
 		}
 		if m.Type == signal.TypeOffer {
-			go rt.handleOffer(ctx, c, m)
+			go rt.handleOffer(ctx, c, m, owner)
 		}
 	}
 }
 
-func (rt *Runtime) handleOffer(ctx context.Context, c *websocket.Conn, m signal.SignalMsg) {
+func short(hexKey string) string {
+	if len(hexKey) > 8 {
+		return hexKey[:8] + "…"
+	}
+	return hexKey
+}
+
+func (rt *Runtime) handleOffer(ctx context.Context, c *websocket.Conn, m signal.SignalMsg, owner string) {
 	ans, opened, err := peer.NewAnswerer(rt.ice)
 	if err != nil {
 		return
@@ -139,7 +163,7 @@ func (rt *Runtime) handleOffer(ctx context.Context, c *websocket.Conn, m signal.
 		return // no P2P path (strict P2P) — give up this attach
 	}
 
-	ownerPub, err := hex.DecodeString(rt.cfg.PairedOwners[0])
+	ownerPub, err := hex.DecodeString(owner)
 	if err != nil {
 		return
 	}
