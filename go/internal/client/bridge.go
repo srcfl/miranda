@@ -69,7 +69,10 @@ func ClientBridge(ctx context.Context, in io.Reader, out io.Writer, resizes <-ch
 					return
 				}
 			}
-			// FrameHello / FrameResize from the agent are ignored by the client.
+			// FrameHello / FrameResize / FrameWindows from the agent are ignored
+			// here: the CLI is a raw passthrough, so it already renders tmux's own
+			// status bar (the window overview) and Ctrl-B works — the native
+			// equivalent of the web client's tab strip, on the same shared session.
 		}
 	}()
 
