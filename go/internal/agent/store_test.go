@@ -2,6 +2,7 @@
 package agent
 
 import (
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"testing"
@@ -20,6 +21,10 @@ func TestStoreInitPersistsAndReloads(t *testing.T) {
 	if cfg.MachineID == "" {
 		t.Fatal("machine id not generated")
 	}
+	secret, err := hex.DecodeString(cfg.RegistrationSecret)
+	if err != nil || len(secret) != 32 {
+		t.Fatalf("registration secret not initialized: len=%d err=%v", len(secret), err)
+	}
 
 	// Reload: same host key + machine id (stable identity).
 	cfg2, err := LoadOrInit(dir, "macbook", "http://localhost:8443")
@@ -28,6 +33,9 @@ func TestStoreInitPersistsAndReloads(t *testing.T) {
 	}
 	if cfg2.MachineID != cfg.MachineID || cfg2.HostPrivHex != cfg.HostPrivHex {
 		t.Fatal("identity not stable across reloads")
+	}
+	if cfg2.RegistrationSecret != cfg.RegistrationSecret {
+		t.Fatal("registration secret not stable across reloads")
 	}
 }
 

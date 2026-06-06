@@ -13,13 +13,14 @@ import (
 
 // Config is the agent's persisted identity + settings, stored as config.json.
 type Config struct {
-	HostPrivHex  string   `json:"host_priv"`     // X25519 host private key (hex)
-	HostPubHex   string   `json:"host_pub"`      // derived; convenience
-	MachineID    string   `json:"machine_id"`    // random, stable
-	MachineName  string   `json:"machine_name"`  // human label (travels E2E only)
-	SignalURL    string   `json:"signal_url"`    // e.g. http://localhost:8443
-	PairedOwners []string `json:"paired_owners"` // hex owner pubkeys
-	Dir          string   `json:"-"`             // source directory (for hot-reloading owners)
+	HostPrivHex        string   `json:"host_priv"`                     // X25519 host private key (hex)
+	HostPubHex         string   `json:"host_pub"`                      // derived; convenience
+	MachineID          string   `json:"machine_id"`                    // random, stable
+	RegistrationSecret string   `json:"registration_secret,omitempty"` // relay-side registration proof
+	MachineName        string   `json:"machine_name"`                  // human label (travels E2E only)
+	SignalURL          string   `json:"signal_url"`                    // e.g. http://localhost:8443
+	PairedOwners       []string `json:"paired_owners"`                 // hex owner pubkeys
+	Dir                string   `json:"-"`                             // source directory (for hot-reloading owners)
 }
 
 // ReloadOwners reads the current paired-owner set from dir's config.json. Used by
@@ -38,8 +39,9 @@ func ReloadOwners(dir string) ([]string, error) {
 
 func configPath(dir string) string { return filepath.Join(dir, "config.json") }
 
-// LoadOrInit reads config.json from dir, creating a fresh host key + machine id
-// on first use. machineName/signalURL update the stored values.
+// LoadOrInit reads config.json from dir, creating a fresh host key, machine id,
+// and relay registration proof on first use. machineName/signalURL update the
+// stored values.
 func LoadOrInit(dir, machineName, signalURL string) (*Config, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
@@ -68,6 +70,13 @@ func LoadOrInit(dir, machineName, signalURL string) (*Config, error) {
 		b := make([]byte, 8)
 		_, _ = rand.Read(b)
 		cfg.MachineID = hex.EncodeToString(b)
+	}
+	if cfg.RegistrationSecret == "" {
+		b := make([]byte, 32)
+		if _, err := rand.Read(b); err != nil {
+			return nil, err
+		}
+		cfg.RegistrationSecret = hex.EncodeToString(b)
 	}
 	cfg.MachineName = machineName
 	cfg.SignalURL = signalURL

@@ -43,6 +43,15 @@ the network is hostile — provided the trust roots below are intact.
   never the exchanged keys. So the relay cannot MITM pairing either. The token is
   the **trust anchor**: it is the one secret that bootstraps everything, and it
   travels out of band, not through the relay. (See `go/internal/pairing`.)
+- **Agent registration proof.** Each agent persists a random
+  `registration_secret` in its local `config.json` and sends it only on
+  `/agent/signal` as `X-TR-Agent-Registration-Secret`. The relay learns that
+  proof for the `owner_id` + `machine_id` slot and rejects later replacement
+  attempts that do not present the same value. This protects live registrations
+  from clients that only know routing metadata while keeping the relay blind to
+  terminal bytes, host private keys, owner secrets, and pairing tokens. Existing
+  configs are auto-migrated on the next agent load; older no-secret agents keep
+  legacy behavior until a relay has learned a proof for that slot.
 
 ## What you have to trust (and it is never the relay)
 
@@ -66,6 +75,9 @@ the network is hostile — provided the trust roots below are intact.
   what you run. If hiding IPs from the relay matters to you, run over a VPN/overlay.
 - **Availability.** The relay is the rendezvous point; a malicious or down relay
   can deny new connections. It cannot read or alter existing P2P sessions.
+  Registration proofs prevent unauthenticated third-party clients from replacing
+  an already protected live agent registration, but the relay can still deny
+  service by policy or outage.
 - **TURN fallback (opt-in).** For symmetric NATs that cannot hole-punch, an
   operator may enable a TURN relay. Even then the relay forwards only ciphertext —
   Noise keeps it blind — but it does carry (encrypted) bytes and learns more

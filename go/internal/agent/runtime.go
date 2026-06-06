@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"net/http"
 	"net/url"
 	"strings"
 	"sync"
@@ -112,7 +113,7 @@ func (rt *Runtime) serveOwner(ctx context.Context, owner string) {
 // connection that later dropped), so the caller can reconnect promptly vs. back
 // off a down relay.
 func (rt *Runtime) serveOnce(ctx context.Context, owner string) (bool, error) {
-	c, _, err := websocket.Dial(ctx, agentSignalURL(rt.cfg.SignalURL, owner, rt.cfg.MachineID), nil)
+	c, _, err := websocket.Dial(ctx, agentSignalURL(rt.cfg.SignalURL, owner, rt.cfg.MachineID), agentDialOptions(rt.cfg.RegistrationSecret))
 	if err != nil {
 		return false, err
 	}
@@ -219,6 +220,17 @@ func (rt *Runtime) handleOffer(ctx context.Context, c *websocket.Conn, m signal.
 func agentSignalURL(base, owner, machine string) string {
 	ws := "ws" + strings.TrimPrefix(base, "http") // http->ws, https->wss
 	return ws + "/agent/signal?owner_id=" + url.QueryEscape(owner) + "&machine_id=" + url.QueryEscape(machine)
+}
+
+func agentDialOptions(registrationSecret string) *websocket.DialOptions {
+	if registrationSecret == "" {
+		return nil
+	}
+	return &websocket.DialOptions{
+		HTTPHeader: http.Header{
+			signal.AgentRegistrationSecretHeader: []string{registrationSecret},
+		},
+	}
 }
 
 type runtimeError string
