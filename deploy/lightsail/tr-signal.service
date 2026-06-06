@@ -1,0 +1,18 @@
+[Unit]
+Description=terminal-relay signaling server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/tr-signal --addr :80
+Restart=always
+RestartSec=2
+User=trsignal
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
