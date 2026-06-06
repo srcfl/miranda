@@ -283,7 +283,9 @@ function viewTerminal(root, machine) {
   // tmux control: prefix (Ctrl-B) + key, or prefix + ":cmd\n". Target windows by
   // stable window_id (@N), not index, to dodge renumber races.
   const tmuxKey = (k) => { handle && handle.sendText('\x02' + k); focus(); };
-  const tmuxCmd = (c) => { handle && handle.sendText('\x02:' + c + '\n'); focus(); };
+  // tmux command mode: prefix + ":cmd" + CR. Enter must be \r (what a terminal
+  // sends), not \n — with \n the command prompt never executes.
+  const tmuxCmd = (c) => { handle && handle.sendText('\x02:' + c + '\r'); focus(); };
   const selectWin = (id) => tmuxCmd('select-window -t ' + id);
   const newWin = () => tmuxKey('c');
   const safeName = (s) => (s || '').replace(/[^\w .\-]/g, '').slice(0, 32);
