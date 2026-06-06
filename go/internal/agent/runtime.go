@@ -140,8 +140,17 @@ func short(hexKey string) string {
 	return hexKey
 }
 
+// iceFor returns the agent's static ICE servers plus ephemeral TURN creds
+// fetched from the signaling server (for symmetric-NAT / cellular reachability).
+func (rt *Runtime) iceFor(ctx context.Context) []peer.ICEServer {
+	if turn, err := peer.FetchTURN(ctx, rt.cfg.SignalURL); err == nil && len(turn) > 0 {
+		return append(append([]peer.ICEServer{}, rt.ice...), turn...)
+	}
+	return rt.ice
+}
+
 func (rt *Runtime) handleOffer(ctx context.Context, c *websocket.Conn, m signal.SignalMsg, owner string) {
-	ans, opened, err := peer.NewAnswerer(rt.ice)
+	ans, opened, err := peer.NewAnswerer(rt.iceFor(ctx))
 	if err != nil {
 		return
 	}

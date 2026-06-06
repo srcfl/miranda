@@ -10,6 +10,22 @@ import { registerPasskey, signInPasskey, devOwnerKey, passkeySupported, isLocalh
 import jsQR from '/vendor/jsqr.js';
 
 const te = new TextEncoder();
+const DEFAULT_STUN = 'stun:stun.l.google.com:19302';
+
+// iceServers builds the ICE config: a default STUN plus ephemeral TURN creds
+// fetched from the signaling server (for symmetric-NAT / cellular reachability).
+// TURN only ever relays ciphertext — Noise keeps content end-to-end.
+async function iceServers(signalURL) {
+  const list = [{ urls: DEFAULT_STUN }];
+  try {
+    const r = await fetch(signalURL.replace(/\/$/, '') + '/turn-credentials');
+    if (r.ok) {
+      const t = await r.json();
+      if (t.urls && t.urls.length) list.push({ urls: t.urls, username: t.username, credential: t.password });
+    }
+  } catch {}
+  return list;
+}
 
 // --- identity -------------------------------------------------------------
 // Resolved once at the sign-in gate and cached; ownerKey() stays synchronous so
@@ -40,7 +56,7 @@ export async function attach(machine, termEl) {
     wsBase(machine.signal) + '/attach?owner_id=' + encodeURIComponent(ownerHex) +
     '&machine_id=' + encodeURIComponent(machine.machine_id),
   );
-  const pc = new RTCPeerConnection(machine.stun ? { iceServers: [{ urls: machine.stun }] } : {});
+  const pc = new RTCPeerConnection({ iceServers: await iceServers(machine.signal) });
   const dc = pc.createDataChannel('terminal');
   dc.binaryType = 'arraybuffer';
   ws.onerror = () => { diag.ws = 'error'; };

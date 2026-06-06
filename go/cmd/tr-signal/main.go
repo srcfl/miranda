@@ -5,6 +5,7 @@ import (
 	"flag"
 	"log"
 	"net/http"
+	"os"
 
 	"github.com/srcful/terminal-relay/go/internal/signal"
 )
@@ -12,9 +13,15 @@ import (
 func main() {
 	addr := flag.String("addr", ":8443", "listen address (TLS terminated by the fronting proxy)")
 	webroot := flag.String("webroot", "", "if set, serve the static SPA from this directory on non-signaling paths")
+	turnURL := flag.String("turn-url", "", "TURN url to hand out (e.g. turn:relay.example:3478); secret via TR_TURN_SECRET env")
 	flag.Parse()
 
 	s := signal.New()
+	s.TURNURL = *turnURL
+	s.TURNSecret = os.Getenv("TR_TURN_SECRET") // shared with coturn; never logged/shipped
+	if s.TURNSecret != "" && s.TURNURL != "" {
+		log.Printf("tr-signal: issuing ephemeral TURN credentials for %s", s.TURNURL)
+	}
 	var handler http.Handler = s.Handler()
 	if *webroot != "" {
 		handler = withStatic(s.Handler(), *webroot)

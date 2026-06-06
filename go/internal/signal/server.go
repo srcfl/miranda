@@ -39,6 +39,11 @@ type Server struct {
 	agents   map[string]*agentConn   // owner|machine -> live agent
 	sessions map[string]*browserConn // session id -> browser (global lookup)
 	pair     *pairRooms              // roomID -> waiting pairing party (blind bridge)
+
+	// TURN (optional): when both are set, /turn-credentials issues ephemeral
+	// creds for this URL. The secret is shared with coturn only — never shipped.
+	TURNSecret string
+	TURNURL    string
 }
 
 // agentConn is one agent control socket. It owns the set of browser sessions
@@ -144,6 +149,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/agent/signal", s.handleAgent)
 	mux.HandleFunc("/attach", s.handleAttach)
 	mux.HandleFunc("/pair", s.handlePair)
+	mux.HandleFunc("/turn-credentials", s.handleTURN)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	return mux
 }

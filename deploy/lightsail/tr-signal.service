@@ -4,7 +4,10 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/tr-signal --addr :80 --webroot /opt/tr-web
+# /etc/tr-signal.env (created by deploy/turn/setup-coturn.sh) holds TR_TURN_SECRET,
+# shared with coturn so tr-signal can mint ephemeral TURN credentials. Optional.
+EnvironmentFile=-/etc/tr-signal.env
+ExecStart=/usr/local/bin/tr-signal --addr :80 --webroot /opt/tr-web --turn-url turn:relay.sourceful-labs.net:3478
 Restart=always
 RestartSec=2
 User=trsignal
