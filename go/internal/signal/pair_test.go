@@ -46,6 +46,27 @@ func TestPairBridgeForwardsBothWays(t *testing.T) {
 	}
 }
 
+func TestPairRoomCapacityRejectsNewRooms(t *testing.T) {
+	p := newPairRooms()
+	p.waiting["full"] = &pairWaiter{partner: make(chan *websocket.Conn, 1), done: make(chan struct{})}
+
+	_, _, _, err := p.rendezvous("other", nil, 1)
+	if err != errPairCapacity {
+		t.Fatalf("expected pair capacity error, got %v", err)
+	}
+	if len(p.waiting) != 1 {
+		t.Fatalf("capacity rejection should not grow waiting rooms: %d", len(p.waiting))
+	}
+
+	other, done, drive, err := p.rendezvous("full", nil, 1)
+	if err != nil {
+		t.Fatalf("existing room should still pair at capacity: %v", err)
+	}
+	if other != nil || done == nil || drive {
+		t.Fatalf("unexpected existing-room rendezvous result: other=%v done=%v drive=%v", other, done, drive)
+	}
+}
+
 // countHandlePair returns how many goroutines currently have a handlePair frame
 // on their stack.
 func countHandlePair() int {

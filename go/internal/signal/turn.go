@@ -11,7 +11,7 @@ import (
 )
 
 // TURN credential TTL handed to clients (coturn validates the embedded expiry).
-const turnTTL = 12 * time.Hour
+const turnTTL = 10 * time.Minute
 
 // TURNCreds is the ephemeral TURN credential issued to a client. It follows the
 // coturn "TURN REST API" scheme: username = expiry-unix, password =

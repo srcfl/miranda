@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/srcful/terminal-relay/go/internal/signal"
 )
@@ -27,10 +28,21 @@ func main() {
 		handler = withStatic(s.Handler(), *webroot)
 		log.Printf("tr-signal serving SPA from %s", *webroot)
 	}
-	srv := &http.Server{Addr: *addr, Handler: handler}
+	srv := newHTTPServer(*addr, handler)
 	log.Printf("tr-signal listening on %s (signaling only; no terminal data)", *addr)
 	if err := srv.ListenAndServe(); err != nil {
 		log.Fatal(err)
+	}
+}
+
+func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 }
 
