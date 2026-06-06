@@ -100,6 +100,12 @@ trm attach laptop macmini linux
 Everything defaults to our relay + STUN, so no flags are needed. Point at your own
 infrastructure with `--signal` / `TR_SIGNAL` and `--stun` / `TR_STUN`.
 
+Security migration: current agents auto-add a local `registration_secret` to
+`config.json` on the next `tr-agent enroll`, `tr-agent pair`, or `tr-agent up`.
+Restart long-running agents after updating. Relays still accept older no-secret
+agents until a proof has been learned for that `owner_id` + `machine_id`; after
+that, replacements must present the same proof.
+
 ## How it works (the short version)
 
 ```

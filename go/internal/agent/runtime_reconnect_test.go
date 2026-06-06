@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/srcful/terminal-relay/go/internal/signal"
 )
 
 // The agent must register under EVERY paired owner so any of your devices
@@ -54,6 +55,40 @@ func TestUpRegistersAllOwners(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	t.Fatalf("agent did not register under both owners; saw %v", seen)
+}
+
+func TestUpSendsRegistrationSecret(t *testing.T) {
+	const secret = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+	seen := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- r.Header.Get(signal.AgentRegistrationSecretHeader)
+		if c, err := websocket.Accept(w, r, nil); err == nil {
+			_, _, _ = c.Read(r.Context())
+		}
+	}))
+	defer srv.Close()
+
+	cfg := &Config{
+		SignalURL:          srv.URL,
+		MachineID:          "m1",
+		RegistrationSecret: secret,
+		PairedOwners:       []string{"aaaaaaaa"},
+	}
+	rt := NewRuntime(cfg, []string{"sh"}, nil)
+	rt.baseBackoff, rt.maxBackoff = 10*time.Millisecond, 10*time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Millisecond)
+	defer cancel()
+	go func() { _ = rt.Up(ctx) }()
+
+	select {
+	case got := <-seen:
+		if got != secret {
+			t.Fatalf("registration secret header = %q, want %q", got, secret)
+		}
+	case <-ctx.Done():
+		t.Fatal("agent never registered")
+	}
 }
 
 // The agent must survive a dropped signaling connection (Cloudflare idle timeout,

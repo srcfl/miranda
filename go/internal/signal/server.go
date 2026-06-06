@@ -4,6 +4,7 @@ package signal
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"net/http"
@@ -45,14 +46,21 @@ var (
 // request to forge — all authentication lives in the Noise/owner-key layer.
 var acceptOpts = &websocket.AcceptOptions{OriginPatterns: []string{"*"}}
 
+// AgentRegistrationSecretHeader carries the agent's local registration proof.
+// It authenticates only relay registration replacement for one owner|machine
+// slot; terminal data and peer authentication remain end-to-end on the data
+// plane.
+const AgentRegistrationSecretHeader = "X-TR-Agent-Registration-Secret"
+
 // Server brokers SDP between agents and browsers. It never carries terminal
 // data — only SignalMsg (SDP + routing). Once a DataChannel is up P2P, the two
 // signaling sockets for that session are no longer needed.
 type Server struct {
-	mu       sync.Mutex
-	agents   map[string]*agentConn   // owner|machine -> live agent
-	sessions map[string]*browserConn // session id -> browser (global lookup)
-	pair     *pairRooms              // roomID -> waiting pairing party (blind bridge)
+	mu           sync.Mutex
+	agents       map[string]*agentConn   // owner|machine -> live agent
+	agentSecrets map[string]string       // owner|machine -> learned registration proof
+	sessions     map[string]*browserConn // session id -> browser (global lookup)
+	pair         *pairRooms              // roomID -> waiting pairing party (blind bridge)
 
 	// TURN (optional): when both are set, /turn-credentials issues ephemeral
 	// creds for this URL. The secret is shared with coturn only — never shipped.
@@ -163,6 +171,7 @@ func (bc *browserConn) close() { bc.once.Do(func() { close(bc.done) }) }
 func New() *Server {
 	return &Server{
 		agents:           map[string]*agentConn{},
+		agentSecrets:     map[string]string{},
 		sessions:         map[string]*browserConn{},
 		pair:             newPairRooms(),
 		maxAgentSessions: defaultMaxAgentSessions,
@@ -211,20 +220,37 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing owner_id/machine_id", http.StatusBadRequest)
 		return
 	}
+	proof := r.Header.Get(AgentRegistrationSecretHeader)
+	k := key(owner, machine)
+	s.mu.Lock()
+	if !s.agentProofOKLocked(k, proof) {
+		s.mu.Unlock()
+		http.Error(w, "agent registration proof required", http.StatusUnauthorized)
+		return
+	}
+	s.mu.Unlock()
+
 	c, err := acceptSignal(w, r)
 	if err != nil {
 		return
 	}
 
 	ac := newAgentConn()
-	k := key(owner, machine)
 
 	// Register, replacing any previous agent for this key. Re-registration is
 	// routine on agent restart; the previous agent — and the browser sessions
 	// bound to it — must be torn down so nothing keeps routing offers to the
 	// dead one.
 	s.mu.Lock()
+	if !s.agentProofOKLocked(k, proof) {
+		s.mu.Unlock()
+		c.Close(websocket.StatusPolicyViolation, "agent registration proof required")
+		return
+	}
 	prev := s.agents[k]
+	if proof != "" && s.agentSecrets[k] == "" {
+		s.agentSecrets[k] = proof
+	}
 	s.agents[k] = ac
 	s.mu.Unlock()
 	if prev != nil {
@@ -273,6 +299,14 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 
 	// Writer: drain ac.out to the agent until ac.done (or r.Context()) fires.
 	writeUntil(r.Context(), ac.done, c, ac.out, SignalMsg{Type: TypeReady})
+}
+
+func (s *Server) agentProofOKLocked(k, proof string) bool {
+	expected := s.agentSecrets[k]
+	if expected == "" {
+		return true
+	}
+	return subtle.ConstantTimeCompare([]byte(proof), []byte(expected)) == 1
 }
 
 func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
