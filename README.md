@@ -1,8 +1,14 @@
 # terminal-relay
 
 A terminal you reach from any browser by authenticating with a passkey — like
-SSH, without thinking SSH. End-to-end encrypted (the relay is a blind pipe),
-persistent tmux sessions, passkey-derived identity synced across your devices.
+SSH, without thinking SSH. End-to-end encrypted, **peer-to-peer**, persistent
+tmux sessions, passkey-derived identity synced across your devices.
+
+**You do not have to trust the relay.** Terminal data flows directly between your
+devices, end-to-end encrypted; the relay only brokers the connection and sees
+ciphertext + routing metadata. The exact, falsifiable trust model — what the
+relay can and cannot do, what you must trust, and how to verify it — is in
+[`SECURITY.md`](SECURITY.md). That trust story is the core of the project.
 
 See `docs/superpowers/specs/` for the design and `docs/superpowers/plans/` for
 the implementation roadmap.
