@@ -40,8 +40,8 @@ func TestTURNCredentials(t *testing.T) {
 	if turnTTL != 12*time.Hour {
 		t.Fatalf("turnTTL: want 12h (must outlast a session), got %v", turnTTL)
 	}
-	if c.TTL != int((10 * time.Minute).Seconds()) {
-		t.Fatalf("json ttl: want 600, got %d", c.TTL)
+	if c.TTL != int(turnTTL.Seconds()) {
+		t.Fatalf("json ttl: want %d, got %d", int(turnTTL.Seconds()), c.TTL)
 	}
 	// username = a future unix expiry
 	exp, err := strconv.ParseInt(c.Username, 10, 64)
