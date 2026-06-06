@@ -1,7 +1,7 @@
 // web/src/app.js — the SPA: identity, a machine list, in-browser pairing, and a
 // live terminal. Data plane is P2P + Noise (see attach); the relay only brokers.
 import { HandshakeKK } from './noise/noise-kk.js';
-import { encodeData, encodeResize, decodeFrame, FRAME_DATA } from './noise/frame.js';
+import { encodeData, encodeResize, decodeFrame, FRAME_DATA, FRAME_WINDOWS } from './noise/frame.js';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -12,6 +12,7 @@ import { registerPasskey, signInPasskey, devOwnerKey, passkeySupported, isLocalh
 import jsQR from '/vendor/jsqr.js';
 
 const te = new TextEncoder();
+const td = new TextDecoder();
 const DEFAULT_STUN = 'stun:stun.l.google.com:19302';
 
 // iceServers builds the ICE config: a default STUN plus ephemeral TURN creds
@@ -43,7 +44,8 @@ function setOwner(k) { _owner = k; window.__ownerPub = bytesToHex(k.pub); }
 const wsBase = (signalURL) => 'ws' + signalURL.slice(4); // http->ws, https->wss
 
 // --- attach (P2P + Noise + xterm) ----------------------------------------
-export async function attach(machine, termEl) {
+// onWindows(snapshot) is invoked with each FrameWindows tmux snapshot.
+export async function attach(machine, termEl, onWindows) {
   const owner = ownerKey();
   const ownerHex = bytesToHex(owner.pub);
 
@@ -131,6 +133,7 @@ export async function attach(machine, termEl) {
       try { ct = await recv(); } catch { return; }
       const { type, payload } = decodeFrame(hs.decrypt(ct));
       if (type === FRAME_DATA) term.write(payload);
+      else if (type === FRAME_WINDOWS) { try { onWindows && onWindows(JSON.parse(td.decode(payload))); } catch {} }
     }
   })();
 
@@ -274,25 +277,75 @@ function viewPair(root, prefill = '', auto = false) {
 
 function viewTerminal(root, machine) {
   let handle = null;
+  let snap = null; // latest tmux window snapshot (FrameWindows), or null (non-tmux)
   const close = () => { try { handle && handle.close(); } catch {} };
+  const focus = () => { window.__term && window.__term.focus(); };
+  // tmux control: prefix (Ctrl-B) + key, or prefix + ":cmd\n". Target windows by
+  // stable window_id (@N), not index, to dodge renumber races.
+  const tmuxKey = (k) => { handle && handle.sendText('\x02' + k); focus(); };
+  const tmuxCmd = (c) => { handle && handle.sendText('\x02:' + c + '\n'); focus(); };
+  const selectWin = (id) => tmuxCmd('select-window -t ' + id);
+  const newWin = () => tmuxKey('c');
+  const safeName = (s) => (s || '').replace(/[^\w .\-]/g, '').slice(0, 32);
 
   const termBox = el('div', { className: 'termbox' });
   const back = el('button', { className: 'tb-btn', onclick: () => { close(); viewMachines(root); } }, '‹ Machines');
   const sw = el('button', { className: 'tb-btn', title: 'switch machine', onclick: () => openSwitcher() }, '⇄');
-  // multiple sessions per machine = tmux windows. Send the tmux prefix (Ctrl-B,
-  // the default) + a command over the live channel — no protocol change, and the
-  // windows persist + sync across every device attached to this machine.
-  const tmux = (key) => { handle && handle.sendText('\x02' + key); window.__term && window.__term.focus(); };
-  const winbar = el('div', { className: 'winbar' },
-    el('span', { className: 'winbar-label' }, 'windows'),
-    el('button', { className: 'tb-btn', title: 'new window', onclick: () => tmux('c') }, '＋'),
-    el('button', { className: 'tb-btn', title: 'previous window', onclick: () => tmux('p') }, '‹'),
-    el('button', { className: 'tb-btn', title: 'next window', onclick: () => tmux('n') }, '›'));
+  const strip = el('div', { className: 'winbar' });
   const view = el('div', { className: 'view term' },
     el('div', { className: 'topbar' }, back, el('div', { className: 'tb-title' }, machine.name || machine.machine_id), sw),
-    winbar,
-    termBox);
+    strip, termBox);
   mount(root, view);
+
+  // tab strip: a pill per tmux window (mirrors the snapshot), active highlighted,
+  // ＋ to create, ▦ for the grid overview. Falls back to ＋/‹/› before any
+  // snapshot (or for non-tmux shells).
+  function renderStrip() {
+    strip.replaceChildren();
+    if (!snap || !snap.win || !snap.win.length) {
+      strip.append(
+        el('span', { className: 'winbar-label' }, 'windows'),
+        el('button', { className: 'tb-btn', onclick: newWin }, '＋'),
+        el('button', { className: 'tb-btn', onclick: () => tmuxKey('p') }, '‹'),
+        el('button', { className: 'tb-btn', onclick: () => tmuxKey('n') }, '›'));
+      return;
+    }
+    const pills = el('div', { className: 'pills' });
+    for (const w of snap.win) {
+      const active = w.id === snap.active;
+      const pill = el('button', { className: 'pill' + (active ? ' active' : ''), onclick: () => selectWin(w.id) },
+        el('span', {}, w.i + ':' + (w.n || w.cmd || '')));
+      if (w.b) pill.append(el('span', { className: 'dot bell' }));
+      else if (w.a && !active) pill.append(el('span', { className: 'dot act' }));
+      if (active) setTimeout(() => pill.scrollIntoView({ inline: 'center', block: 'nearest' }), 0);
+      pills.append(pill);
+    }
+    pills.append(el('button', { className: 'pill add', title: 'new window', onclick: newWin }, '＋'));
+    strip.append(pills, el('button', { className: 'tb-btn', title: 'overview', onclick: openGrid }, '▦'));
+  }
+  renderStrip();
+
+  // grid overview: a card per window (name, running command, panes); tap to
+  // switch; rename / close per card; ＋ for a new window.
+  function openGrid() {
+    if (!snap || !snap.win) return;
+    const card = el('div', { className: 'sheet-card' }, el('div', { className: 'sheet-title' }, 'windows on ' + (machine.name || machine.machine_id)));
+    const sheet = el('div', { className: 'sheet', onclick: (e) => { if (e.target === sheet) sheet.remove(); } }, card);
+    const grid = el('div', { className: 'wgrid' });
+    for (const w of snap.win) {
+      const wc = el('button', { className: 'wcard' + (w.id === snap.active ? ' active' : ''), onclick: () => { sheet.remove(); selectWin(w.id); } },
+        el('div', { className: 'wcard-name' }, w.i + ': ' + (w.n || '')),
+        el('div', { className: 'wcard-sub' }, (w.cmd || '') + (w.p > 1 ? ' · ' + w.p + ' panes' : '') + (w.b ? ' · 🔔' : w.a ? ' · •' : '')),
+        el('div', { className: 'wcard-actions' },
+          el('span', { className: 'link', onclick: (e) => { e.stopPropagation(); const n = safeName(prompt('Rename window', w.n)); if (n) tmuxCmd('rename-window -t ' + w.id + ' ' + n); sheet.remove(); } }, 'rename'),
+          el('span', { className: 'link', onclick: (e) => { e.stopPropagation(); if (confirm('Close window ' + w.i + '?')) tmuxCmd('kill-window -t ' + w.id); sheet.remove(); } }, 'close')));
+      grid.append(wc);
+    }
+    card.append(grid,
+      el('button', { className: 'sheet-item add', onclick: () => { sheet.remove(); newWin(); } }, '＋ New window'),
+      el('button', { className: 'link', onclick: () => sheet.remove() }, 'cancel'));
+    view.append(sheet);
+  }
 
   // quick-switcher: jump straight to another machine without going back to the list
   function openSwitcher() {
@@ -306,7 +359,9 @@ function viewTerminal(root, machine) {
     view.append(sheet);
   }
 
-  attach(machine, termBox).then((h) => { handle = h; }).catch((e) => termBox.append(el('div', { className: 'status' }, 'connect failed: ' + (e && e.message || e))));
+  attach(machine, termBox, (s) => { snap = s; renderStrip(); })
+    .then((h) => { handle = h; })
+    .catch((e) => termBox.append(el('div', { className: 'status' }, 'connect failed: ' + (e && e.message || e))));
 }
 
 // after sign-in: replay a scanned pairing code, else show machines

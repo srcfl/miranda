@@ -35,6 +35,21 @@
   .winbar { display: flex; align-items: center; gap: 4px; padding: 4px 8px; background: #0b0e14; border-bottom: 1px solid var(--line); }
   .winbar-label { color: var(--mut); font-size: 12px; margin-right: 6px; }
   .winbar .tb-btn { font-size: 14px; padding: 6px 12px; min-width: 0; }
+  .pills { display: flex; gap: 6px; overflow-x: auto; -webkit-overflow-scrolling: touch; scroll-snap-type: x proximity; flex: 1; }
+  .pill { flex: 0 0 auto; scroll-snap-align: center; background: #11161f; border: 1px solid var(--line); color: var(--fg);
+    border-radius: 8px; padding: 6px 12px; font: 13px ui-sans-serif, system-ui; cursor: pointer; min-height: 36px;
+    display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .pill.active { border-color: var(--acc); color: var(--acc); }
+  .pill.add { color: var(--acc); border-style: dashed; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+  .dot.act { background: #38bdf8; } .dot.bell { background: #f87171; }
+  .wgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-bottom: 12px; }
+  .wcard { text-align: left; background: #11161f; border: 1px solid var(--line); border-radius: 12px; padding: 12px; color: var(--fg); font: inherit; cursor: pointer; }
+  .wcard.active { border-color: var(--acc); }
+  .wcard-name { font-weight: 600; }
+  .wcard-sub { color: var(--mut); font-size: 12px; margin: 4px 0 8px; font-family: ui-monospace, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .wcard-actions { display: flex; gap: 14px; }
+  .wcard-actions .link { margin: 0; font-size: 13px; }
   .sheet { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: flex; align-items: flex-end; justify-content: center; z-index: 20; }
   .sheet-card { background: var(--card); border: 1px solid var(--line); border-radius: 16px 16px 0 0; width: 100%; max-width: 520px;
     padding: 16px 16px calc(env(safe-area-inset-bottom) + 16px); }
