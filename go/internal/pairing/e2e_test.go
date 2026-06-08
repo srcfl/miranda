@@ -42,7 +42,7 @@ func TestPairThroughSignalingServer(t *testing.T) {
 	}()
 	time.Sleep(150 * time.Millisecond) // let the agent register the room first
 
-	// Client side (initiator), decoding the code as `trm pair` would.
+	// Client side (initiator), decoding the code as `mir pair` would.
 	signalURL, tok, err := pairing.DecodeCode(code)
 	if err != nil {
 		t.Fatal(err)

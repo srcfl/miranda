@@ -33,28 +33,28 @@ fi
 echo "ok: 10.88.10.5 (agent) is unroutable from the client — only srflx can connect"
 
 echo "== enroll agent =="
-exec_t agent tr-agent enroll --name box --signal "$SIGNAL" >/dev/null
+exec_t agent mir-agent enroll --name box --signal "$SIGNAL" >/dev/null
 CFG=$(exec_t agent cat /root/.terminal-relay/config.json)
 MID=$(echo "$CFG" | field x machine_id)
 HPUB=$(echo "$CFG" | field x host_pub)
 echo "  machine_id=$MID host_pub=${HPUB:0:16}..."
 
 echo "== client keygen =="
-exec_t client trm keygen >/dev/null
+exec_t client mir keygen >/dev/null
 OPUB=$(exec_t client cat /root/.terminal-relay/owner.json | field x owner_pub)
 echo "  owner_pub=${OPUB:0:16}..."
 
 echo "== pair + run agent =="
-exec_t agent tr-agent pair-dev --owner-pub "$OPUB" >/dev/null
-dc exec -d agent sh -c "tr-agent up --shell sh --signal $SIGNAL --stun $STUN $TURN_ARGS >/tmp/agent.log 2>&1"
+exec_t agent mir-agent pair-dev --owner-pub "$OPUB" >/dev/null
+dc exec -d agent sh -c "mir-agent up --shell sh --signal $SIGNAL --stun $STUN $TURN_ARGS >/tmp/agent.log 2>&1"
 sleep 2
 [ -n "$TURN_ARGS" ] && echo "== TURN fallback ENABLED =="
 
 echo "== client registers machine =="
-exec_t client trm add-machine --name box --id "$MID" --host-pub "$HPUB" --signal "$SIGNAL" >/dev/null
+exec_t client mir add-machine --name box --id "$MID" --host-pub "$HPUB" --signal "$SIGNAL" >/dev/null
 
 echo "== run a command across the two NATs =="
-OUT=$(exec_t client trm run --stun "$STUN" $TURN_ARGS --window 12s box "echo NAT_TRAVERSAL_OK; echo host=\$(hostname)" 2>&1 || true)
+OUT=$(exec_t client mir run --stun "$STUN" $TURN_ARGS --window 12s box "echo NAT_TRAVERSAL_OK; echo host=\$(hostname)" 2>&1 || true)
 echo "---- client output (incl. ICE debug) ----"
 echo "$OUT"
 echo "---- agent ICE debug ----"

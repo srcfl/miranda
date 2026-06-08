@@ -20,7 +20,7 @@ services:
   signal:
     build: { context: ../.., dockerfile: deploy/netsim/Dockerfile }
     image: tr-netsim
-    command: ["tr-signal", "--addr", ":8443"]
+    command: ["mir-signal", "--addr", ":8443"]
     networks:
       pub: { ipv4_address: 10.88.0.10 }
 
@@ -59,7 +59,7 @@ services:
     entrypoint: ["/node-entrypoint.sh"]
     command: ["sleep", "infinity"]
     cap_add: [NET_ADMIN]
-    environment: { NAT_GW: "10.88.10.2", TR_ICE_DEBUG: "1" }
+    environment: { NAT_GW: "10.88.10.2", MIR_ICE_DEBUG: "1" }
     depends_on: [signal, coturn, nat_a]
     networks:
       lan_a: { ipv4_address: 10.88.10.5 }
@@ -69,7 +69,7 @@ services:
     entrypoint: ["/node-entrypoint.sh"]
     command: ["sleep", "infinity"]
     cap_add: [NET_ADMIN]
-    environment: { NAT_GW: "10.88.20.2", TR_ICE_DEBUG: "1" }
+    environment: { NAT_GW: "10.88.20.2", MIR_ICE_DEBUG: "1" }
     depends_on: [signal, coturn, nat_b]
     networks:
       lan_b: { ipv4_address: 10.88.20.5 }

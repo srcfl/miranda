@@ -1,4 +1,4 @@
-// go/cmd/tr-signal/main.go
+// go/cmd/mir-signal/main.go
 package main
 
 import (
@@ -21,19 +21,19 @@ func main() {
 	tlsCert := flag.String("tls-cert", "", "TLS certificate file (PEM)")
 	tlsKey := flag.String("tls-key", "", "TLS private key file (PEM)")
 	webroot := flag.String("webroot", "", "if set, serve the static SPA from this directory on non-signaling paths")
-	turnURL := flag.String("turn-url", "", "TURN url to hand out (e.g. turn:relay.example:3478); secret via TR_TURN_SECRET env")
+	turnURL := flag.String("turn-url", "", "TURN url to hand out (e.g. turn:relay.example:3478); secret via MIR_TURN_SECRET env")
 	flag.Parse()
 
 	s := signal.New()
 	s.TURNURL = *turnURL
-	s.TURNSecret = os.Getenv("TR_TURN_SECRET") // shared with coturn; never logged/shipped
+	s.TURNSecret = os.Getenv("MIR_TURN_SECRET") // shared with coturn; never logged/shipped
 	if s.TURNSecret != "" && s.TURNURL != "" {
-		log.Printf("tr-signal: issuing ephemeral TURN credentials for %s", s.TURNURL)
+		log.Printf("mir-signal: issuing ephemeral TURN credentials for %s", s.TURNURL)
 	}
 	var handler http.Handler = s.Handler()
 	if *webroot != "" {
 		handler = withStatic(s.Handler(), *webroot)
-		log.Printf("tr-signal serving SPA from %s", *webroot)
+		log.Printf("mir-signal serving SPA from %s", *webroot)
 	}
 	// Serve HTTPS directly when a cert is provided (Cloudflare "Full (strict)":
 	// the CF->origin leg is then encrypted). Runs alongside the plain listener so
@@ -41,14 +41,14 @@ func main() {
 	if *tlsAddr != "" && *tlsCert != "" && *tlsKey != "" {
 		go func() {
 			ts := newHTTPServer(*tlsAddr, handler)
-			log.Printf("tr-signal HTTPS listening on %s", *tlsAddr)
+			log.Printf("mir-signal HTTPS listening on %s", *tlsAddr)
 			if err := ts.ListenAndServeTLS(*tlsCert, *tlsKey); err != nil {
 				log.Fatal(err)
 			}
 		}()
 	}
 	srv := newHTTPServer(*addr, handler)
-	log.Printf("tr-signal listening on %s (signaling only; no terminal data)", *addr)
+	log.Printf("mir-signal listening on %s (signaling only; no terminal data)", *addr)
 	if err := srv.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}

@@ -12,10 +12,10 @@ import (
 )
 
 // attachICEDebug logs gathered ICE candidates and connection-state changes to
-// stderr when TR_ICE_DEBUG is set. Useful to confirm srflx (NAT-traversal)
+// stderr when MIR_ICE_DEBUG is set. Useful to confirm srflx (NAT-traversal)
 // candidates are gathered and which path ICE selects.
 func attachICEDebug(pc *webrtc.PeerConnection) {
-	if os.Getenv("TR_ICE_DEBUG") == "" {
+	if os.Getenv("MIR_ICE_DEBUG") == "" {
 		return
 	}
 	pc.OnICECandidate(func(c *webrtc.ICECandidate) {

@@ -125,7 +125,7 @@ func TestUpReconnectsAfterDrop(t *testing.T) {
 }
 
 // Pairing a new device/identity must take effect WITHOUT restarting the agent:
-// `tr-agent up` should pick up an owner added to config.json at runtime.
+// `mir-agent up` should pick up an owner added to config.json at runtime.
 func TestUpHotReloadsNewlyPairedOwner(t *testing.T) {
 	var mu sync.Mutex
 	seen := map[string]bool{}

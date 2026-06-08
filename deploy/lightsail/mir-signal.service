@@ -1,0 +1,21 @@
+[Unit]
+Description=terminal-relay signaling server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# /etc/mir-signal.env (created by deploy/turn/setup-coturn.sh) holds MIR_TURN_SECRET,
+# shared with coturn so mir-signal can mint ephemeral TURN credentials. Optional.
+EnvironmentFile=-/etc/mir-signal.env
+ExecStart=/usr/local/bin/mir-signal --addr :80 --tls-addr :443 --tls-cert /etc/ssl/mir-signal/cert.pem --tls-key /etc/ssl/mir-signal/key.pem --webroot /opt/mir-web --turn-url turn:16.171.89.172:3478
+Restart=always
+RestartSec=2
+User=mirsignal
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -137,5 +137,5 @@ func GetMachine(dir, name string) (*Machine, error) {
 			return &list[i], nil
 		}
 	}
-	return nil, fmt.Errorf("unknown machine %q (add it with `tr add-machine`)", name)
+	return nil, fmt.Errorf("unknown machine %q (add it with `mir add-machine`)", name)
 }

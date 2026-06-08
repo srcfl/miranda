@@ -1,117 +1,88 @@
-# terminal-relay
+# Miranda
 
-> **Your terminals, on every machine you own, reachable from anywhere — with no
-> SSH keys to juggle, no ports to forward, and a relay you don't have to trust.**
-> Mostly harmless. Definitely magic.
+> **A peer-to-peer, end-to-end-encrypted remote terminal.** Reach the shell on any
+> machine you own — from your laptop, another box, or your phone's browser —
+> authenticated by a passkey. No SSH keys to juggle, no ports to forward, and a
+> relay you don't have to trust.
 
----
+**Miranda** is a cross-machine terminal multiplexer: one workspace that spans every
+machine you own. Terminal traffic flows **directly peer-to-peer** over a WebRTC
+DataChannel, end-to-end encrypted with the Noise `KK` handshake. A small relay only
+introduces the two ends and then steps aside — it sees ciphertext and routing
+metadata, never your keystrokes or output. The relay, in other words, has **the
+right to remain silent**.
 
-## The Why (or: a story about juggling)
+It's `tmux` for terminals that live on different machines: tmux owns the
+windows/panes and persistence on each host; Miranda owns *which machine you're
+looking at*.
 
-This was born out of frustration, which — as the Guide notes — is how most useful
-things in the universe come to be, the rest being born out of either boredom or a
-profound misunderstanding of the laws of thermodynamics.
+## Features
 
-The specific frustration was this: there is, on any given day, **a small herd of
-Claude Code sessions** scattered across a laptop, an office Mac mini, and a Linux
-box that exists mainly to be warm. One of them is doing the interesting thing. The
-others are also doing the interesting thing, somewhere, probably, and getting to
-the right one involved an amount of `ssh`-ing, tunnel-poking, and quiet swearing
-that is not, strictly speaking, *magic*.
-
-A few stubborn convictions fell out of that:
-
-- **I love my terminal and I am not leaving.** The terminal isn't a fallback for
-  when the GUI breaks. It's the best window we've got. I want to stay in it.
-- **The tool must not belong to one robot.** Claude Code, Codex, whatever comes
-  next — they're all just things that run *in a terminal*. So don't build for the
-  robot. Build for the window. The terminal already is the universal interface;
-  it has been since before graphical anything, and (Lindy says) will be long after.
-- **Don't reinvent the engine.** `tmux` is good. `tmux` has been good since
-  approximately the dawn of time and will be good when we are all dust. We are not
-  going to out-clever forty years of session-multiplexing on a Tuesday. We keep
-  the proven engine and build *around* it.
-- **It should feel like magic** — open a thing on any device, and there are your
-  machines, alive, exactly as you left them. The reaction we're after is the one
-  where you tilt your head and go *"…wait, why has nobody done this already?"*
-- **Modern, not antique.** No password files, no copied keys, no "paste this 4096-bit
-  blob into authorized_keys." **Passkeys.** Real end-to-end crypto. The newest safe
-  web tech, used properly.
-- **As serverless as physics allows.** There's a relay, because two machines behind
-  two NATs need an introduction. But it's a *blind matchmaker* — it never sees your
-  traffic, and you never have to trust it (see below). One day the relay itself
-  could be decentralized. The Guide files that under *Improbable, But Not As
-  Improbable As You'd Think*.
-
-So: **SSH, without thinking about SSH.** A terminal that exists on every device.
-Peer-to-peer, end-to-end encrypted, passkey-shaped, tmux-powered. The number we
-were aiming for, naturally, was 42.
-
----
-
-## Don't Panic (the trust bit, which is the whole point)
-
-There's a relay. **You don't have to trust it.**
-
-Your terminal traffic flows **peer-to-peer**, end-to-end encrypted (Noise `KK`).
-The relay only introduces the two ends and then gets out of the way — it sees
-ciphertext and routing metadata, never your keystrokes, never your output, and it
-*cannot* impersonate you or your machines. At pairing time both ends show a
-**safety number**; if they match, you've seen with your own eyes that no one is in
-the middle.
-
-The exact, falsifiable model — what the relay can and can't do, what you *do* have
-to trust, and how to verify all of it — lives in **[`SECURITY.md`](SECURITY.md)**.
-That document is not an afterthought. It is the project.
-
----
-
-## Status (honest, per the trust ethos)
-
-- ✅ **Works today:** the `trm` CLI — pair a machine with one code/QR, attach to a
-  real shell over P2P, multiplex across all your machines, persistent `tmux`
-  sessions. A hosted relay is live at `relay.sourceful-labs.net`.
-- 🚧 **Coming:** the browser client (passkeys + WebRTC + xterm.js → from your
-  phone), one-line install, signed releases, a third-party audit, and (one day) a
-  decentralized relay.
+- **Peer-to-peer terminal** — direct WebRTC DataChannel, no server in the data path.
+- **End-to-end encrypted** — Noise `KK` (X25519 / ChaCha20-Poly1305) runs *inside*
+  the channel, so even a malicious relay can't read or MITM your session.
+- **Passkey authentication** — WebAuthn `prf` derives your identity. No SSH keys, no
+  passwords, no `authorized_keys`. Your passkey is the only thing you carry.
+- **Persistent sessions** — `tmux` on each machine. Disconnect and reconnect resume
+  the exact same shell, scrollback intact. Long-running agents (Claude Code, Codex)
+  survive the browser sleeping or the network dropping.
+- **Cross-machine multiplexer** — attach several machines at once and switch focus
+  with a hotkey.
+- **Browser or CLI** — the `mir` CLI in your terminal, or any browser including
+  iPhone Safari.
+- **Self-hostable, blind relay** — run your own, or use the hosted one; either way it
+  never sees plaintext.
+- **macOS + Linux**, single static Go binaries. MIT licensed.
 
 ## Quickstart
 
 ```bash
 # build the CLIs (Go 1.26+; tmux for persistence)
-make install                 # -> ~/.local/bin: trm, tr-agent, tr-signal
+git clone https://github.com/srcfl/miranda && cd miranda
+make install                 # -> ~/.local/bin: mir, mir-agent, mir-signal
 
 # on a machine you want to reach:
-tr-agent pair               # prints a pairing code + QR, then waits
-tr-agent up &               # run the agent (persistent tmux sessions)
+mir-agent pair               # prints a pairing code + QR, then waits
+mir-agent up &               # run the agent (persistent tmux sessions)
 
 # on your client (laptop, another machine):
-trm pair <code>             # ...the code from above; compare the safety numbers
-trm attach <machine>        # you're in. a real shell, over P2P.
+mir pair <code>              # ...the code from above; compare the safety numbers
+mir attach <machine>         # you're in. a real shell, over P2P.
 ```
 
 Several machines at once — the cross-machine multiplexer:
 
 ```bash
-trm attach laptop macmini linux
+mir attach laptop macmini linux
 # Ctrl-O then 1-9 / n / q to switch machines (change the key with --prefix)
 ```
 
-Everything defaults to our relay + STUN, so no flags are needed. Point at your own
-infrastructure with `--signal` / `TR_SIGNAL` and `--stun` / `TR_STUN`.
+Everything defaults to the hosted relay + STUN, so no flags are needed. Point at your
+own infrastructure with `--signal` / `MIR_SIGNAL` and `--stun` / `MIR_STUN`.
 
-Security migration: current agents auto-add a local `registration_secret` to
-`config.json` on the next `tr-agent enroll`, `tr-agent pair`, or `tr-agent up`.
-Restart long-running agents after updating. Relays still accept older no-secret
-agents until a proof has been learned for that `owner_id` + `machine_id`; after
-that, replacements must present the same proof.
+## Don't trust the relay — that's the whole point
 
-## How it works (the short version)
+There's a relay, because two machines behind two NATs need an introduction. **You
+don't have to trust it.**
+
+Your terminal traffic flows **peer-to-peer**, end-to-end encrypted (Noise `KK`). The
+relay only brokers the WebRTC offer/answer + ICE candidates that let the two ends
+find each other, then gets out of the way. It learns only `owner_id`, `machine_id`,
+the SDP/ICE blobs, and liveness metadata — never your keystrokes, never your output,
+and it *cannot* impersonate you or your machines. At pairing time both ends show a
+**safety number**; if they match, you've seen with your own eyes that no one is in
+the middle.
+
+The exact, falsifiable model — what the relay can and can't do, what you *do* have to
+trust, and how to verify all of it — lives in **[`SECURITY.md`](SECURITY.md)**. That
+document is not an afterthought. It is the project.
+
+## How it works
 
 ```
   your client            relay (blind matchmaker)         your machine
   ┌───────────┐  WSS: who/where (SDP)  ┌────────┐  WSS   ┌──────────────┐
-  │ trm        │ ─────────────────────▶│ signal │◀────── │ tr-agent      │
+  │ mir        │ ─────────────────────▶│ signal │◀────── │ mir-agent     │
   │ + Noise    │ ◀─────────────────────│no data │ ─────▶ │ + Noise + tmux│
   └─────┬──────┘                        └────────┘        └──────┬───────┘
         └════════ WebRTC DataChannel (direct P2P) ═══════════════┘
@@ -122,9 +93,70 @@ that, replacements must present the same proof.
   never holds your private key.
 - **Pairing** uses a one-time token (the QR/code) as the PSK of a Noise `NNpsk0`
   handshake; the relay only ever sees `hash(token)`.
-- **Per machine:** `tmux` — persistence, windows, panes; the Lindy-approved engine.
-- **Across machines:** the `trm` client switches focus. tmux owns a machine's
-  windows; `trm` owns *which machine*. No tmux-in-tmux.
+- **Per machine:** `tmux` — persistence, windows, panes; the proven engine.
+- **Across machines:** the `mir` client switches focus. tmux owns a machine's
+  windows; `mir` owns *which machine*. No tmux-in-tmux.
+
+The components, in *The Tempest*'s cast: the agent on each machine is **Prospero**
+(the magician who conjures the shell), and the hosted relay is **Ariel** (the
+invisible spirit that carries messages and can't speak of what it carries).
+
+## Status
+
+- ✅ **Works today:** the `mir` CLI — pair a machine with one code/QR, attach to a
+  real shell over P2P, multiplex across all your machines, persistent `tmux`
+  sessions. A hosted relay is live at `relay.sourceful-labs.net`.
+- 🚧 **Coming:** the browser client (passkeys + WebRTC + xterm.js → from your phone),
+  one-line install, signed releases, a third-party audit, and (one day) a
+  decentralized relay.
+
+> **Ops note:** agents auto-add a local `registration_secret` to `config.json` on the
+> next `mir-agent enroll`, `mir-agent pair`, or `mir-agent up`. Restart long-running
+> agents after updating. Relays accept older no-secret agents until a proof has been
+> learned for that `owner_id` + `machine_id`; after that, replacements must present
+> the same proof.
+
+## The story (or: a tale about juggling)
+
+This was born out of frustration, which — as a certain Guide notes — is how most
+useful things come to be, the rest being born of either boredom or a profound
+misunderstanding of the laws of thermodynamics.
+
+The specific frustration: on any given day there is **a small herd of Claude Code
+sessions** scattered across a laptop, an office Mac mini, and a Linux box that exists
+mainly to be warm. One of them is doing the interesting thing. The others are also
+doing the interesting thing, somewhere, probably, and getting to the right one
+involved an amount of `ssh`-ing, tunnel-poking, and quiet swearing that is not,
+strictly speaking, *magic*.
+
+A few stubborn convictions fell out of that:
+
+- **I love my terminal and I am not leaving.** The terminal isn't a fallback for when
+  the GUI breaks. It's the best window we've got. I want to stay in it.
+- **The tool must not belong to one robot.** Claude Code, Codex, whatever comes next —
+  they're all just things that run *in a terminal*. So don't build for the robot.
+  Build for the window. The terminal has been the universal interface since before
+  graphical anything, and will be long after.
+- **Don't reinvent the engine.** `tmux` is good, has been good since approximately the
+  dawn of time, and will be good when we are all dust. We keep the proven engine and
+  build *around* it.
+- **It should feel like magic** — open a thing on any device, and there are your
+  machines, alive, exactly as you left them. The reaction we're after is the one
+  where you tilt your head and go *"…wait, why has nobody done this already?"*
+- **Modern, not antique.** No password files, no copied keys. **Passkeys.** Real
+  end-to-end crypto. The newest safe web tech, used properly.
+- **As serverless as physics allows.** There's a relay, because two NATs need an
+  introduction. But it's a *blind matchmaker* — it never sees your traffic, and you
+  never have to trust it. One day the relay itself could be decentralized.
+
+The name is **Miranda** — for the Miranda warning ("you have the right to remain
+silent"), which is exactly what a blind relay does, and for Shakespeare's Miranda on
+the magician's island, who looks out at a connected world and says *"O brave new
+world, that has such people in't!"* (See [`docs/naming.md`](docs/naming.md) for the
+full naming rationale.)
+
+So: **SSH, without thinking about SSH.** A terminal that exists on every device.
+Peer-to-peer, end-to-end encrypted, passkey-shaped, tmux-powered.
 
 ## Repo layout
 
@@ -134,8 +166,10 @@ that, replacements must present the same proof.
 | `go/internal/pairing` | NNpsk0 one-tap pairing + safety number |
 | `go/internal/signal` | the blind signaling/matchmaking server |
 | `go/internal/peer` | WebRTC P2P DataChannel glue |
-| `go/internal/agent`, `go/cmd/tr-agent` | the machine-side agent |
-| `go/internal/client`, `go/cmd/trm` | the `trm` CLI multiplexer |
+| `go/internal/agent`, `go/cmd/mir-agent` | the machine-side agent |
+| `go/internal/client`, `go/cmd/mir` | the `mir` CLI multiplexer |
+| `go/cmd/mir-signal` | the signaling/relay server |
+| `web/` | browser client (vanilla JS + xterm.js) |
 | `deploy/lightsail` | how the hosted relay is deployed |
 | `deploy/netsim` | Docker harness that reproduces real NAT traversal |
 | `docs/superpowers/` | design spec + implementation plans |
@@ -150,9 +184,3 @@ cd deploy/netsim && ./run.sh    # NAT traversal, locally (TURN=1 for the relay p
 ## License
 
 MIT — see [`LICENSE`](LICENSE).
-
----
-
-*The Guide also says, of the terminal: "It is the only known interface in the
-galaxy that has never once been improved by adding a second monitor."* That last
-part may be apocryphal.

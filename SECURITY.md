@@ -1,6 +1,6 @@
 # Security model
 
-terminal-relay lets you reach a real shell on your machines from anywhere. The
+Miranda lets you reach a real shell on your machines from anywhere. The
 whole point is that **you do not have to trust the relay** (our hosted signaling
 server, the Cloudflare proxy in front of it, an optional TURN relay, or the
 network in between). This document states precisely what that means, what you
@@ -66,7 +66,7 @@ the network is hostile — provided the trust roots below are intact.
 4. **The code you run.** This is why open source + verifiable builds matter (see
    roadmap). Do **not** install binaries fetched blindly from the relay.
 5. **The browser JavaScript served by `term.sourceful-labs.net`.** When the SPA is
-   served from `tr-signal`, that JavaScript is a trust root just like an installed
+   served from `mir-signal`, that JavaScript is a trust root just like an installed
    binary. A compromised Cloudflare zone, origin host, deploy key, or build output
    could ship client code that reads terminal data before encryption or derives
    the owner key after a valid WebAuthn ceremony.
@@ -94,7 +94,7 @@ the network is hostile — provided the trust roots below are intact.
 
 The live browser deployment is `https://term.sourceful-labs.net`; signaling may
 also be exposed on `https://relay.sourceful-labs.net` for CLIs and agents. Apply
-these controls to every Cloudflare hostname that routes to `tr-signal`.
+these controls to every Cloudflare hostname that routes to `mir-signal`.
 
 - **Rate-limit public rendezvous endpoints.** `/turn-credentials`, `/pair`,
   `/attach`, and `/agent/signal` are intentionally public and unauthenticated at
@@ -107,7 +107,7 @@ these controls to every Cloudflare hostname that routes to `tr-signal`.
   credential TTL is 12 hours, so an exposed credential can consume relay bandwidth
   until expiry. Watch both Cloudflare request volume and coturn allocation logs;
   rotate the shared secret and close TURN firewall ports if abuse appears.
-- **Serve the SPA with defensive headers.** If `tr-signal --webroot` serves the
+- **Serve the SPA with defensive headers.** If `mir-signal --webroot` serves the
   browser app, set CSP and security headers at Cloudflare or in the origin before
   relying on the browser flow for real machines. The CSP must still allow module
   scripts/assets from the same origin and `connect-src` to the live signaling
@@ -115,7 +115,7 @@ these controls to every Cloudflare hostname that routes to `tr-signal`.
 - **Keep the WebAuthn RP ID boundary small and intentional.** The browser code
   currently uses `sourceful-labs.net` as the RP ID so passkeys work across
   subdomains. That means any trusted web origin under `sourceful-labs.net` capable
-  of running terminal-relay client code is inside the owner-key trust boundary.
+  of running Miranda client code is inside the owner-key trust boundary.
   Do not delegate arbitrary subdomains or host untrusted JavaScript under this
   registrable domain without revisiting the RP ID and re-enrollment plan.
 - **Require pairing safety-number confirmation.** A scanned/pasted pairing code is
@@ -133,7 +133,7 @@ these controls to every Cloudflare hostname that routes to `tr-signal`.
   never terminal bytes.
 - **Watch the wire.** The data plane is a direct DataChannel; the relay never
   receives it. `deploy/netsim` reproduces real NAT scenarios locally.
-- **Compare the safety number at pairing.** `tr-agent pair` and `trm pair` each
+- **Compare the safety number at pairing.** `mir-agent pair` and `mir pair` each
   print a `safety number: xxxx-xxxx-xxxx-xxxx`. If both ends show the same value,
   you have visibly confirmed there is no MITM — even if the pairing token leaked.
 
@@ -145,8 +145,8 @@ These are the steps that let _anyone_ — not just us — trust the relay-free m
 - [ ] **Signed, checksummed releases** (and an installer that verifies them — never
       trust binaries from the relay).
 - [ ] **Reproducible builds** (the binary you run matches the audited source).
-- [x] **Verifiable pairing authenticity (safety number).** `tr-agent pair` and
-      `trm pair` each print a 64-bit **safety number** derived from the Noise
+- [x] **Verifiable pairing authenticity (safety number).** `mir-agent pair` and
+      `mir pair` each print a 64-bit **safety number** derived from the Noise
       handshake transcript hash. With no MITM both ends show the same number;
       a man-in-the-middle (e.g. with a leaked token) produces two different
       handshakes → mismatched numbers, which you catch by eye. (Session-time SAS

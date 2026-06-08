@@ -1,6 +1,6 @@
 // web/src/pair.js — pair a machine from the browser: decode the code, rendezvous
 // in the /pair room, run the NNpsk0 initiator, and return the machine + safety
-// number to compare with the agent's. Mirrors the Go `trm pair`.
+// number to compare with the agent's. Mirrors the Go `mir pair`.
 import { runInitiator } from './pairing/nnpsk0.js';
 import { decodeCode, roomID } from './pairing/code.js';
 import { safetyNumber } from './pairing/sas.js';

@@ -1,4 +1,4 @@
-// go/cmd/tr-agent/main.go
+// go/cmd/mir-agent/main.go
 package main
 
 import (
@@ -46,7 +46,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: tr-agent <enroll|pair-dev|pair|up> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: mir-agent <enroll|pair-dev|pair|up> [flags]")
 	os.Exit(2)
 }
 
@@ -64,7 +64,7 @@ func cmdEnroll(args []string) {
 	fmt.Printf("enrolled %q\n  machine_id: %s\n  host_pub:   %s\n  signal:     %s\n",
 		cfg.MachineName, cfg.MachineID, cfg.HostPubHex, cfg.SignalURL)
 	fmt.Println("\nNext: pair an owner. For local dev:")
-	fmt.Printf("  tr-agent pair-dev --owner-pub <hex>\n")
+	fmt.Printf("  mir-agent pair-dev --owner-pub <hex>\n")
 	if !agent.TmuxInstalled() {
 		fmt.Println("\nwarning: tmux is not installed (needed for persistent sessions): brew install tmux")
 	}
@@ -105,7 +105,7 @@ func cmdPair(args []string) {
 	fmt.Print("\n  📱 Scan with your phone's camera — it opens the app ready to pair:\n\n")
 	qrterminal.GenerateHalfBlock(pairURL, qrterminal.L, os.Stdout)
 	fmt.Printf("\n  …or open: %s\n", pairURL)
-	fmt.Printf("  …or on the CLI:  trm pair %s\n", code)
+	fmt.Printf("  …or on the CLI:  mir pair %s\n", code)
 	fmt.Printf("\nwaiting for pairing (5 min)…\n")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -151,8 +151,8 @@ func cmdUp(args []string) {
 	defer stop()
 
 	rt := agent.NewRuntime(cfg, launch, ice())
-	rt.Logf = func(f string, a ...any) { fmt.Fprintf(os.Stderr, "tr-agent: "+f+"\n", a...) }
-	fmt.Printf("tr-agent up: machine %s, signaling %s\n", cfg.MachineID, cfg.SignalURL)
+	rt.Logf = func(f string, a ...any) { fmt.Fprintf(os.Stderr, "mir-agent: "+f+"\n", a...) }
+	fmt.Printf("mir-agent up: machine %s, signaling %s\n", cfg.MachineID, cfg.SignalURL)
 	if err := rt.Up(ctx); err != nil && ctx.Err() == nil {
 		fatal(err)
 	}
