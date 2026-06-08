@@ -46,7 +46,7 @@ func TestAgentRegistrationProofPolicy(t *testing.T) {
 	if !s.agentProofOKLocked(k, "") {
 		t.Fatal("empty proof should be accepted before a secret is learned")
 	}
-	s.agentSecrets[k] = goodRegistrationSecret
+	s.proofs.learn(k, goodRegistrationSecret)
 	if !s.agentProofOKLocked(k, goodRegistrationSecret) {
 		t.Fatal("matching registration proof should be accepted")
 	}
