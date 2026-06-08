@@ -2,6 +2,12 @@ module github.com/srcful/terminal-relay/go
 
 go 1.26.3
 
+// Build with >= go1.26.4: it ships the fix for two reachable stdlib advisories
+// (GO-2026-5039 net/textproto, GO-2026-5037 crypto/x509) that mir-signal pulls
+// in via net/http. The compiled binary's stdlib version is the toolchain's, so
+// this is what actually clears them. Language floor stays at 1.26.3.
+toolchain go1.26.4
+
 require (
 	github.com/coder/websocket v1.8.14
 	github.com/creack/pty v1.1.24
