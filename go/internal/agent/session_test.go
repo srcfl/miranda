@@ -39,7 +39,7 @@ func TestSessionBridgeRunsRealShellOverNoise(t *testing.T) {
 			return
 		}
 		defer p.Close()
-		done <- RunAgentSession(ctx, agentMC, s, p, "test-machine", nil, "")
+		done <- RunAgentSession(ctx, agentMC, s, p, "test-machine", nil, 0)
 	}()
 	bs, err := peer.RunInitiator(ctx, browserMC, browserPriv, agentPub)
 	if err != nil {
@@ -123,7 +123,7 @@ func TestSessionBridgeNoGoroutineLeakWhenShellExitsFirst(t *testing.T) {
 			return
 		}
 		// Shell errors immediately => shell->peer goroutine returns first.
-		done <- RunAgentSession(ctx, agentMC, s, exitingShell{}, "test-machine", nil, "")
+		done <- RunAgentSession(ctx, agentMC, s, exitingShell{}, "test-machine", nil, 0)
 	}()
 
 	if _, err := peer.RunInitiator(ctx, browserMC, browserPriv, agentPub); err != nil {

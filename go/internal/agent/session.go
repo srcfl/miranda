@@ -24,7 +24,7 @@ type Shell interface {
 // RunAgentSession bridges an established Noise session to a shell using the
 // Plan-1 frame protocol: it sends HELLO (machine name) once, then pumps DATA in
 // both directions and applies RESIZE. Returns when either side ends.
-func RunAgentSession(ctx context.Context, mc peer.MsgConn, sess *noise.Session, sh Shell, machineName string, windowsJSON func() []byte, tmuxSession string) error {
+func RunAgentSession(ctx context.Context, mc peer.MsgConn, sess *noise.Session, sh Shell, machineName string, windowsJSON func() []byte, tmuxPid int) error {
 	// noise.Session.Encrypt is not concurrency-safe (nonce counter), and several
 	// goroutines now send (HELLO, shell->peer, the windows poller) — serialize.
 	var sendMu sync.Mutex
@@ -118,7 +118,9 @@ func RunAgentSession(ctx context.Context, mc peer.MsgConn, sess *noise.Session, 
 					_ = sh.Resize(cols, rows)
 				}
 			case noise.FrameControl:
-				runTmuxControl(tmuxSession, payload)
+				if tmuxPid > 0 { // tmux launch only; 0 = plain shell, no window/session control
+					runTmuxControl(tmuxPid, payload)
+				}
 			}
 		}
 	}()

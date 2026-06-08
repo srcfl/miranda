@@ -279,17 +279,35 @@ function viewPair(root, prefill = '', auto = false) {
 
 function viewTerminal(root, machine) {
   let handle = null;
-  let snap = null; // latest tmux window snapshot (FrameWindows), or null (non-tmux)
+  let snap = null; // latest FrameWindows snapshot: v2 {v,sess:[...]}, or null (non-tmux)
   const close = () => { try { handle && handle.close(); } catch {} };
   const focus = () => { window.__term && window.__term.focus(); };
-  // tmux control: prefix (Ctrl-B) + key, or prefix + ":cmd\n". Target windows by
-  // stable window_id (@N), not index, to dodge renumber races.
-  // tmux window control: the AGENT runs the command directly (robust — no prefix
-  // dependence, no command-prompt/Enter fragility, no keystroke timing).
+
+  // tmux control: the AGENT runs the command directly (robust — no prefix
+  // dependence, no command-prompt/Enter fragility, no keystroke timing). Target
+  // windows by stable window_id (@N), not index, to dodge renumber races; carry
+  // the owning session so the agent can switch our client across sessions.
   const ctl = (o) => { handle && handle.sendCtl(o); focus(); };
-  const selectWin = (id) => ctl({ a: 'select-window', t: id });
-  const newWin = () => ctl({ a: 'new-window' });
+  const selectWin = (sess, id) => ctl({ a: 'select-window', s: sess, t: id });
+  const newWin = (sess) => ctl({ a: 'new-window', s: sess });
+  const renameWin = (id, n) => ctl({ a: 'rename-window', t: id, n });
+  const killWin = (id) => ctl({ a: 'kill-window', t: id });
+  const switchSess = (name) => ctl({ a: 'switch-session', t: name });
+  const newSess = () => ctl({ a: 'new-session' });
+  const renameSess = (cur, n) => ctl({ a: 'rename-session', t: cur, n });
+  const killSess = (name) => ctl({ a: 'kill-session', t: name });
   const safeName = (s) => (s || '').replace(/[^\w .\-]/g, '').slice(0, 32);
+
+  // sessionsView normalizes the snapshot to a session list. v2 is native; a v1
+  // snapshot (flat {win,active}) from an un-upgraded agent maps to one session so
+  // the UI keeps working through a staged rollout.
+  const sessionsView = () => {
+    if (!snap) return null;
+    if (snap.sess) return snap.sess;
+    if (snap.win) return [{ n: '', act: true, aw: snap.active, win: snap.win }];
+    return null;
+  };
+  const hasAlert = (s, kind) => (s.win || []).some((w) => w[kind]); // kind: 'b' bell, 'a' activity
 
   const termBox = el('div', { className: 'termbox' });
   const back = el('button', { className: 'tb-btn', onclick: () => { close(); viewMachines(root); } }, '‹ Machines');
@@ -300,52 +318,92 @@ function viewTerminal(root, machine) {
     strip, termBox);
   mount(root, view);
 
-  // tab strip: a pill per tmux window (mirrors the snapshot), active highlighted,
-  // ＋ to create, ▦ for the grid overview. Falls back to ＋/‹/› before any
-  // snapshot (or for non-tmux shells).
+  // tab strip: a pill per window of the ACTIVE session (mirrors the snapshot),
+  // active highlighted; a session chip (when >1 session) switches sessions and
+  // surfaces a dot when a BACKGROUND session has activity/bell; ＋ new window, ▦
+  // grid overview. Falls back to ＋/‹/› before any snapshot (or non-tmux shells).
   function renderStrip() {
     strip.replaceChildren();
-    if (!snap || !snap.win || !snap.win.length) {
+    const sess = sessionsView();
+    const cur = sess && (sess.find((s) => s.act) || sess[0]);
+    if (!cur || !cur.win || !cur.win.length) {
       strip.append(
         el('span', { className: 'winbar-label' }, 'windows'),
-        el('button', { className: 'tb-btn', onclick: newWin }, '＋'),
+        el('button', { className: 'tb-btn', onclick: () => newWin() }, '＋'),
         el('button', { className: 'tb-btn', onclick: () => ctl({ a: 'previous-window' }) }, '‹'),
         el('button', { className: 'tb-btn', onclick: () => ctl({ a: 'next-window' }) }, '›'));
       return;
     }
     const pills = el('div', { className: 'pills' });
-    for (const w of snap.win) {
-      const active = w.id === snap.active;
-      const pill = el('button', { className: 'pill' + (active ? ' active' : ''), onclick: () => selectWin(w.id) },
+    if (sess.length > 1) {
+      const others = sess.filter((s) => !s.act);
+      const bg = others.some((s) => hasAlert(s, 'b')) ? ' bell' : others.some((s) => hasAlert(s, 'a')) ? ' act' : '';
+      const chip = el('button', { className: 'pill sess', title: 'switch session', onclick: openSessions },
+        el('span', {}, '⧉ ' + (cur.n || 'session')));
+      if (bg) chip.append(el('span', { className: 'dot' + bg }));
+      pills.append(chip);
+    }
+    for (const w of cur.win) {
+      const active = w.id === cur.aw;
+      const pill = el('button', { className: 'pill' + (active ? ' active' : ''), onclick: () => selectWin(cur.n, w.id) },
         el('span', {}, w.i + ':' + (w.n || w.cmd || '')));
       if (w.b) pill.append(el('span', { className: 'dot bell' }));
       else if (w.a && !active) pill.append(el('span', { className: 'dot act' }));
       if (active) setTimeout(() => pill.scrollIntoView({ inline: 'center', block: 'nearest' }), 0);
       pills.append(pill);
     }
-    pills.append(el('button', { className: 'pill add', title: 'new window', onclick: newWin }, '＋'));
+    pills.append(el('button', { className: 'pill add', title: 'new window', onclick: () => newWin(cur.n) }, '＋'));
     strip.append(pills, el('button', { className: 'tb-btn', title: 'overview', onclick: openGrid }, '▦'));
   }
   renderStrip();
 
-  // grid overview: a card per window (name, running command, panes); tap to
-  // switch; rename / close per card; ＋ for a new window.
+  // grid overview: one section per session (header with rename / kill / new
+  // window), a card per window under it (name, running command, panes). Tap a
+  // window to switch — across sessions if needed. ＋ New session at the bottom.
   function openGrid() {
-    if (!snap || !snap.win) return;
-    const card = el('div', { className: 'sheet-card' }, el('div', { className: 'sheet-title' }, 'windows on ' + (machine.name || machine.machine_id)));
+    const sess = sessionsView();
+    if (!sess) return;
+    const card = el('div', { className: 'sheet-card' }, el('div', { className: 'sheet-title' }, 'sessions on ' + (machine.name || machine.machine_id)));
     const sheet = el('div', { className: 'sheet', onclick: (e) => { if (e.target === sheet) sheet.remove(); } }, card);
-    const grid = el('div', { className: 'wgrid' });
-    for (const w of snap.win) {
-      const wc = el('button', { className: 'wcard' + (w.id === snap.active ? ' active' : ''), onclick: () => { sheet.remove(); selectWin(w.id); } },
-        el('div', { className: 'wcard-name' }, w.i + ': ' + (w.n || '')),
-        el('div', { className: 'wcard-sub' }, (w.cmd || '') + (w.p > 1 ? ' · ' + w.p + ' panes' : '') + (w.b ? ' · 🔔' : w.a ? ' · •' : '')),
-        el('div', { className: 'wcard-actions' },
-          el('span', { className: 'link', onclick: (e) => { e.stopPropagation(); const n = safeName(prompt('Rename window', w.n)); if (n) ctl({ a: 'rename-window', t: w.id, n }); sheet.remove(); } }, 'rename'),
-          el('span', { className: 'link', onclick: (e) => { e.stopPropagation(); if (confirm('Close window ' + w.i + '?')) ctl({ a: 'kill-window', t: w.id }); sheet.remove(); } }, 'close')));
-      grid.append(wc);
+    for (const s of sess) {
+      const head = el('div', { className: 'sheet-subtitle' }, el('span', {}, (s.act ? '● ' : '') + (s.n || 'session')));
+      const acts = el('span', { className: 'sub-acts' },
+        el('span', { className: 'link', onclick: (e) => { e.stopPropagation(); const n = safeName(prompt('Rename session', s.n)); if (n) renameSess(s.n, n); sheet.remove(); } }, 'rename'));
+      // killing the viewed session detaches our client (ends the attach) — offer it only for background sessions
+      if (!s.act) acts.append(el('span', { className: 'link', onclick: (e) => { e.stopPropagation(); if (confirm('Kill session "' + s.n + '" and all its windows?')) killSess(s.n); sheet.remove(); } }, 'kill'));
+      head.append(acts);
+      const grid = el('div', { className: 'wgrid' });
+      for (const w of (s.win || [])) {
+        const wc = el('button', { className: 'wcard' + (w.id === s.aw ? ' active' : ''), onclick: () => { sheet.remove(); selectWin(s.n, w.id); } },
+          el('div', { className: 'wcard-name' }, w.i + ': ' + (w.n || '')),
+          el('div', { className: 'wcard-sub' }, (w.cmd || '') + (w.p > 1 ? ' · ' + w.p + ' panes' : '') + (w.b ? ' · 🔔' : w.a ? ' · •' : '')),
+          el('div', { className: 'wcard-actions' },
+            el('span', { className: 'link', onclick: (e) => { e.stopPropagation(); const n = safeName(prompt('Rename window', w.n)); if (n) renameWin(w.id, n); sheet.remove(); } }, 'rename'),
+            el('span', { className: 'link', onclick: (e) => { e.stopPropagation(); if (confirm('Close window ' + w.i + '?')) killWin(w.id); sheet.remove(); } }, 'close')));
+        grid.append(wc);
+      }
+      card.append(head, grid, el('button', { className: 'sheet-item add', onclick: () => { sheet.remove(); newWin(s.n); } }, '＋ New window'));
     }
-    card.append(grid,
-      el('button', { className: 'sheet-item add', onclick: () => { sheet.remove(); newWin(); } }, '＋ New window'),
+    card.append(
+      el('button', { className: 'sheet-item add', onclick: () => { sheet.remove(); newSess(); } }, '＋ New session'),
+      el('button', { className: 'link', onclick: () => sheet.remove() }, 'cancel'));
+    view.append(sheet);
+  }
+
+  // session switcher: jump our client straight to another tmux session (one tap
+  // from the strip's session chip), or spin up a new one.
+  function openSessions() {
+    const sess = sessionsView();
+    if (!sess) return;
+    const card = el('div', { className: 'sheet-card' }, el('div', { className: 'sheet-title' }, 'switch session'));
+    const sheet = el('div', { className: 'sheet', onclick: (e) => { if (e.target === sheet) sheet.remove(); } }, card);
+    for (const s of sess) {
+      const alert = hasAlert(s, 'b') ? ' 🔔' : hasAlert(s, 'a') ? ' •' : '';
+      card.append(el('button', { className: 'sheet-item' + (s.act ? ' active' : ''), onclick: () => { sheet.remove(); if (!s.act) switchSess(s.n); else focus(); } },
+        (s.act ? '● ' : '') + (s.n || 'session') + ' · ' + (s.win || []).length + 'w' + alert));
+    }
+    card.append(
+      el('button', { className: 'sheet-item add', onclick: () => { sheet.remove(); newSess(); } }, '＋ New session'),
       el('button', { className: 'link', onclick: () => sheet.remove() }, 'cancel'));
     view.append(sheet);
   }

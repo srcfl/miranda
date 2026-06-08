@@ -41,6 +41,15 @@ func StartPTY(ctx context.Context, argv []string) (*PTY, error) {
 func (p *PTY) Read(b []byte) (int, error)  { return p.f.Read(b) }
 func (p *PTY) Write(b []byte) (int, error) { return p.f.Write(b) }
 
+// Pid is the child process PID (the tmux client, in production), or 0 before the
+// process exists. Used to identify OUR tmux client for cross-session switches.
+func (p *PTY) Pid() int {
+	if p.cmd.Process != nil {
+		return p.cmd.Process.Pid
+	}
+	return 0
+}
+
 // SetReadDeadlineSoon nudges a short read deadline so a polling read loop in a
 // test does not block forever. Best-effort (ignored if unsupported).
 func (p *PTY) SetReadDeadlineSoon() error {
