@@ -111,6 +111,25 @@ func serveIndex(w http.ResponseWriter, path string) {
 	_, _ = w.Write([]byte(strings.ReplaceAll(string(data), "__CSP_NONCE__", nonce)))
 }
 
+// cspConnectSrc returns the CSP connect-src allow-list for the SPA. The SPA is a
+// client-code trust root (it derives the owner key and runs the terminal crypto),
+// so connect-src is the channel that would exfiltrate the owner key if the served
+// JS were ever tampered or a same-origin gadget were found. It therefore defaults
+// to 'self' only. Operators serving the SPA against a different-origin relay must
+// set MIR_CSP_CONNECT_SRC to their signaling origins, e.g.
+//
+//	MIR_CSP_CONNECT_SRC="'self' https://relay.example.net wss://relay.example.net"
+//
+// A previous build shipped the wildcard "'self' https: wss:", which let any
+// HTTPS/WSS host receive a beacon — defeating the point of CSP here. See
+// SECURITY.md and deploy/lightsail/README.md for the hosted-deployment value.
+func cspConnectSrc() string {
+	if v := strings.TrimSpace(os.Getenv("MIR_CSP_CONNECT_SRC")); v != "" {
+		return v
+	}
+	return "'self'"
+}
+
 func setStaticSecurityHeaders(w http.ResponseWriter, nonce string) {
 	// The hosted SPA is a client-code trust root: it derives the owner key and
 	// runs the terminal crypto. Keep the browser sandbox tight around our own
@@ -124,12 +143,13 @@ func setStaticSecurityHeaders(w http.ResponseWriter, nonce string) {
 		scriptSrc,
 		"style-src 'self' 'unsafe-inline'",
 		"img-src 'self' data: blob:",
-		"connect-src 'self' https: wss:",
+		"connect-src " + cspConnectSrc(),
 		"media-src 'self' blob:",
 		"object-src 'none'",
 		"base-uri 'none'",
 		"frame-ancestors 'none'",
 		"form-action 'none'",
+		"upgrade-insecure-requests",
 	}, "; "))
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
