@@ -213,14 +213,19 @@ func (rt *Runtime) handleOffer(ctx context.Context, c *websocket.Conn, m signal.
 	}
 	defer pty.Close()
 
-	// For a tmux launch, push window-list snapshots so clients render an overview,
-	// and accept window control commands (select/new/rename/kill) for that session.
-	session := sessionFromLaunch(rt.launch)
-	var windows func() []byte
-	if session != "" {
-		windows = func() []byte { return tmuxWindowsJSON(session) }
+	// For a tmux launch, push whole-server session/window snapshots so clients
+	// render an overview, and accept window+session control commands (select/new/
+	// rename/kill, switch-session). Targeting OUR client for cross-session switches
+	// needs the PTY child PID (see tmuxClient).
+	pid := 0
+	if sessionFromLaunch(rt.launch) != "" {
+		pid = pty.Pid()
 	}
-	_ = RunAgentSession(attachCtx, dc, sess, pty, rt.cfg.MachineName, windows, session)
+	var windows func() []byte
+	if pid > 0 {
+		windows = func() []byte { return tmuxSessionsJSON(pid) }
+	}
+	_ = RunAgentSession(attachCtx, dc, sess, pty, rt.cfg.MachineName, windows, pid)
 }
 
 // agentSignalURL builds ws(s)://host/agent/signal?owner_id=..&machine_id=..

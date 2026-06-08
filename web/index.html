@@ -41,6 +41,7 @@
     display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
   .pill.active { border-color: var(--acc); color: var(--acc); }
   .pill.add { color: var(--acc); border-style: dashed; }
+  .pill.sess { background: #0b0e14; border-style: dashed; color: var(--mut); }
   .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
   .dot.act { background: #38bdf8; } .dot.bell { background: #f87171; }
   .wgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-bottom: 12px; }
@@ -54,9 +55,13 @@
   .sheet-card { background: var(--card); border: 1px solid var(--line); border-radius: 16px 16px 0 0; width: 100%; max-width: 520px;
     padding: 16px 16px calc(env(safe-area-inset-bottom) + 16px); }
   .sheet-title { font-weight: 650; margin: 0 0 10px; }
+  .sheet-subtitle { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; font-weight: 600; margin: 6px 0 8px; }
+  .sheet-subtitle .sub-acts { display: flex; gap: 14px; font-weight: 400; }
+  .sheet-subtitle .link { margin: 0; font-size: 13px; }
   .sheet-item { display: block; width: 100%; text-align: left; background: #11161f; border: 1px solid var(--line); border-radius: 10px;
     padding: 14px; margin-bottom: 8px; color: var(--fg); font: inherit; cursor: pointer; }
   .sheet-item.add { border-style: dashed; color: var(--acc); }
+  .sheet-item.active { border-color: var(--acc); color: var(--acc); }
   h1 { font-size: 22px; font-weight: 650; margin: 0 0 4px; }
   .muted { color: var(--mut); margin: 0 0 20px; font-size: 14px; }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
