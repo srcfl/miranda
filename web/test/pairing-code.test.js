@@ -51,3 +51,35 @@ test('decodeCode rejects a missing or non-string token field', () => {
   assert.throws(() => decodeCode(encodePayload({ s: 'https://relay.example', t: 123 })), /bad pairing code token/);
   assert.throws(() => decodeCode(encodePayload({ s: 'https://relay.example', t: null })), /bad pairing code token/);
 });
+
+test('decodeCode rejects an unsafe or malformed signal URL', () => {
+  const t = '00'.repeat(16); // a valid 16-byte token so we reach the URL check
+  const bad = [
+    'javascript:alert(1)',                 // script scheme
+    'data:text/html,evil',                 // data scheme
+    'file:///etc/passwd',                  // file scheme
+    'http://evil.example',                 // plain-http to a public host (mixed content)
+    'ftp://relay.example',                 // wrong scheme
+    'not a url',                           // unparseable
+    'wss://relay.example',                 // ws scheme is derived from http(s), not accepted raw
+  ];
+  for (const s of bad) {
+    assert.throws(
+      () => decodeCode(encodePayload({ s, t })),
+      /bad pairing code signal URL/,
+      `expected reject for signal URL ${JSON.stringify(s)}`,
+    );
+  }
+});
+
+test('decodeCode accepts https and http://localhost relay URLs', () => {
+  const t = '00'.repeat(16);
+  for (const s of ['https://relay.sourceful-labs.net', 'https://relay.example:8443', 'http://localhost:8080', 'http://127.0.0.1:9000']) {
+    assert.equal(decodeCode(encodePayload({ s, t })).signalURL, s);
+  }
+});
+
+test('decodeCode rejects a missing signal URL', () => {
+  const t = '00'.repeat(16);
+  assert.throws(() => decodeCode(encodePayload({ t })), /bad pairing code signal URL/);
+});
