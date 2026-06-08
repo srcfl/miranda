@@ -65,9 +65,13 @@ export async function signInPasskey() {
   return deriveOwnerKey(new Uint8Array(prf));
 }
 
-// devOwnerKey is the DEGRADED fallback: a plaintext x25519 key in localStorage
-// (not biometric-gated, not synced). For localhost dev or when prf is absent.
+// devOwnerKey is the DEGRADED localhost-only fallback: a plaintext x25519 key in
+// localStorage (not biometric-gated, not synced). It is hard-guarded to localhost
+// so a real owner private key can NEVER be minted/persisted in the clear on a
+// production origin (where any same-origin script could read it) — not even when
+// the browser lacks WebAuthn. On a public host the passkey path is the only way in.
 export function devOwnerKey() {
+  if (!isLocalhost()) throw new Error('dev key is localhost-only; use a passkey on a public origin');
   let h = localStorage.getItem('tr_owner');
   if (!h) {
     h = bytesToHex(x25519.utils.randomPrivateKey());
