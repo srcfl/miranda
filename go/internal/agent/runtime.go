@@ -17,6 +17,15 @@ import (
 	"github.com/srcful/terminal-relay/go/internal/signal"
 )
 
+// defaultMaxConcurrentAttaches bounds how many attach handshakes (each a full
+// WebRTC PeerConnection + ICE gather + Noise responder) may be in flight at once
+// across all owners. An attach is unauthenticated until the Noise KK handshake
+// completes, and the relay's /attach endpoint is intentionally open at the HTTP
+// layer, so without this cap anyone who knows an owner_id+machine_id could pump
+// offers and exhaust the agent's FDs/memory/goroutines (a pre-auth DoS) — without
+// ever getting the shell. 64 comfortably covers a person's real devices.
+const defaultMaxConcurrentAttaches = 64
+
 // Runtime runs the agent: it holds the signaling channel and, per attach,
 // answers the WebRTC offer, runs the Noise responder, and bridges to a shell.
 type Runtime struct {
@@ -24,14 +33,29 @@ type Runtime struct {
 	launch []string         // shell command, e.g. {"tmux","new","-A","-s","main"} or {"sh"}
 	ice    []peer.ICEServer // STUN/TURN servers; nil for local (host candidates)
 
+	sem chan struct{} // bounds concurrent in-flight attach handshakes (pre-auth DoS guard)
+
 	baseBackoff    time.Duration        // first reconnect delay (grows on repeated dial failures)
 	maxBackoff     time.Duration        // cap
 	reloadInterval time.Duration        // how often to re-read config for newly-paired owners
 	Logf           func(string, ...any) // optional reconnect/status log (set by the CLI)
 }
 
+// admit reserves a slot for a new attach handshake, returning false immediately
+// (never blocking) when too many are already in flight. release frees the slot.
+func (rt *Runtime) admit() bool {
+	select {
+	case rt.sem <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (rt *Runtime) release() { <-rt.sem }
+
 func NewRuntime(cfg *Config, launch []string, ice []peer.ICEServer) *Runtime {
-	return &Runtime{cfg: cfg, launch: launch, ice: ice, baseBackoff: time.Second, maxBackoff: 30 * time.Second, reloadInterval: 3 * time.Second}
+	return &Runtime{cfg: cfg, launch: launch, ice: ice, sem: make(chan struct{}, defaultMaxConcurrentAttaches), baseBackoff: time.Second, maxBackoff: 30 * time.Second, reloadInterval: 3 * time.Second}
 }
 
 // Up keeps the agent registered on the signaling channel for EVERY paired owner
@@ -129,7 +153,20 @@ func (rt *Runtime) serveOnce(ctx context.Context, owner string) (bool, error) {
 			continue
 		}
 		if m.Type == signal.TypeOffer {
-			go rt.handleOffer(ctx, c, m, owner)
+			if !rt.admit() {
+				// Too many attach handshakes in flight: drop this offer rather than
+				// allocate another PeerConnection. The peer will simply fail to
+				// connect and can retry; an authenticated owner is unaffected in
+				// steady state. This is the pre-auth DoS guard.
+				if rt.Logf != nil {
+					rt.Logf("owner %s: dropping offer, %d concurrent attaches in flight", short(owner), cap(rt.sem))
+				}
+				continue
+			}
+			go func() {
+				defer rt.release()
+				rt.handleOffer(ctx, c, m, owner)
+			}()
 		}
 	}
 }
