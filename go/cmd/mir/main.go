@@ -1,4 +1,4 @@
-// go/cmd/tr/main.go
+// go/cmd/mir/main.go
 package main
 
 import (
@@ -47,7 +47,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: trm <keygen|pair|add-machine|list|attach|run> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: mir <keygen|pair|add-machine|list|attach|run> [flags]")
 	os.Exit(2)
 }
 
@@ -61,7 +61,7 @@ func cmdRun(args []string) {
 	_ = fs.Parse(args)
 	rest := fs.Args()
 	if len(rest) < 2 {
-		fatal(fmt.Errorf("usage: trm run <machine> <command...>"))
+		fatal(fmt.Errorf("usage: mir run <machine> <command...>"))
 	}
 	name := rest[0]
 	cmd := strings.Join(rest[1:], " ")
@@ -96,7 +96,7 @@ func cmdKeygen(args []string) {
 	if err != nil {
 		fatal(err)
 	}
-	fmt.Printf("owner public key:\n  %s\n\nPin it on each machine:\n  tr-agent pair-dev --owner-pub %s\n", id.OwnerPubHex, id.OwnerPubHex)
+	fmt.Printf("owner public key:\n  %s\n\nPin it on each machine:\n  mir-agent pair-dev --owner-pub %s\n", id.OwnerPubHex, id.OwnerPubHex)
 }
 
 func cmdPair(args []string) {
@@ -105,7 +105,7 @@ func cmdPair(args []string) {
 	_ = fs.Parse(args)
 	rest := fs.Args()
 	if len(rest) != 1 {
-		fatal(fmt.Errorf("usage: trm pair <code>   (the code printed by `tr-agent pair`)"))
+		fatal(fmt.Errorf("usage: mir pair <code>   (the code printed by `mir-agent pair`)"))
 	}
 	signalURL, token, err := pairing.DecodeCode(rest[0])
 	if err != nil {
@@ -132,7 +132,7 @@ func cmdPair(args []string) {
 	if err := client.AddMachine(*dir, m); err != nil {
 		fatal(err)
 	}
-	fmt.Printf("✓ paired machine %q — try: trm attach %s\n", m.Name, m.Name)
+	fmt.Printf("✓ paired machine %q — try: mir attach %s\n", m.Name, m.Name)
 	fmt.Printf("  safety number: %s  (must match the machine's)\n", sas.FromBinding(binding))
 }
 
@@ -140,8 +140,8 @@ func cmdAddMachine(args []string) {
 	fs := flag.NewFlagSet("add-machine", flag.ExitOnError)
 	dir := fs.String("dir", defaultDir(), "config directory")
 	name := fs.String("name", "", "machine name")
-	id := fs.String("id", "", "machine id (from `tr-agent enroll`)")
-	hostPub := fs.String("host-pub", "", "machine host public key (hex, from `tr-agent enroll`)")
+	id := fs.String("id", "", "machine id (from `mir-agent enroll`)")
+	hostPub := fs.String("host-pub", "", "machine host public key (hex, from `mir-agent enroll`)")
 	signalURL := fs.String("signal", defaults.SignalURL(), "signaling server base URL")
 	_ = fs.Parse(args)
 	if *name == "" || *id == "" || *hostPub == "" {
@@ -163,7 +163,7 @@ func cmdList(args []string) {
 		fatal(err)
 	}
 	if len(list) == 0 {
-		fmt.Println("no machines yet — add one with `trm add-machine`")
+		fmt.Println("no machines yet — add one with `mir add-machine`")
 		return
 	}
 	for _, m := range list {
@@ -179,7 +179,7 @@ func cmdAttach(args []string) {
 	_ = fs.Parse(args)
 	names := fs.Args()
 	if len(names) == 0 {
-		fatal(fmt.Errorf("usage: trm attach <machine> [machine...]"))
+		fatal(fmt.Errorf("usage: mir attach <machine> [machine...]"))
 	}
 	prefix, prefixLabel, err := parsePrefix(*prefixFlag)
 	if err != nil {

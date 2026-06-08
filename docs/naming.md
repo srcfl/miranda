@@ -1,10 +1,18 @@
-# Naming (work in progress)
+# Naming
 
-The repo is currently `terminal-relay` — descriptive, but it foregrounds the one
-thing you're *not* supposed to trust (the relay), and it's generic. We'll likely
-rename before the 1.0 release. **Status: deferred — focus on function first.
-Current favourite: `Cantrip`. Renaming later is cheap** (rename the binary + repo,
-transfer, update docs), so we're not blocking the build on it.
+**Status: LOCKED → `Miranda` (2026-06-08).** The repo was `terminal-relay` —
+descriptive, but it foregrounded the one thing you're *not* supposed to trust (the
+relay), and it was generic. (`frood` was briefly the front-runner from the
+playful/indie round; reverted in favour of `Miranda`, which carries a stronger,
+on-thesis story for a *blind relay*.)
+
+**Why Miranda:** the *Miranda warning* — **"you have the right to remain silent."**
+That is precisely what the relay does: it never hears your keystrokes and cannot
+testify to what you typed. The product's whole thesis (the relay you don't have to
+trust) collapses into one word. It doubles as Shakespeare's *The Tempest* — Miranda
+on Prospero the magician's island, *"O brave new world, that has such people in't!"*
+— which fits the "definitely magic" tone and opens a thematic name system for the
+components.
 
 ## Criteria
 
@@ -51,9 +59,41 @@ available good domain and no Unix collision. Strongest:
 Note: names ending in "sh" read awkwardly with the `.sh` TLD (`…sh.sh`); names that
 don't (porshell, termvia, froodly, zaphy, babelfin) pair more cleanly.
 
-## Decision
+## Decision (LOCKED — 2026-06-08)
 
-**Deferred.** Leaning `Cantrip` (best vibe + CLI verb; domain via a verified
-alternative or `.dev`/`.sh`). We'll lock the name before 1.0 / before transferring
-the repo to the `srcfl` org. For now: build function; the name is a cheap,
-reversible change.
+**Project / brand: `Miranda`.** Angles: the Miranda warning ("right to remain
+silent" = the blind relay) as the primary story, *The Tempest* as the literary
+backbone.
+
+### CLI tools (scheme A — clean, runnable)
+
+| Role | Binary | Thematic name (story / docs / service brand) |
+|---|---|---|
+| Client you type all day (`mir attach macbook`) | **`mir`** | Miranda |
+| Machine-side agent | **`mir-agent`** | **Prospero** — the magician who conjures the shell |
+| Blind signaling / relay server | **`mir-signal`** | **Ariel** — the invisible spirit that carries messages and is bound to obey |
+
+Binaries stay functional (`mir` / `mir-agent` / `mir-signal`) for discoverability;
+the Tempest names (Prospero, Ariel) are used in the README, marketing, and as the
+brand for the hosted relay service — not as binary names.
+
+### Verification at decision time
+
+- Unix collision: `mir`, `miranda`, `mira` — none on PATH (clean CLI verb).
+  (Canonical's "Mir" display server shares the word but is not a CLI binary.)
+- Domains: `miranda.sh` / `miranda.io` / `mir.sh` taken (common name); `getmiranda.com`
+  free. Not blocking — the product can live under `*.sourceful-labs.net`.
+- npm: irrelevant (Go project).
+- **Known collisions (accepted):** *Miranda* the functional programming language
+  (David Turner, ~1985, a Haskell ancestor) and *Miranda IM* (2000s chat client).
+  Both dev-adjacent → some name recognition + weaker SEO. Accepted for the strength
+  of the story; distinct enough in context.
+
+### Rollout (mechanical, do as its own change / PR)
+
+- Rename binaries: `trm` → `mir`, `tr-agent` → `mir-agent`, `tr-signal` →
+  `mir-signal` (`go/cmd/*`, Makefile, `web/dev-serve.sh`, deploy scripts, systemd unit).
+- Rewrite README (SEO + what-it-does first, then story) and update CLAUDE.md + deploy docs.
+- Rename repo `srcfl/terminal-relay` → `srcfl/miranda` (GitHub keeps a redirect).
+- Re-deploy the relay after the binary rename (`deploy/lightsail/redeploy.sh`).
+- Optional: buy a marketing domain (`getmiranda.com` free) or keep `*.sourceful-labs.net`.

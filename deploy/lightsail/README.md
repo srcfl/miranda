@@ -1,4 +1,4 @@
-# Deploying `tr-signal` (AWS Lightsail + Cloudflare)
+# Deploying `mir-signal` (AWS Lightsail + Cloudflare)
 
 The signaling server is a tiny stateless Go binary. It runs on a small Lightsail
 instance behind Cloudflare, which provides TLS for the browser SPA at
@@ -11,15 +11,15 @@ flows peer-to-peer (Noise), never through it.**
 
 | Thing              | Value                                                                                                                      |
 | ------------------ | -------------------------------------------------------------------------------------------------------------------------- |
-| Lightsail instance | `tr-signal`, region `eu-north-1` (Stockholm), `ubuntu_24_04`, `nano_3_0` (~$5/mo)                                          |
+| Lightsail instance | `tr-signal` (legacy AWS name; renamed only on recreate), region `eu-north-1` (Stockholm), `ubuntu_24_04`, `nano_3_0` (~$5/mo) |
 | Static IP          | `16.171.89.172` (Lightsail `tr-signal-ip`)                                                                                 |
-| Service            | systemd `tr-signal.service`, listens on `:80`, user `trsignal` + `CAP_NET_BIND_SERVICE`, serves `/opt/tr-web` when present |
+| Service            | systemd `mir-signal.service`, listens on `:80`, user `mirsignal` + `CAP_NET_BIND_SERVICE`, serves `/opt/mir-web` when present |
 | Open ports         | 22 (SSH), 80 (HTTP — Cloudflare origin); TURN ports only when enabled                                                      |
 | Health             | `curl http://16.171.89.172/healthz` → 200                                                                                  |
 
 Architecture: browser `https://term.sourceful-labs.net` and client/agent
 `wss://relay.sourceful-labs.net` -> **Cloudflare** (TLS termination, WebSocket
-proxy) -> origin `http://16.171.89.172:80` -> `tr-signal`.
+proxy) -> origin `http://16.171.89.172:80` -> `mir-signal`.
 
 ## Cloudflare setup (manual — do this in the `sourceful-labs.net` dashboard)
 
@@ -41,13 +41,13 @@ curl https://relay.sourceful-labs.net/healthz
 
 > Hardening (optional, later): switch to **Full (strict)** by generating a
 > Cloudflare **Origin CA** cert in the dashboard and terminating TLS on the origin
-> (e.g. Caddy in front of `tr-signal`). Flexible is fine to start because the data
+> (e.g. Caddy in front of `mir-signal`). Flexible is fine to start because the data
 > plane is already E2E (Noise); the origin only sees signaling SDP.
 
 ## Live security hardening checklist
 
 Apply this checklist to every Cloudflare hostname that routes to this
-`tr-signal` origin, currently `term.sourceful-labs.net` and
+`mir-signal` origin, currently `term.sourceful-labs.net` and
 `relay.sourceful-labs.net`.
 
 ### Cloudflare rate limits
@@ -92,7 +92,7 @@ Rollout steps:
 ### TURN TTL and abuse monitoring
 
 `/turn-credentials` returns coturn REST credentials only when both
-`TR_TURN_SECRET` and `--turn-url` are configured. The server currently issues a
+`MIR_TURN_SECRET` and `--turn-url` are configured. The server currently issues a
 12-hour TTL (`ttl: 43200`), and coturn accepts the username until its embedded
 expiry.
 
@@ -100,7 +100,7 @@ Checks:
 
 ```bash
 curl -s https://relay.sourceful-labs.net/turn-credentials
-sudo journalctl -u tr-signal --since "1 hour ago"
+sudo journalctl -u mir-signal --since "1 hour ago"
 sudo journalctl -u coturn --since "1 hour ago"
 ```
 
@@ -121,19 +121,19 @@ Operational thresholds:
 Emergency disable/rotate:
 
 ```bash
-sudo sed -i.bak '/^TR_TURN_SECRET=/d' /etc/tr-signal.env
-sudo systemctl restart tr-signal
+sudo sed -i.bak '/^MIR_TURN_SECRET=/d' /etc/mir-signal.env
+sudo systemctl restart mir-signal
 sudo systemctl stop coturn
 ```
 
-If TURN must remain enabled, rotate the shared secret in `/etc/tr-signal.env`,
+If TURN must remain enabled, rotate the shared secret in `/etc/mir-signal.env`,
 update `/etc/turnserver.conf`, then restart both services. Old derived credentials
 remain valid until their embedded expiry, so keep the Cloudflare
 `/turn-credentials` rule active during the rotation window.
 
 ### SPA security headers
 
-When `tr-signal --webroot /opt/tr-web` serves the browser SPA, the served
+When `mir-signal --webroot /opt/mir-web` serves the browser SPA, the served
 JavaScript is a client trust root. Add these headers with Cloudflare Response
 Header Transform Rules or at the origin before using the browser against real
 machines:
@@ -187,11 +187,11 @@ For every real machine pairing:
 
 ```bash
 # on each machine:
-tr-agent pair --signal https://relay.sourceful-labs.net
-tr-agent up   --signal https://relay.sourceful-labs.net --stun stun:stun.l.google.com:19302 &
+mir-agent pair --signal https://relay.sourceful-labs.net
+mir-agent up   --signal https://relay.sourceful-labs.net --stun stun:stun.l.google.com:19302 &
 # on the client:
-trm pair <code>
-trm attach <machine> --stun stun:stun.l.google.com:19302
+mir pair <code>
+mir attach <machine> --stun stun:stun.l.google.com:19302
 ```
 
 `--stun` (a public STUN server) lets peers discover their reflexive candidates for
@@ -209,6 +209,23 @@ The SSH key is the Lightsail default key pair for the region:
 `aws lightsail download-default-key-pair --region eu-north-1 --query privateKeyBase64 --output text > deploy/lightsail/key.pem && chmod 600 deploy/lightsail/key.pem`
 (do NOT commit it — it is gitignored).
 
+### One-time migration: `tr-signal` → `mir-signal`
+
+`redeploy.sh` installs the new `mir-signal` service/user/paths but does **not**
+remove the old `tr-signal` ones, so the first run leaves both. After confirming the
+new service is healthy, clean up the legacy unit on the box:
+
+```bash
+ssh tr-signal 'sudo systemctl disable --now tr-signal.service; \
+  sudo rm -f /etc/systemd/system/tr-signal.service; sudo systemctl daemon-reload; \
+  sudo rm -rf /opt/tr-web; sudo userdel trsignal 2>/dev/null; \
+  [ -f /etc/tr-signal.env ] && sudo mv /etc/tr-signal.env /etc/mir-signal.env; \
+  sudo systemctl restart mir-signal; systemctl is-active mir-signal'
+```
+
+(The AWS Lightsail instance + static IP keep their legacy names `tr-signal` /
+`tr-signal-ip` — those only change on a full recreate.)
+
 ## Recreate from scratch
 
 The instance was created with:
@@ -221,13 +238,13 @@ aws lightsail attach-static-ip   --region eu-north-1 --static-ip-name tr-signal-
 ```
 
 Then provision with `redeploy.sh` (uploads the binary + installs
-`tr-signal.service`, included here for reference).
+`mir-signal.service`, included here for reference).
 
 ## TURN fallback
 
 TURN is optional and only active when `coturn` is running, the Lightsail firewall
-allows 3478 TCP/UDP plus the configured UDP relay range, and `/etc/tr-signal.env`
-contains `TR_TURN_SECRET`. `tr-signal.service` already includes `--turn-url`;
+allows 3478 TCP/UDP plus the configured UDP relay range, and `/etc/mir-signal.env`
+contains `MIR_TURN_SECRET`. `mir-signal.service` already includes `--turn-url`;
 without the shared secret `/turn-credentials` returns 404 and clients continue
 STUN-only. Noise keeps the relay blind even when TURN is used, but TURN still
 consumes relay bandwidth, so keep the hardening checklist above in force.

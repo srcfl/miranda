@@ -244,7 +244,7 @@ func (m *Mux) onSessionEnd(i int) {
 		return
 	}
 	m.dead[i] = true
-	fmt.Fprintf(m.out, "\r\n[trm] %s disconnected\r\n", m.sessions[i].Name)
+	fmt.Fprintf(m.out, "\r\n[mir] %s disconnected\r\n", m.sessions[i].Name)
 	wasFocus := i == m.focus
 	// Resolve the next live target AND commit the focus change atomically while the
 	// lock is held. Releasing the lock between resolving and committing would let a
@@ -281,6 +281,6 @@ func (m *Mux) nextLiveLocked() int {
 
 func (m *Mux) setTitle(name string) {
 	m.mu.Lock()
-	_, _ = io.WriteString(m.out, "\x1b]0;trm: "+name+"\x07")
+	_, _ = io.WriteString(m.out, "\x1b]0;mir: "+name+"\x07")
 	m.mu.Unlock()
 }

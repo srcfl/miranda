@@ -45,7 +45,7 @@ func AttachAll(ctx context.Context, dir string, names []string, id *Identity, ic
 func RunInteractiveMux(ctx context.Context, sessions []*MuxSession, prefix byte, prefixLabel string) error {
 	fd := int(os.Stdin.Fd())
 	if !term.IsTerminal(fd) {
-		return fmt.Errorf("trm attach requires a TTY (stdin is not a terminal)")
+		return fmt.Errorf("mir attach requires a TTY (stdin is not a terminal)")
 	}
 	old, err := term.MakeRaw(fd)
 	if err != nil {
@@ -61,7 +61,7 @@ func RunInteractiveMux(ctx context.Context, sessions []*MuxSession, prefix byte,
 	for i, s := range sessions {
 		names[i] = s.Name
 	}
-	fmt.Fprintf(os.Stderr, "[trm] %d machines: %v — switch with %s then 1-9 / n / q\r\n", len(sessions), names, prefixLabel)
+	fmt.Fprintf(os.Stderr, "[mir] %d machines: %v — switch with %s then 1-9 / n / q\r\n", len(sessions), names, prefixLabel)
 
 	resizes := make(chan Size, 1)
 	winch := make(chan os.Signal, 1)

@@ -55,11 +55,11 @@ func TestEndToEndTrClientDrivesRealShell(t *testing.T) {
 	resizes := make(chan Size, 1)
 	go func() { _ = ClientBridge(ctx, in, out, resizes, Size{Cols: 80, Rows: 24}, mc, sess) }()
 
-	in.feed([]byte("echo TR_CLIENT_OK\n"))
+	in.feed([]byte("echo MIR_CLIENT_OK\n"))
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		if bytes.Contains([]byte(out.String()), []byte("TR_CLIENT_OK")) {
-			return // SUCCESS: tr client -> tr-signal -> real sh over P2P
+		if bytes.Contains([]byte(out.String()), []byte("MIR_CLIENT_OK")) {
+			return // SUCCESS: tr client -> mir-signal -> real sh over P2P
 		}
 		time.Sleep(25 * time.Millisecond)
 	}

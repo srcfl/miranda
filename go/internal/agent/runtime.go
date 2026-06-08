@@ -60,7 +60,7 @@ func (rt *Runtime) Up(ctx context.Context) error {
 	for _, o := range rt.cfg.PairedOwners {
 		start(o)
 	}
-	// Hot-reload: pick up owners added by `tr-agent pair` WITHOUT a restart, so
+	// Hot-reload: pick up owners added by `mir-agent pair` WITHOUT a restart, so
 	// pairing a new device (or a new passkey identity) just works.
 	t := time.NewTicker(rt.reloadInterval)
 	defer t.Stop()
@@ -249,4 +249,4 @@ type runtimeError string
 
 func (e runtimeError) Error() string { return string(e) }
 
-const errNoOwner = runtimeError("no paired owner; run `tr-agent pair-dev --owner-pub <hex>` first")
+const errNoOwner = runtimeError("no paired owner; run `mir-agent pair-dev --owner-pub <hex>` first")

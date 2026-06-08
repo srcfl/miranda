@@ -12,7 +12,7 @@ import (
 	"github.com/srcful/terminal-relay/go/internal/signal"
 )
 
-// startAgent spins a real tr-agent (sh) registered to the signaling server and
+// startAgent spins a real mir-agent (sh) registered to the signaling server and
 // trusting the given owner; returns its machine descriptor.
 func startAgent(t *testing.T, ctx context.Context, srvURL, name string, id *Identity) Machine {
 	t.Helper()

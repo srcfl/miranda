@@ -56,7 +56,7 @@ export async function attach(machine, termEl, onWindows) {
   const refit = () => { try { fitAddon.fit(); } catch {} };
   refit();
   setTimeout(refit, 80); // catch layout/font settling
-  term.write('[trm] connecting to ' + (machine.name || machine.machine_id) + '…\r\n');
+  term.write('[mir] connecting to ' + (machine.name || machine.machine_id) + '…\r\n');
 
   const diag = { step: 'start', ws: 'init', gather: '', iceConn: '', conn: '', dc: 'init' };
   window.__diag = diag;
@@ -75,7 +75,7 @@ export async function attach(machine, termEl, onWindows) {
   ws.onmessage = async (ev) => {
     const m = JSON.parse(ev.data);
     if (m.type === 'answer') { diag.step = 'got-answer'; await pc.setRemoteDescription({ type: 'answer', sdp: m.sdp }); }
-    else if (m.type === 'error') { diag.step = 'signal-error'; term.write('\r\n[trm] signal error: ' + (m.reason || '') + '\r\n'); }
+    else if (m.type === 'error') { diag.step = 'signal-error'; term.write('\r\n[mir] signal error: ' + (m.reason || '') + '\r\n'); }
   };
   diag.step = 'ws-connecting';
   await new Promise((r) => (ws.onopen = () => { diag.ws = 'open'; r(); }));
@@ -233,7 +233,7 @@ function viewPair(root, prefill = '', auto = false) {
       status.append(
         el('div', { className: 'ok' }, 'Compare safety numbers before trusting ' + (machine.name || machine.machine_id)),
         el('div', { className: 'sas' }, pending.safetyNumber),
-        el('div', { className: 'muted' }, 'Find the safety number printed by `tr-agent pair` on the machine. Continue only if every group matches this number exactly.'),
+        el('div', { className: 'muted' }, 'Find the safety number printed by `mir-agent pair` on the machine. Continue only if every group matches this number exactly.'),
         el('div', { className: 'actions' },
           el('button', { className: 'btn', onclick: () => {
             const confirmed = confirmPairingSafety(pending);
@@ -258,7 +258,7 @@ function viewPair(root, prefill = '', auto = false) {
     let stop = null;
     mount(root, el('div', { className: 'view' },
       el('h1', {}, 'scan the QR'),
-      el('p', { className: 'muted' }, 'Point at the QR shown by `tr-agent pair`.'),
+      el('p', { className: 'muted' }, 'Point at the QR shown by `mir-agent pair`.'),
       video, sStatus,
       el('button', { className: 'link', onclick: () => { if (stop) stop(); viewPair(root); } }, '✕ cancel')));
     stop = await scanQR(video, (text) => pairCode(codeFromScan(text)), (err) => { sStatus.textContent = err; });
@@ -269,7 +269,7 @@ function viewPair(root, prefill = '', auto = false) {
   const input = el('input', { className: 'code', placeholder: 'or paste the code', value: prefill });
   mount(root, el('div', { className: 'view' },
     el('h1', {}, 'pair a machine'),
-    el('p', { className: 'muted' }, 'Run `tr-agent pair` on the machine, then scan its QR.'),
+    el('p', { className: 'muted' }, 'Run `mir-agent pair` on the machine, then scan its QR.'),
     el('button', { className: 'btn', onclick: startScan }, '📷 Scan QR'),
     input,
     el('button', { className: 'link', onclick: () => pairCode(input.value) }, 'pair with pasted code'),
@@ -458,7 +458,7 @@ function viewIdentityGate(root, pendingFrag) {
   };
 
   const kids = [
-    el('h1', {}, 'terminal-relay'),
+    el('h1', {}, 'Miranda'),
     el('p', { className: 'muted' }, 'Your terminals, on every device — peer-to-peer, end-to-end encrypted. Log in on any device and your machines appear. The relay never sees your identity.'),
   ];
   if (passkeySupported && !isLocalhost()) {

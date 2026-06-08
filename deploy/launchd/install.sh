@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install a macOS LaunchAgent so `tr-agent up` runs at login and restarts if it
+# Install a macOS LaunchAgent so `mir-agent up` runs at login and restarts if it
 # ever exits — your machine stays reachable without a terminal open. Idempotent.
 #
 #   ./deploy/launchd/install.sh            # install + load
@@ -17,8 +17,8 @@ if [ "${1:-}" = "uninstall" ]; then
   exit 0
 fi
 
-AGENT="$(command -v tr-agent || echo "$HOME/.local/bin/tr-agent")"
-[ -x "$AGENT" ] || { echo "tr-agent not found (run 'make install' first)"; exit 1; }
+AGENT="$(command -v mir-agent || echo "$HOME/.local/bin/mir-agent")"
+[ -x "$AGENT" ] || { echo "mir-agent not found (run 'make install' first)"; exit 1; }
 # The agent spawns tmux; make sure its directory is on PATH for the daemon.
 TMUX_DIR="$(dirname "$(command -v tmux 2>/dev/null || echo /opt/homebrew/bin/tmux)")"
 mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"

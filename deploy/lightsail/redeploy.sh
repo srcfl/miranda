@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Cross-compile tr-signal and (re)deploy it to the relay host, then restart the
+# Cross-compile mir-signal and (re)deploy it to the relay host, then restart the
 # service. Idempotent: also (re)installs the systemd unit.
 #
-# Easy mode (uses the `tr-signal` SSH alias in ~/.ssh/config):
+# Easy mode (uses the `tr-signal` SSH alias in ~/.ssh/config — the box is an AWS
+# Lightsail instance still named `tr-signal`; the service it runs is `mir-signal`):
 #   ./deploy/lightsail/redeploy.sh
 #
 # Override the target:
@@ -16,36 +17,36 @@ if [ -n "${HOST:-}" ]; then
   SSH=(ssh -i "${KEY:?set KEY when using HOST}" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15)
   SCP=(scp -i "${KEY}" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15)
 else
-  DEST="${TARGET:-tr-signal}" # ~/.ssh/config alias
+  DEST="${TARGET:-tr-signal}" # ~/.ssh/config alias for the Lightsail box
   SSH=(ssh -o ConnectTimeout=15)
   SCP=(scp -o ConnectTimeout=15)
 fi
 
-echo "== build tr-signal (linux/amd64, static) =="
-( cd "$REPO/go" && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/tr-signal-linux ./cmd/tr-signal )
+echo "== build mir-signal (linux/amd64, static) =="
+( cd "$REPO/go" && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/mir-signal-linux ./cmd/mir-signal )
 
 echo "== package SPA (index.html + src + vendor) =="
-tar -C "$REPO/web" -czf /tmp/tr-web.tgz index.html src vendor
+tar -C "$REPO/web" -czf /tmp/mir-web.tgz index.html src vendor
 
 echo "== upload to $DEST =="
-"${SCP[@]}" /tmp/tr-signal-linux "$DEST:/tmp/tr-signal"
-"${SCP[@]}" "$REPO/deploy/lightsail/tr-signal.service" "$DEST:/tmp/tr-signal.service"
-"${SCP[@]}" /tmp/tr-web.tgz "$DEST:/tmp/tr-web.tgz"
+"${SCP[@]}" /tmp/mir-signal-linux "$DEST:/tmp/mir-signal"
+"${SCP[@]}" "$REPO/deploy/lightsail/mir-signal.service" "$DEST:/tmp/mir-signal.service"
+"${SCP[@]}" /tmp/mir-web.tgz "$DEST:/tmp/mir-web.tgz"
 
 echo "== install + restart =="
 "${SSH[@]}" "$DEST" 'sudo bash -s' <<'EOF'
 set -e
-install -m 0755 /tmp/tr-signal /usr/local/bin/tr-signal
-id trsignal >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin trsignal
-rm -rf /opt/tr-web && mkdir -p /opt/tr-web
-tar -C /opt/tr-web -xzf /tmp/tr-web.tgz
-chmod -R a+rX /opt/tr-web
-install -m 0644 /tmp/tr-signal.service /etc/systemd/system/tr-signal.service
+install -m 0755 /tmp/mir-signal /usr/local/bin/mir-signal
+id mirsignal >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin mirsignal
+rm -rf /opt/mir-web && mkdir -p /opt/mir-web
+tar -C /opt/mir-web -xzf /tmp/mir-web.tgz
+chmod -R a+rX /opt/mir-web
+install -m 0644 /tmp/mir-signal.service /etc/systemd/system/mir-signal.service
 systemctl daemon-reload
-systemctl enable --now tr-signal
-systemctl restart tr-signal
+systemctl enable --now mir-signal
+systemctl restart mir-signal
 sleep 1
-echo "active: $(systemctl is-active tr-signal)"
+echo "active: $(systemctl is-active mir-signal)"
 curl -s -o /dev/null -w "local healthz: %{http_code}\n" http://localhost/healthz
 curl -s -o /dev/null -w "local SPA /: %{http_code}\n" http://localhost/
 EOF

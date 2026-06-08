@@ -1,7 +1,7 @@
 # NAT-sim harness
 
-Local Docker/OrbStack harness that puts a `tr-agent` and a `tr` client behind
-**two separate NAT routers** (no shared network) with `tr-signal` + a STUN server
+Local Docker/OrbStack harness that puts a `mir-agent` and a `mir` client behind
+**two separate NAT routers** (no shared network) with `mir-signal` + a STUN server
 on a public segment — to test real WebRTC NAT traversal locally, before deploy.
 
 ```
@@ -25,14 +25,14 @@ cd deploy/netsim
 docker compose down -v   # tear down
 ```
 
-`TR_ICE_DEBUG=1` is set on the agent and client, so the gathered ICE candidates
+`MIR_ICE_DEBUG=1` is set on the agent and client, so the gathered ICE candidates
 and connection-state changes are printed (run.sh surfaces them).
 
 ## Finding (2026-06-04): strict P2P fails between two symmetric NATs
 
 The harness works and isolates correctly: STUN succeeds, both peers gather their
 `srflx` candidates (the NAT routers' public mappings), and host candidates are
-confirmed unroutable. **But the hole-punch does not establish**, and `tr attach`
+confirmed unroutable. **But the hole-punch does not establish**, and `mir attach`
 fails with the clean "no direct P2P path (strict P2P, no relay fallback)" error.
 
 Root cause (confirmed by tcpdump on the NAT routers): Linux `iptables` MASQUERADE,
@@ -57,5 +57,5 @@ host-candidate E2Es in `go/internal/...` (DataChannel opens directly).
 ### Implication
 
 Revisit the strict-P2P decision: a TURN fallback (DTLS+Noise keep it blind to
-content even when relayed) would make `tr attach` work across symmetric NATs,
+content even when relayed) would make `mir attach` work across symmetric NATs,
 at the cost of relaying encrypted bytes for those sessions.

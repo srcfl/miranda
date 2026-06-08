@@ -1,6 +1,6 @@
 // Package defaults holds the baked-in "it just works" endpoints. The signaling
 // relay and STUN server default to ours, so no flags are needed for the common
-// case; override with --signal/--stun or the TR_SIGNAL/TR_STUN env vars (e.g. to
+// case; override with --signal/--stun or the MIR_SIGNAL/MIR_STUN env vars (e.g. to
 // point at a local dev relay or your own infrastructure).
 package defaults
 
@@ -16,25 +16,25 @@ const (
 	Web = "https://term.sourceful-labs.net"
 )
 
-// SignalURL returns the effective signaling URL: TR_SIGNAL env, else the baked default.
+// SignalURL returns the effective signaling URL: MIR_SIGNAL env, else the baked default.
 func SignalURL() string {
-	if v := os.Getenv("TR_SIGNAL"); v != "" {
+	if v := os.Getenv("MIR_SIGNAL"); v != "" {
 		return v
 	}
 	return Signal
 }
 
-// STUNURL returns the effective STUN URL: TR_STUN env, else the baked default.
+// STUNURL returns the effective STUN URL: MIR_STUN env, else the baked default.
 func STUNURL() string {
-	if v := os.Getenv("TR_STUN"); v != "" {
+	if v := os.Getenv("MIR_STUN"); v != "" {
 		return v
 	}
 	return STUN
 }
 
-// WebURL returns the effective SPA base URL: TR_WEB env, else the baked default.
+// WebURL returns the effective SPA base URL: MIR_WEB env, else the baked default.
 func WebURL() string {
-	if v := os.Getenv("TR_WEB"); v != "" {
+	if v := os.Getenv("MIR_WEB"); v != "" {
 		return v
 	}
 	return Web
