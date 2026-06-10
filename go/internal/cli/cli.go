@@ -53,6 +53,8 @@ func (a *app) run(argv []string) int {
 		return a.exit(a.cmdPairDev(argv[1:]))
 	case "up":
 		return a.exit(a.cmdUp(argv[1:]))
+	case "pair":
+		return a.exit(a.cmdPair(argv[1:]))
 	default:
 		a.usage()
 		return 2
