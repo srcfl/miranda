@@ -166,6 +166,17 @@ export function makeTerminal(termEl) {
   const fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
   term.open(termEl);
+  // Mobile input hygiene: a terminal must not autocapitalize/autocorrect/spellcheck
+  // keystrokes, and iOS auto-zooms when focusing an input whose font-size is < 16px —
+  // so pin the (hidden) helper textarea to 16px to suppress that zoom WITHOUT disabling
+  // the user's own pinch-zoom. Best-effort; term.textarea exists after open().
+  if (term.textarea) {
+    term.textarea.setAttribute('autocapitalize', 'off');
+    term.textarea.setAttribute('autocorrect', 'off');
+    term.textarea.setAttribute('autocomplete', 'off');
+    term.textarea.setAttribute('spellcheck', 'false');
+    term.textarea.style.fontSize = '16px';
+  }
   const refit = () => { try { fitAddon.fit(); } catch {} };
   refit();
   setTimeout(refit, 80); // catch layout/font settling
@@ -339,6 +350,7 @@ function viewPair(root, prefill = '', auto = false) {
 function viewTerminal(root, machine) {
   let handle = null;
   let session = null; // reconnect controller (runSession) for this machine
+  let reconnecting = false; // true while recovering a dropped session (for the "reconnected" line)
   let snap = null; // latest FrameWindows snapshot: v2 {v,sess:[...]}, or null (non-tmux)
   const close = () => { try { handle && handle.close(); } catch {} };
   const focus = () => { window.__term && window.__term.focus(); };
@@ -497,9 +509,9 @@ function viewTerminal(root, machine) {
   session = runSession({
     connectOnce: (onConnected) => connectOnce(machine, term, current, onConnected, (s) => { snap = s; renderStrip(); }),
     onState: (state, attempt) => {
-      if (state === 'connected') { setPill('● live', 'ok'); window.__attached = true; term.focus(); }
+      if (state === 'connected') { setPill('● live', 'ok'); window.__attached = true; term.focus(); if (reconnecting) { reconnecting = false; term.write('\r\n[mir] reconnected\r\n'); } }
       else if (state === 'connecting') setPill('⟳ connecting', 'wait');
-      else if (state === 'reconnecting') { setPill('⟳ reconnecting' + (attempt ? ' (' + attempt + ')' : ''), 'wait'); if (attempt === 0) term.write('\r\n[mir] connection lost — reconnecting…\r\n'); }
+      else if (state === 'reconnecting') { reconnecting = true; setPill('⟳ reconnecting' + (attempt ? ' (' + attempt + ')' : ''), 'wait'); if (attempt === 0) term.write('\r\n[mir] connection lost — reconnecting…\r\n'); }
       else if (state === 'failed') { setPill('⊘ tap to retry', 'failed'); term.write('\r\n[mir] couldn\'t reconnect — tap ⊘ to retry\r\n'); }
     },
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
