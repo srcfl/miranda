@@ -15,6 +15,7 @@ require (
 	github.com/mdp/qrterminal/v3 v3.2.1
 	github.com/pion/webrtc/v4 v4.2.14
 	golang.org/x/crypto v0.52.0
+	golang.org/x/mod v0.37.0
 	golang.org/x/term v0.43.0
 )
 
