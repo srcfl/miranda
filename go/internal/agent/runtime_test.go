@@ -145,3 +145,38 @@ func TestRuntimeReclaimsAttachOnDisconnect(t *testing.T) {
 	t.Fatalf("agent did not reclaim attach on disconnect: %d agent.RunAgentSession goroutine(s) still parked.\n%s",
 		countSessionGoroutines(), string(buf[:n]))
 }
+
+// TestAdmitBoundsConcurrentAttaches verifies the pre-auth DoS guard: admit()
+// hands out at most cap(sem) slots, then refuses (without blocking) until a
+// slot is released. This is what stops an unauthenticated flood of offers from
+// allocating unbounded PeerConnections.
+func TestAdmitBoundsConcurrentAttaches(t *testing.T) {
+	rt := &Runtime{sem: make(chan struct{}, 3)}
+	for i := 0; i < 3; i++ {
+		if !rt.admit() {
+			t.Fatalf("admit %d: want true (slot free), got false", i)
+		}
+	}
+	if rt.admit() {
+		t.Fatal("admit past cap: want false (saturated), got true")
+	}
+	rt.release()
+	if !rt.admit() {
+		t.Fatal("admit after release: want true (slot freed), got false")
+	}
+	if rt.admit() {
+		t.Fatal("admit past cap again: want false, got true")
+	}
+}
+
+// TestNewRuntimeInitializesAttachSemaphore guards against a nil semaphore, which
+// would make admit() refuse every offer (the agent would answer nothing).
+func TestNewRuntimeInitializesAttachSemaphore(t *testing.T) {
+	rt := NewRuntime(&Config{}, []string{"sh"}, nil)
+	if cap(rt.sem) != defaultMaxConcurrentAttaches {
+		t.Fatalf("attach semaphore cap = %d, want %d", cap(rt.sem), defaultMaxConcurrentAttaches)
+	}
+	if !rt.admit() {
+		t.Fatal("fresh runtime should admit the first attach")
+	}
+}
