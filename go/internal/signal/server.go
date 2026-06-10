@@ -55,11 +55,10 @@ const AgentRegistrationSecretHeader = "X-TR-Agent-Registration-Secret"
 // data — only SignalMsg (SDP + routing). Once a DataChannel is up P2P, the two
 // signaling sockets for that session are no longer needed.
 type Server struct {
-	mu       sync.Mutex
-	agents   map[string]*agentConn   // owner|machine -> live agent
-	proofs   *proofStore             // owner|machine -> learned registration proof (bounded)
-	sessions map[string]*browserConn // session id -> browser (global lookup)
-	pair     *pairRooms              // roomID -> waiting pairing party (blind bridge)
+	mu     sync.Mutex
+	agents map[string]*agentConn // owner|machine -> live agent
+	proofs *proofStore           // owner|machine -> learned registration proof (bounded)
+	pair   *pairRooms            // roomID -> waiting pairing party (blind bridge)
 
 	// TURN (optional): when both are set, /turn-credentials issues ephemeral
 	// creds for this URL. The secret is shared with coturn only — never shipped.
@@ -113,6 +112,16 @@ func (ac *agentConn) unbind(sess string) {
 	ac.mu.Lock()
 	delete(ac.sessions, sess)
 	ac.mu.Unlock()
+}
+
+// session returns the browser bound to sess on THIS agent, or nil. Answers are
+// routed via the agent's own bound set rather than a global session map, so a
+// compromised or buggy agent can only ever deliver an answer into one of its own
+// sessions — never inject SDP into a session bound to a different agent.
+func (ac *agentConn) session(sess string) *browserConn {
+	ac.mu.Lock()
+	defer ac.mu.Unlock()
+	return ac.sessions[sess]
 }
 
 // teardown marks the agent gone and tells every browser bound to it that the
@@ -171,7 +180,6 @@ func New() *Server {
 	return &Server{
 		agents:           map[string]*agentConn{},
 		proofs:           newProofStore(defaultMaxAgentProofs),
-		sessions:         map[string]*browserConn{},
 		pair:             newPairRooms(),
 		maxAgentSessions: defaultMaxAgentSessions,
 		maxPairRooms:     defaultMaxPairRooms,
@@ -284,10 +292,9 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			if m.Type == TypeAnswer {
-				s.mu.Lock()
-				bc := s.sessions[m.Session]
-				s.mu.Unlock()
-				if bc != nil {
+				// Route via THIS agent's own bound sessions, not a global map,
+				// so an answer can only ever reach a session the agent owns.
+				if bc := ac.session(m.Session); bc != nil {
 					bc.notify(SignalMsg{Type: TypeAnswer, SDP: m.SDP})
 				}
 			}
@@ -344,13 +351,7 @@ func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.mu.Lock()
-	s.sessions[sess] = bc
-	s.mu.Unlock()
 	defer func() {
-		s.mu.Lock()
-		delete(s.sessions, sess)
-		s.mu.Unlock()
 		ac.unbind(sess)
 		bc.close()
 	}()
