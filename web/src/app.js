@@ -465,9 +465,16 @@ function viewIdentityGate(root, pendingFrag) {
     kids.push(el('button', { className: 'btn', onclick: login }, 'Log in with passkey'));
     kids.push(el('p', { className: 'muted' }, 'New here? Logging in offers to create one.'));
   }
-  if (isLocalhost() || !passkeySupported) {
+  // The local dev key is a plaintext, non-biometric x25519 key in localStorage.
+  // Offer it ONLY on localhost — never on a public origin, even if the browser
+  // lacks WebAuthn — so a real owner identity is never persisted in the clear on
+  // a production host. devOwnerKey() is additionally hard-guarded to localhost.
+  if (isLocalhost()) {
     kids.push(el('button', { className: passkeySupported ? 'link' : 'btn', onclick: useDev },
-      isLocalhost() ? 'Continue with a local dev key (localhost)' : 'Continue with a local dev key'));
+      'Continue with a local dev key (localhost)'));
+  } else if (!passkeySupported) {
+    kids.push(el('p', { className: 'muted' },
+      'This browser does not support passkeys (WebAuthn PRF). Open Miranda in a passkey-capable browser (e.g. Safari 18+ or Chrome) to log in.'));
   }
   kids.push(status);
   mount(root, el('div', { className: 'view' }, ...kids));
@@ -483,7 +490,11 @@ export function start(root) {
   window.__ready = true;
 
   // test/validation hooks (used after sign-in)
-  window.__useDevKey = () => { setOwner(devOwnerKey()); localStorage.setItem('tr_identity_mode', 'dev'); viewMachines(root); };
+  // __useDevKey mints/persists a plaintext owner key, so expose it ONLY on
+  // localhost — never let console access mint a real identity on a public origin.
+  if (isLocalhost()) {
+    window.__useDevKey = () => { setOwner(devOwnerKey()); localStorage.setItem('tr_identity_mode', 'dev'); viewMachines(root); };
+  }
   window.trAttach = (m) => attach(m, root.querySelector('.termbox') || root);
   window.trPair = (code) => pairWithCode(code, ownerKey().pub);
 }
