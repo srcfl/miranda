@@ -175,6 +175,7 @@ func cmdUp(args []string) {
 	signalURL := fs.String("signal", defaults.SignalURL(), "signaling server base URL")
 	shell := fs.String("shell", "tmux:new:-A:-s:main", "launch command, ':'-separated")
 	ice := iceFlags(fs)
+	autoUpdate := fs.Bool("auto-update", os.Getenv("MIR_AUTO_UPDATE") == "1", "opt-in: automatically self-update when idle")
 	_ = fs.Parse(args)
 
 	cfg, err := agent.LoadOrInit(*dir, *name, *signalURL)
@@ -194,8 +195,49 @@ func cmdUp(args []string) {
 	fmt.Printf("mir-agent up: machine %s, signaling %s\n", cfg.MachineID, cfg.SignalURL)
 	// Non-blocking update notice (cache-only display; refresh in background while serving).
 	selfupdate.New(repoSlug, "mir-agent").MaybeNotify(os.Stderr, updateCachePath(*dir), version.Version, 24*time.Hour)
+	if *autoUpdate {
+		go autoUpdateLoop(ctx, rt)
+	}
 	if err := rt.Up(ctx); err != nil && ctx.Err() == nil {
 		fatal(err)
+	}
+}
+
+// autoUpdateLoop checks for a newer release every 12h and applies it only when no
+// owner session is active, then re-execs into the new binary (preserving PID/FDs
+// so a systemd/supervisor wrapper survives). Opt-in via --auto-update / MIR_AUTO_UPDATE.
+func autoUpdateLoop(ctx context.Context, rt *agent.Runtime) {
+	exe, err := os.Executable()
+	if err != nil {
+		return
+	}
+	exe, _ = filepath.EvalSymlinks(exe)
+	c := selfupdate.New(repoSlug, "mir-agent")
+	check := func() {
+		if rt.ActiveSessions() > 0 {
+			return // a client is connected — defer the swap until idle
+		}
+		rel, err := c.Latest()
+		if err != nil || !selfupdate.IsNewer(version.Version, rel.Tag) {
+			return
+		}
+		if err := c.Apply(rel, exe); err != nil {
+			fmt.Fprintf(os.Stderr, "mir-agent: auto-update failed: %v\n", err)
+			return
+		}
+		fmt.Fprintf(os.Stderr, "mir-agent: updated → %s, restarting\n", rel.Tag)
+		_ = selfupdate.ReExec(exe, os.Args, os.Environ())
+	}
+	check() // once at startup (serving has begun; gated on idle)
+	t := time.NewTicker(12 * time.Hour)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			check()
+		}
 	}
 }
 

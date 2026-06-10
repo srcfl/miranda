@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -35,6 +36,8 @@ type Runtime struct {
 
 	sem chan struct{} // bounds concurrent in-flight attach handshakes (pre-auth DoS guard)
 
+	active int64 // count of authenticated, serving sessions (atomic); gates auto-update
+
 	baseBackoff    time.Duration        // first reconnect delay (grows on repeated dial failures)
 	maxBackoff     time.Duration        // cap
 	reloadInterval time.Duration        // how often to re-read config for newly-paired owners
@@ -53,6 +56,13 @@ func (rt *Runtime) admit() bool {
 }
 
 func (rt *Runtime) release() { <-rt.sem }
+
+func (rt *Runtime) sessionStarted() { atomic.AddInt64(&rt.active, 1) }
+func (rt *Runtime) sessionEnded()   { atomic.AddInt64(&rt.active, -1) }
+
+// ActiveSessions reports the number of in-flight authenticated owner sessions.
+// Opt-in auto-update uses this to defer a binary swap until the agent is idle.
+func (rt *Runtime) ActiveSessions() int { return int(atomic.LoadInt64(&rt.active)) }
 
 func NewRuntime(cfg *Config, launch []string, ice []peer.ICEServer) *Runtime {
 	return &Runtime{cfg: cfg, launch: launch, ice: ice, sem: make(chan struct{}, defaultMaxConcurrentAttaches), baseBackoff: time.Second, maxBackoff: 30 * time.Second, reloadInterval: 3 * time.Second}
@@ -243,6 +253,13 @@ func (rt *Runtime) handleOffer(ctx context.Context, c *websocket.Conn, m signal.
 	if err != nil {
 		return
 	}
+	// Authenticated session established (Noise KK passed). Count it as active so
+	// opt-in auto-update defers any binary swap until the agent is idle. Bracketed
+	// HERE — after auth — not at handleOffer's top: pre-auth attach handshakes
+	// (already bounded by admit()) must not inflate the active count and starve
+	// auto-update.
+	rt.sessionStarted()
+	defer rt.sessionEnded()
 
 	pty, err := StartPTY(attachCtx, rt.launch)
 	if err != nil {
