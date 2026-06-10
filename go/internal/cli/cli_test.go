@@ -101,3 +101,16 @@ func TestPairDevPinsOwner(t *testing.T) {
 		t.Fatalf("pair-dev output = %q", out.String())
 	}
 }
+
+func TestRunAgentCompatWarnsAndForwards(t *testing.T) {
+	var out, errb bytes.Buffer
+	if code := RunAgentCompat([]string{"--version"}, &out, &errb); code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	if !strings.Contains(strings.ToLower(errb.String()), "deprecated") {
+		t.Fatalf("stderr = %q, want deprecation notice", errb.String())
+	}
+	if !strings.HasPrefix(out.String(), "mir-agent ") {
+		t.Fatalf("stdout = %q, want mir-agent version label", out.String())
+	}
+}

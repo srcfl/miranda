@@ -26,6 +26,16 @@ func Run(argv []string, stdout, stderr io.Writer) int {
 	return (&app{out: stdout, errOut: stderr, binary: "mir"}).run(argv)
 }
 
+const agentDeprecationNotice = "note: `mir-agent` is deprecated and now an alias for `mir` — use `mir up` / `mir pair` / `mir enroll`. This shim will be removed in a future release."
+
+// RunAgentCompat is the deprecated mir-agent entry point: it prints a one-line
+// deprecation notice to stderr, then dispatches exactly like Run but labelled
+// "mir-agent" (so self-update fetches the mir-agent asset and notices read right).
+func RunAgentCompat(argv []string, stdout, stderr io.Writer) int {
+	fmt.Fprintln(stderr, agentDeprecationNotice)
+	return (&app{out: stdout, errOut: stderr, binary: "mir-agent"}).run(argv)
+}
+
 func (a *app) run(argv []string) int {
 	if len(argv) == 0 {
 		a.usage()
