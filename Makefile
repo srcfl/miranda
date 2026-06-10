@@ -24,11 +24,11 @@ install: build
 # dev: run the signaling server + an agent locally.
 # 1) `make build`
 # 2) `make dev` (starts mir-signal, enrolls an agent against it)
-# Pair an owner with: bin/mir-agent pair-dev --owner-pub <hex>
+# Pair an owner with: bin/mir pair-dev --owner-pub <hex>
 dev: build
 	@echo "starting mir-signal on :8443 ..."
 	@./bin/mir-signal --addr :8443 & echo $$! > /tmp/mir-signal.pid
 	@sleep 1
-	@./bin/mir-agent enroll --dir /tmp/mir-agent-dev --signal http://localhost:8443 || true
-	@echo "agent enrolled. Pair an owner, then: ./bin/mir-agent up --dir /tmp/mir-agent-dev --shell sh"
+	@./bin/mir enroll --dir /tmp/mir-agent-dev --signal http://localhost:8443 || true
+	@echo "agent enrolled. Pair an owner, then: ./bin/mir up --dir /tmp/mir-agent-dev --shell sh"
 	@echo "client: ./bin/mir attach <machine>   |   stop signal: kill \`cat /tmp/mir-signal.pid\`"

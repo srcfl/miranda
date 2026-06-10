@@ -133,8 +133,8 @@ these controls to every Cloudflare hostname that routes to `mir-signal`.
   never terminal bytes.
 - **Watch the wire.** The data plane is a direct DataChannel; the relay never
   receives it. `deploy/netsim` reproduces real NAT scenarios locally.
-- **Compare the safety number at pairing.** `mir-agent pair` and `mir pair` each
-  print a `safety number: xxxx-xxxx-xxxx-xxxx`. If both ends show the same value,
+- **Compare the safety number at pairing.** Both ends of `mir pair` each print a
+  `safety number: xxxx-xxxx-xxxx-xxxx`. If both ends show the same value,
   you have visibly confirmed there is no MITM — even if the pairing token leaked.
 
 ## Roadmap to full, independent trust
@@ -145,8 +145,8 @@ These are the steps that let _anyone_ — not just us — trust the relay-free m
 - [ ] **Signed, checksummed releases** (and an installer that verifies them — never
       trust binaries from the relay).
 - [ ] **Reproducible builds** (the binary you run matches the audited source).
-- [x] **Verifiable pairing authenticity (safety number).** `mir-agent pair` and
-      `mir pair` each print a 64-bit **safety number** derived from the Noise
+- [x] **Verifiable pairing authenticity (safety number).** Both ends of
+      `mir pair` print a 64-bit **safety number** derived from the Noise
       handshake transcript hash. With no MITM both ends show the same number;
       a man-in-the-middle (e.g. with a leaked token) produces two different
       handshakes → mismatched numbers, which you catch by eye. (Session-time SAS
