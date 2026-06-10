@@ -20,12 +20,19 @@ import (
 	"github.com/srcful/terminal-relay/go/internal/pairing"
 	"github.com/srcful/terminal-relay/go/internal/peer"
 	"github.com/srcful/terminal-relay/go/internal/sas"
+	"github.com/srcful/terminal-relay/go/internal/selfupdate"
 	"github.com/srcful/terminal-relay/go/internal/version"
 )
 
 func defaultDir() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".terminal-relay")
+}
+
+const repoSlug = "srcfl/miranda"
+
+func updateCachePath(dir string) string {
+	return filepath.Join(dir, "update-check.json")
 }
 
 func main() {
@@ -44,14 +51,42 @@ func main() {
 		cmdPair(os.Args[2:])
 	case "up":
 		cmdUp(os.Args[2:])
+	case "self-update":
+		cmdSelfUpdate(os.Args[2:])
 	default:
 		usage()
 	}
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: mir-agent <enroll|pair-dev|pair|up> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: mir-agent <enroll|pair-dev|pair|up|self-update|--version> [flags]")
 	os.Exit(2)
+}
+
+// cmdSelfUpdate replaces the running mir-agent binary with the latest GitHub
+// Release (verified by SHA256) when a newer version exists.
+func cmdSelfUpdate(args []string) {
+	fs := flag.NewFlagSet("self-update", flag.ExitOnError)
+	_ = fs.Parse(args)
+	exe, err := os.Executable()
+	if err != nil {
+		fatal(err)
+	}
+	exe, _ = filepath.EvalSymlinks(exe)
+	c := selfupdate.New(repoSlug, "mir-agent")
+	rel, err := c.Latest()
+	if err != nil {
+		fatal(err)
+	}
+	if !selfupdate.IsNewer(version.Version, rel.Tag) {
+		fmt.Printf("already up to date (%s)\n", version.Version)
+		return
+	}
+	fmt.Printf("updating mir-agent %s → %s …\n", version.Version, rel.Tag)
+	if err := c.Apply(rel, exe); err != nil {
+		fatal(err)
+	}
+	fmt.Printf("updated mir-agent → %s\n", rel.Tag)
 }
 
 func cmdEnroll(args []string) {
@@ -157,6 +192,8 @@ func cmdUp(args []string) {
 	rt := agent.NewRuntime(cfg, launch, ice())
 	rt.Logf = func(f string, a ...any) { fmt.Fprintf(os.Stderr, "mir-agent: "+f+"\n", a...) }
 	fmt.Printf("mir-agent up: machine %s, signaling %s\n", cfg.MachineID, cfg.SignalURL)
+	// Non-blocking update notice (cache-only display; refresh in background while serving).
+	selfupdate.New(repoSlug, "mir-agent").MaybeNotify(os.Stderr, updateCachePath(*dir), version.Version, 24*time.Hour)
 	if err := rt.Up(ctx); err != nil && ctx.Err() == nil {
 		fatal(err)
 	}

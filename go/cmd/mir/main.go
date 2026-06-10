@@ -17,12 +17,19 @@ import (
 	"github.com/srcful/terminal-relay/go/internal/pairing"
 	"github.com/srcful/terminal-relay/go/internal/peer"
 	"github.com/srcful/terminal-relay/go/internal/sas"
+	"github.com/srcful/terminal-relay/go/internal/selfupdate"
 	"github.com/srcful/terminal-relay/go/internal/version"
 )
 
 func defaultDir() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".terminal-relay")
+}
+
+const repoSlug = "srcfl/miranda"
+
+func updateCachePath(dir string) string {
+	return filepath.Join(dir, "update-check.json")
 }
 
 func main() {
@@ -45,14 +52,42 @@ func main() {
 		cmdAttach(os.Args[2:])
 	case "run":
 		cmdRun(os.Args[2:])
+	case "self-update":
+		cmdSelfUpdate(os.Args[2:])
 	default:
 		usage()
 	}
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: mir <keygen|pair|add-machine|list|attach|run> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: mir <keygen|pair|add-machine|list|attach|run|self-update|--version> [flags]")
 	os.Exit(2)
+}
+
+// cmdSelfUpdate replaces the running mir binary with the latest GitHub Release
+// (verified by SHA256) when a newer version exists. It talks to GitHub directly.
+func cmdSelfUpdate(args []string) {
+	fs := flag.NewFlagSet("self-update", flag.ExitOnError)
+	_ = fs.Parse(args)
+	exe, err := os.Executable()
+	if err != nil {
+		fatal(err)
+	}
+	exe, _ = filepath.EvalSymlinks(exe)
+	c := selfupdate.New(repoSlug, "mir")
+	rel, err := c.Latest()
+	if err != nil {
+		fatal(err)
+	}
+	if !selfupdate.IsNewer(version.Version, rel.Tag) {
+		fmt.Printf("already up to date (%s)\n", version.Version)
+		return
+	}
+	fmt.Printf("updating mir %s → %s …\n", version.Version, rel.Tag)
+	if err := c.Apply(rel, exe); err != nil {
+		fatal(err)
+	}
+	fmt.Printf("updated mir → %s\n", rel.Tag)
 }
 
 // cmdRun attaches and runs one command non-interactively, streaming output for a
@@ -162,6 +197,8 @@ func cmdList(args []string) {
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
 	dir := fs.String("dir", defaultDir(), "config directory")
 	_ = fs.Parse(args)
+	// Cheap, non-blocking update notice (cache-only display; refresh in background).
+	selfupdate.New(repoSlug, "mir").MaybeNotify(os.Stderr, updateCachePath(*dir), version.Version, 24*time.Hour)
 	list, err := client.ListMachines(*dir)
 	if err != nil {
 		fatal(err)
@@ -194,6 +231,9 @@ func cmdAttach(args []string) {
 	if err != nil {
 		fatal(err)
 	}
+	// attach is long-lived, so the backgrounded refresh has time to land for the
+	// next run; surface any cached newer version now (non-blocking).
+	selfupdate.New(repoSlug, "mir").MaybeNotify(os.Stderr, updateCachePath(*dir), version.Version, 24*time.Hour)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
