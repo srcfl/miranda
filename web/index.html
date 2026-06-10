@@ -42,6 +42,11 @@
   .pill.active { border-color: var(--acc); color: var(--acc); }
   .pill.add { color: var(--acc); border-style: dashed; }
   .pill.sess { background: #0b0e14; border-style: dashed; color: var(--mut); }
+  .pill.status { font-variant-numeric: tabular-nums; }
+  .pill.status.ok { opacity: .75; }
+  .pill.status.wait { opacity: .85; animation: mir-pulse 1.2s ease-in-out infinite; }
+  .pill.status.failed { color: #ff6b6b; border-color: #ff6b6b; }
+  @keyframes mir-pulse { 0%, 100% { opacity: .4; } 50% { opacity: .9; } }
   .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
   .dot.act { background: #38bdf8; } .dot.bell { background: #f87171; }
   .wgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-bottom: 12px; }

@@ -3,6 +3,8 @@
 import { HandshakeKK } from './noise/noise-kk.js';
 import { encodeData, encodeResize, encodeControl, decodeFrame, FRAME_DATA, FRAME_WINDOWS } from './noise/frame.js';
 import { awaitSocketOpen } from './net/ws-open.js';
+import { runSession } from './net/reconnect.js';
+import { backoff } from './net/backoff.js';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -319,6 +321,7 @@ function viewPair(root, prefill = '', auto = false) {
 
 function viewTerminal(root, machine) {
   let handle = null;
+  let session = null; // reconnect controller (runSession) for this machine
   let snap = null; // latest FrameWindows snapshot: v2 {v,sess:[...]}, or null (non-tmux)
   const close = () => { try { handle && handle.close(); } catch {} };
   const focus = () => { window.__term && window.__term.focus(); };
@@ -460,9 +463,33 @@ function viewTerminal(root, machine) {
     view.append(sheet);
   }
 
-  attach(machine, termBox, (s) => { snap = s; renderStrip(); })
-    .then((h) => { handle = h; })
-    .catch((e) => termBox.append(el('div', { className: 'status' }, 'connect failed: ' + (e && e.message || e))));
+  const { term, current, dispose } = makeTerminal(termBox);
+  term.write('[mir] connecting to ' + (machine.name || machine.machine_id) + '…\r\n');
+
+  // topbar status pill: reflects the live connection state; tap to retry when it has
+  // given up. The keystroke path is durable (current.send), swapped per (re)connect.
+  const pill = el('button', { className: 'pill status', onclick: () => { if (pill.dataset.failed) session && session.retryNow(); } }, '…');
+  const setPill = (label, cls) => { pill.className = 'pill status ' + cls; pill.textContent = label; pill.dataset.failed = cls === 'failed' ? '1' : ''; };
+  view.querySelector('.topbar').insertBefore(pill, sw);
+
+  handle = {
+    sendCtl: (obj) => { current.send && current.send(encodeControl(te.encode(JSON.stringify(obj)))); focus(); },
+    close: () => { session && session.stop(); try { current.send = null; } catch {} dispose(); },
+  };
+
+  session = runSession({
+    connectOnce: (onConnected) => connectOnce(machine, term, current, onConnected, (s) => { snap = s; renderStrip(); }),
+    onState: (state, attempt) => {
+      if (state === 'connected') { setPill('● live', 'ok'); window.__attached = true; term.focus(); }
+      else if (state === 'connecting') setPill('⟳ connecting', 'wait');
+      else if (state === 'reconnecting') { setPill('⟳ reconnecting' + (attempt ? ' (' + attempt + ')' : ''), 'wait'); if (attempt === 0) term.write('\r\n[mir] connection lost — reconnecting…\r\n'); }
+      else if (state === 'failed') { setPill('⊘ tap to retry', 'failed'); term.write('\r\n[mir] couldn\'t reconnect — tap ⊘ to retry\r\n'); }
+    },
+    isVisible: () => document.visibilityState === 'visible',
+    waitVisible: () => new Promise((res) => { const h = () => { if (document.visibilityState === 'visible') { document.removeEventListener('visibilitychange', h); res(); } }; document.addEventListener('visibilitychange', h); }),
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    backoffFor: (attempt) => backoff(attempt),
+  });
 }
 
 // after sign-in: replay a scanned pairing code, else show machines
