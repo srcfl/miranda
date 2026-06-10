@@ -4,7 +4,6 @@ package signal
 import (
 	"context"
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"net/http"
@@ -56,11 +55,11 @@ const AgentRegistrationSecretHeader = "X-TR-Agent-Registration-Secret"
 // data — only SignalMsg (SDP + routing). Once a DataChannel is up P2P, the two
 // signaling sockets for that session are no longer needed.
 type Server struct {
-	mu           sync.Mutex
-	agents       map[string]*agentConn   // owner|machine -> live agent
-	agentSecrets map[string]string       // owner|machine -> learned registration proof
-	sessions     map[string]*browserConn // session id -> browser (global lookup)
-	pair         *pairRooms              // roomID -> waiting pairing party (blind bridge)
+	mu       sync.Mutex
+	agents   map[string]*agentConn   // owner|machine -> live agent
+	proofs   *proofStore             // owner|machine -> learned registration proof (bounded)
+	sessions map[string]*browserConn // session id -> browser (global lookup)
+	pair     *pairRooms              // roomID -> waiting pairing party (blind bridge)
 
 	// TURN (optional): when both are set, /turn-credentials issues ephemeral
 	// creds for this URL. The secret is shared with coturn only — never shipped.
@@ -171,7 +170,7 @@ func (bc *browserConn) close() { bc.once.Do(func() { close(bc.done) }) }
 func New() *Server {
 	return &Server{
 		agents:           map[string]*agentConn{},
-		agentSecrets:     map[string]string{},
+		proofs:           newProofStore(defaultMaxAgentProofs),
 		sessions:         map[string]*browserConn{},
 		pair:             newPairRooms(),
 		maxAgentSessions: defaultMaxAgentSessions,
@@ -248,9 +247,7 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	prev := s.agents[k]
-	if proof != "" && s.agentSecrets[k] == "" {
-		s.agentSecrets[k] = proof
-	}
+	s.proofs.learn(k, proof)
 	s.agents[k] = ac
 	s.mu.Unlock()
 	if prev != nil {
@@ -301,12 +298,10 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 	writeUntil(r.Context(), ac.done, c, ac.out, SignalMsg{Type: TypeReady})
 }
 
+// agentProofOKLocked reports whether proof may (re)register slot k. Callers must
+// hold s.mu (the proof store is not internally synchronized).
 func (s *Server) agentProofOKLocked(k, proof string) bool {
-	expected := s.agentSecrets[k]
-	if expected == "" {
-		return true
-	}
-	return subtle.ConstantTimeCompare([]byte(proof), []byte(expected)) == 1
+	return s.proofs.ok(k, proof)
 }
 
 func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
