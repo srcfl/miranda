@@ -16,6 +16,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.x"
+          cache-dependency-path: go/go.sum # module lives in go/, not repo root
       - uses: goreleaser/goreleaser-action@v6
         with:
           version: "~> v2"
