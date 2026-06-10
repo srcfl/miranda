@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -13,9 +14,14 @@ import (
 	"time"
 
 	"github.com/srcful/terminal-relay/go/internal/signal"
+	"github.com/srcful/terminal-relay/go/internal/version"
 )
 
 func main() {
+	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-v") {
+		fmt.Println("mir-signal", version.String())
+		return
+	}
 	addr := flag.String("addr", ":8443", "plain HTTP listen address (front it with a TLS proxy, or also set --tls-*)")
 	tlsAddr := flag.String("tls-addr", "", "if set with --tls-cert/--tls-key, also serve HTTPS here (e.g. :443) for Cloudflare Full (strict)")
 	tlsCert := flag.String("tls-cert", "", "TLS certificate file (PEM)")

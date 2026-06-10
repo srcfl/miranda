@@ -17,6 +17,7 @@ import (
 	"github.com/srcful/terminal-relay/go/internal/pairing"
 	"github.com/srcful/terminal-relay/go/internal/peer"
 	"github.com/srcful/terminal-relay/go/internal/sas"
+	"github.com/srcful/terminal-relay/go/internal/version"
 )
 
 func defaultDir() string {
@@ -29,6 +30,9 @@ func main() {
 		usage()
 	}
 	switch os.Args[1] {
+	case "--version", "-v", "version":
+		fmt.Println("mir", version.String())
+		return
 	case "keygen":
 		cmdKeygen(os.Args[2:])
 	case "pair":

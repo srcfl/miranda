@@ -20,6 +20,7 @@ import (
 	"github.com/srcful/terminal-relay/go/internal/pairing"
 	"github.com/srcful/terminal-relay/go/internal/peer"
 	"github.com/srcful/terminal-relay/go/internal/sas"
+	"github.com/srcful/terminal-relay/go/internal/version"
 )
 
 func defaultDir() string {
@@ -32,6 +33,9 @@ func main() {
 		usage()
 	}
 	switch os.Args[1] {
+	case "--version", "-v", "version":
+		fmt.Println("mir-agent", version.String())
+		return
 	case "enroll":
 		cmdEnroll(os.Args[2:])
 	case "pair-dev":
