@@ -134,9 +134,18 @@ remain valid until their embedded expiry, so keep the Cloudflare
 ### SPA security headers
 
 When `mir-signal --webroot /opt/mir-web` serves the browser SPA, the served
-JavaScript is a client trust root. Add these headers with Cloudflare Response
-Header Transform Rules or at the origin before using the browser against real
-machines:
+JavaScript is a client trust root. `mir-signal` now emits these headers itself
+(see `setStaticSecurityHeaders`), but the `connect-src` allow-list defaults to
+`'self'` only — set the relay origins explicitly so the SPA can reach signaling:
+
+```bash
+# in /etc/mir-signal.env
+MIR_CSP_CONNECT_SRC="'self' https://term.sourceful-labs.net wss://term.sourceful-labs.net https://relay.sourceful-labs.net wss://relay.sourceful-labs.net"
+```
+
+You may still layer the equivalent headers at Cloudflare (belt and suspenders);
+either way the policy below is the target. Apply it before using the browser
+against real machines:
 
 ```text
 Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://term.sourceful-labs.net wss://term.sourceful-labs.net https://relay.sourceful-labs.net wss://relay.sourceful-labs.net; img-src 'self' data: blob:; media-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'; upgrade-insecure-requests

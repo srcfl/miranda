@@ -50,10 +50,15 @@ func TestWithStaticAppliesBrowserSecurityHeaders(t *testing.T) {
 	if csp == "" {
 		t.Fatal("missing CSP")
 	}
-	for _, want := range []string{"default-src 'self'", "object-src 'none'", "frame-ancestors 'none'", "connect-src 'self' https: wss:"} {
+	for _, want := range []string{"default-src 'self'", "object-src 'none'", "frame-ancestors 'none'", "connect-src 'self'", "upgrade-insecure-requests"} {
 		if !strings.Contains(csp, want) {
 			t.Fatalf("CSP %q missing %q", csp, want)
 		}
+	}
+	// connect-src must default to 'self' only — never the old "https: wss:" wildcard,
+	// which would let a tampered SPA beacon the owner key to any host.
+	if strings.Contains(csp, "https:") || strings.Contains(csp, "wss:") {
+		t.Fatalf("connect-src must not contain an https:/wss: wildcard by default: %q", csp)
 	}
 	if got := rr.Header().Get("X-Content-Type-Options"); got != "nosniff" {
 		t.Fatalf("X-Content-Type-Options = %q", got)
@@ -69,6 +74,21 @@ func TestWithStaticAppliesBrowserSecurityHeaders(t *testing.T) {
 	}
 	if got := rr.Header().Get("Cache-Control"); got != "no-store" {
 		t.Fatalf("Cache-Control = %q", got)
+	}
+}
+
+func TestCSPConnectSrcHonorsEnvOverride(t *testing.T) {
+	want := "'self' https://relay.example.net wss://relay.example.net"
+	t.Setenv("MIR_CSP_CONNECT_SRC", want)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<!doctype html><title>tr</title>"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rr := httptest.NewRecorder()
+	withStatic(http.NotFoundHandler(), dir).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/", nil))
+	csp := rr.Header().Get("Content-Security-Policy")
+	if !strings.Contains(csp, "connect-src "+want) {
+		t.Fatalf("CSP %q missing operator connect-src %q", csp, want)
 	}
 }
 
