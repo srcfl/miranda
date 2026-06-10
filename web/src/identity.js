@@ -42,10 +42,20 @@ export async function registerPasskey() {
     authenticatorSelection: { residentKey: 'required', requireResidentKey: true, userVerification: 'required' },
     extensions: { prf: { eval: { first: SALT } } },
   } });
-  const ext = cred.getClientExtensionResults();
-  if (!ext.prf || ext.prf.enabled !== true) throw new Error('NO_PRF');
+  // Do NOT gate on create-time prf.enabled: third-party providers (notably the
+  // Bitwarden extension) omit or misreport it at create() even when they evaluate
+  // prf on get(). The get() ceremony below is the authoritative gate — identity
+  // derivation needs actual prf output, and signInPasskey() demands exactly that.
   localStorage.setItem('tr_cred_id', b64url(cred.rawId));
-  return signInPasskey();
+  try {
+    return await signInPasskey();
+  } catch (e) {
+    localStorage.removeItem('tr_cred_id');
+    if (e && e.message === 'NO_PRF') {
+      throw new Error('your passkey provider does not support the prf extension — retry with iCloud Keychain or Google Password Manager (you can delete the unused passkey from your provider)');
+    }
+    throw e;
+  }
 }
 
 // signInPasskey runs a DISCOVERABLE get() ceremony (Face ID / Touch ID): with no
