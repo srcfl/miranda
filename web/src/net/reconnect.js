@@ -4,11 +4,14 @@
 // setup failure); it must call onConnected() once the channel is live.
 //
 //   onState(state, attempt) state in connecting|connected|reconnecting|failed
-//   isVisible() -> bool ; waitVisible() -> Promise (resolves next time visible)
 //   sleep(ms) -> Promise ; backoffFor(attempt) -> ms ; maxSetupAttempts -> int
 //
-// Returns { stop, retryNow }.
-export function runSession({ connectOnce, onState, isVisible, waitVisible, sleep, backoffFor, maxSetupAttempts = 6 }) {
+// The first attempt is unconditional and reconnects retry with backoff. We do NOT
+// gate on page visibility: mobile browsers already throttle background-tab timers, so
+// the capped backoff is enough to avoid churn — and gating broke the first connect
+// when the tab reported hidden. Revisit an explicit visibility pause if users report
+// background battery drain. Returns { stop, retryNow }.
+export function runSession({ connectOnce, onState, sleep, backoffFor, maxSetupAttempts = 6 }) {
   let stopped = false;
   let everConnected = false;
   let attempt = 0;
@@ -18,8 +21,6 @@ export function runSession({ connectOnce, onState, isVisible, waitVisible, sleep
 
   (async () => {
     while (!stopped) {
-      if (!isVisible()) await waitVisible();
-      if (stopped) break;
       onState(everConnected ? 'reconnecting' : 'connecting', attempt);
       try {
         await connectOnce(() => { everConnected = true; attempt = 0; onState('connected', 0); });

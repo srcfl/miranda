@@ -50,9 +50,11 @@ const wsBase = (signalURL) => 'ws' + signalURL.slice(4); // http->ws, https->wss
 // connectOnce establishes ONE P2P session into an existing `term`, routing
 // keystrokes through the shared `current` ref (current.send). It RESOLVES when an
 // established session ENDS (DataChannel/PeerConnection dropped) and REJECTS on a
-// setup failure before the channel is live. onConnected() fires once the Noise
-// channel is ready; onWindows(snapshot) gets each tmux FrameWindows snapshot. The
-// caller (makeTerminal) owns the terminal + teardown — connectOnce never disposes it.
+// setup failure before the channel is live — a relay error (agent unavailable), the
+// signal socket closing, or a 15s connect timeout — so a dead/absent agent fails the
+// attempt FAST and runSession retries, instead of hanging at 'awaiting-datachannel'.
+// onConnected() fires once the Noise channel is ready; onWindows(snapshot) gets each
+// tmux FrameWindows snapshot. The caller (makeTerminal) owns the terminal + teardown.
 export async function connectOnce(machine, term, current, onConnected, onWindows) {
   const owner = ownerKey();
   const ownerHex = bytesToHex(owner.pub);
@@ -71,72 +73,85 @@ export async function connectOnce(machine, term, current, onConnected, onWindows
   dc.binaryType = 'arraybuffer';
   pc.oniceconnectionstatechange = () => { diag.iceConn = pc.iceConnectionState; };
 
-  // `ended` resolves once when the session drops, however it manifests; it also
-  // unblocks a pending recv() so the read loop unwinds and connectOnce resolves.
+  // `ended` resolves once when an ESTABLISHED session drops; it also unblocks a pending
+  // recv() so the read loop unwinds and connectOnce resolves (-> prompt reconnect).
   let endSession;
   const ended = new Promise((res) => { endSession = res; });
   pc.onconnectionstatechange = () => { diag.conn = pc.connectionState; if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) endSession(); };
   dc.onclose = () => endSession();
 
+  // `setupFail` rejects if the connect never completes (relay error / closed socket /
+  // timeout). Racing it below makes a missing agent fail fast (reject -> backoff + retry)
+  // rather than hang. Guarded so a late call (after the intentional ws.close on connect)
+  // can't become an unhandled rejection.
+  let connected = false;
+  let failSetup;
+  const setupFail = new Promise((_, rej) => { failSetup = rej; });
+  setupFail.catch(() => {});
   ws.onmessage = async (ev) => {
     const m = JSON.parse(ev.data);
     if (m.type === 'answer') { diag.step = 'got-answer'; await pc.setRemoteDescription({ type: 'answer', sdp: m.sdp }); }
-    else if (m.type === 'error') { diag.step = 'signal-error'; }
+    else if (m.type === 'error') { diag.step = 'signal-error'; failSetup(new Error('relay: ' + (m.reason || 'agent unavailable'))); }
   };
-
-  diag.step = 'ws-connecting';
-  await wsOpen;
-  diag.step = 'creating-offer';
-  await pc.setLocalDescription(await pc.createOffer());
-  // non-trickle: send once gathering completes OR after a cap (a slow/unreachable STUN must not hang).
-  await new Promise((res) => {
-    if (pc.iceGatheringState === 'complete') return res();
-    const finish = () => { clearTimeout(t); res(); };
-    const t = setTimeout(() => { diag.gather = 'timeout'; finish(); }, 3000);
-    pc.addEventListener('icegatheringstatechange', () => { diag.gather = pc.iceGatheringState; if (pc.iceGatheringState === 'complete') finish(); });
-  });
-  diag.step = 'offer-sent';
-  ws.send(JSON.stringify({ type: 'offer', sdp: pc.localDescription.sdp }));
-
-  diag.step = 'awaiting-datachannel';
-  const inbox = [];
-  let waiter = null;
-  dc.onmessage = (ev) => { const u = new Uint8Array(ev.data); if (waiter) { const w = waiter; waiter = null; w(u); } else inbox.push(u); };
-  // recv rejects if the session ends while we are waiting, so the read loop unwinds.
-  const recv = () => new Promise((resolve, reject) => {
-    if (inbox.length) return resolve(inbox.shift());
-    waiter = resolve;
-    ended.then(() => { if (waiter === resolve) { waiter = null; reject(new Error('session ended')); } });
-  });
-  await Promise.race([
-    new Promise((res) => (dc.onopen = () => { diag.dc = 'open'; res(); })),
-    ended.then(() => { throw new Error('closed before datachannel'); }),
-  ]);
-  diag.step = 'handshaking';
-
-  const hs = new HandshakeKK({ initiator: true, s: owner, rs: hexToBytes(machine.host_pub) });
-  dc.send(hs.writeMessage(new Uint8Array(0)));
-  hs.readMessage(await recv());
-
-  // Channel live: publish send through the shared ref, drop signalling, tell the caller.
-  current.send = (framed) => dc.send(hs.encrypt(framed));
-  try { ws.close(); } catch {} // signalling done; the data plane is the DC
-  diag.step = 'connected';
-  current.send(encodeResize(term.cols, term.rows)); // size the (re)connected PTY to the live term
-  onConnected && onConnected();
+  ws.onclose = () => { if (!connected) failSetup(new Error('signal socket closed')); };
+  const connectTimeout = setTimeout(() => failSetup(new Error('connect timeout')), 15000);
 
   try {
+    diag.step = 'ws-connecting';
+    await Promise.race([wsOpen, setupFail]);
+    diag.step = 'creating-offer';
+    await pc.setLocalDescription(await pc.createOffer());
+    // non-trickle: send once gathering completes OR after a cap (a slow/unreachable STUN must not hang).
+    await new Promise((res) => {
+      if (pc.iceGatheringState === 'complete') return res();
+      const finish = () => { clearTimeout(t); res(); };
+      const t = setTimeout(() => { diag.gather = 'timeout'; finish(); }, 3000);
+      pc.addEventListener('icegatheringstatechange', () => { diag.gather = pc.iceGatheringState; if (pc.iceGatheringState === 'complete') finish(); });
+    });
+    diag.step = 'offer-sent';
+    ws.send(JSON.stringify({ type: 'offer', sdp: pc.localDescription.sdp }));
+
+    diag.step = 'awaiting-datachannel';
+    const inbox = [];
+    let waiter = null;
+    dc.onmessage = (ev) => { const u = new Uint8Array(ev.data); if (waiter) { const w = waiter; waiter = null; w(u); } else inbox.push(u); };
+    const recv = () => new Promise((resolve, reject) => {
+      if (inbox.length) return resolve(inbox.shift());
+      waiter = resolve;
+      ended.then(() => { if (waiter === resolve) { waiter = null; reject(new Error('session ended')); } });
+    });
+    await Promise.race([
+      new Promise((res) => (dc.onopen = () => { diag.dc = 'open'; res(); })),
+      ended.then(() => { throw new Error('closed before datachannel'); }),
+      setupFail,
+    ]);
+    diag.step = 'handshaking';
+    const hs = new HandshakeKK({ initiator: true, s: owner, rs: hexToBytes(machine.host_pub) });
+    dc.send(hs.writeMessage(new Uint8Array(0)));
+    hs.readMessage(await recv());
+
+    // Channel live: stop the setup guards, publish send, drop signalling, tell the caller.
+    clearTimeout(connectTimeout);
+    current.send = (framed) => dc.send(hs.encrypt(framed));
+    try { ws.close(); } catch {} // signalling done; the data plane is the DC
+    diag.step = 'connected';
+    current.send(encodeResize(term.cols, term.rows)); // size the (re)connected PTY to the live term
+    connected = true;
+    onConnected && onConnected();
+
     for (;;) {
       const ct = await recv();
       const { type, payload } = decodeFrame(hs.decrypt(ct));
       if (type === FRAME_DATA) term.write(payload);
       else if (type === FRAME_WINDOWS) { try { onWindows && onWindows(JSON.parse(td.decode(payload))); } catch {} }
     }
-  } catch { /* recv() rejected: the session ENDED (a normal drop). Swallow so connectOnce
-               RESOLVES — runSession then backs off and reconnects. Pre-connect failures
-               reject earlier (before onConnected): the setup-failure path. */ }
-  finally {
+  } catch (e) {
+    if (!connected) throw e; // setup failure -> runSession backs off and retries with a fresh offer
+    // else: an established session dropped -> swallow so connectOnce RESOLVES (prompt reconnect)
+  } finally {
+    clearTimeout(connectTimeout);
     current.send = null;
+    try { dc.close(); } catch {}
     try { pc.close(); } catch {}
     try { ws.close(); } catch {}
     window.__attached = false;
@@ -487,8 +502,6 @@ function viewTerminal(root, machine) {
       else if (state === 'reconnecting') { setPill('⟳ reconnecting' + (attempt ? ' (' + attempt + ')' : ''), 'wait'); if (attempt === 0) term.write('\r\n[mir] connection lost — reconnecting…\r\n'); }
       else if (state === 'failed') { setPill('⊘ tap to retry', 'failed'); term.write('\r\n[mir] couldn\'t reconnect — tap ⊘ to retry\r\n'); }
     },
-    isVisible: () => document.visibilityState === 'visible',
-    waitVisible: () => new Promise((res) => { const h = () => { if (document.visibilityState === 'visible') { document.removeEventListener('visibilitychange', h); res(); } }; document.addEventListener('visibilitychange', h); }),
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
     backoffFor: (attempt) => backoff(attempt),
   });
