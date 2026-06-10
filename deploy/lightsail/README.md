@@ -196,8 +196,8 @@ For every real machine pairing:
 
 ```bash
 # on each machine:
-mir-agent pair --signal https://relay.sourceful-labs.net
-mir-agent up   --signal https://relay.sourceful-labs.net --stun stun:stun.l.google.com:19302 &
+mir pair --signal https://relay.sourceful-labs.net
+mir up   --signal https://relay.sourceful-labs.net --stun stun:stun.l.google.com:19302 &
 # on the client:
 mir pair <code>
 mir attach <machine> --stun stun:stun.l.google.com:19302

@@ -59,9 +59,9 @@ target with `INSTALL_DIR=/usr/local/bin`. Prefer building from source? See the
 git clone https://github.com/srcfl/miranda && cd miranda
 make install                 # -> ~/.local/bin: mir, mir-agent, mir-signal
 
-# on a machine you want to reach:
-mir-agent pair               # prints a pairing code + QR, then waits
-mir-agent up &               # run the agent (persistent tmux sessions)
+# on a machine you want to reach (same `mir` binary — every node is symmetric):
+mir pair                     # prints a pairing code + QR, then waits
+mir up &                     # serve this machine (persistent tmux sessions)
 
 # on your client (laptop, another machine):
 mir pair <code>              # ...the code from above; compare the safety numbers
@@ -80,12 +80,11 @@ own infrastructure with `--signal` / `MIR_SIGNAL` and `--stun` / `MIR_STUN`.
 
 ## Updating
 
-`mir` and `mir-agent` check GitHub for a newer release at most once a day and print a
-one-line notice — never blocking your command. Apply it when you choose:
+`mir` checks GitHub for a newer release at most once a day and prints a one-line
+notice — never blocking your command. Apply it when you choose:
 
 ```bash
 mir self-update
-mir-agent self-update
 ```
 
 Disable the check with `MIR_NO_UPDATE_CHECK=1`. For unattended machines, opt into
@@ -93,8 +92,11 @@ automatic updates — applied only when no session is active, then the agent re-
 in place so its PID (and any systemd wrapper) survives:
 
 ```bash
-mir-agent up --auto-update      # or MIR_AUTO_UPDATE=1
+mir up --auto-update            # or MIR_AUTO_UPDATE=1
 ```
+
+> `mir-agent` is a deprecated alias for `mir` and forwards to it (with a notice). Use
+> `mir` everywhere; the shim will be removed in a future release.
 
 ## Don't trust the relay — that's the whole point
 
@@ -146,7 +148,7 @@ invisible spirit that carries messages and can't speak of what it carries).
   signed releases (cosign), a third-party audit, and (one day) a decentralized relay.
 
 > **Ops note:** agents auto-add a local `registration_secret` to `config.json` on the
-> next `mir-agent enroll`, `mir-agent pair`, or `mir-agent up`. Restart long-running
+> next `mir enroll`, `mir pair`, or `mir up`. Restart long-running
 > agents after updating. Relays accept older no-secret agents until a proof has been
 > learned for that `owner_id` + `machine_id`; after that, replacements must present
 > the same proof.

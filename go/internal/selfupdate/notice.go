@@ -64,7 +64,7 @@ func cachedLatest(cachePath string) string {
 //   - Background (best-effort): when the cache is older than `window`, refresh it
 //     in a goroutine. The result is shown on a LATER run — a short-lived command
 //     (e.g. `mir list`) may exit before the refresh lands, which is fine; a
-//     long-lived one (`mir attach`, `mir-agent up`) keeps the cache fresh.
+//     long-lived one (`mir attach`, `mir up`) keeps the cache fresh.
 //
 // All failures are silent so normal output is never disrupted. currentVersion is
 // the running binary's version (e.g. "0.1.0" or "dev"). Disabled entirely by
