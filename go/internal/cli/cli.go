@@ -35,6 +35,18 @@ func (a *app) run(argv []string) int {
 	case "--version", "-v", "version":
 		fmt.Fprintln(a.out, a.binary, version.String())
 		return 0
+	case "keygen":
+		return a.exit(a.cmdKeygen(argv[1:]))
+	case "add-machine":
+		return a.exit(a.cmdAddMachine(argv[1:]))
+	case "list":
+		return a.exit(a.cmdList(argv[1:]))
+	case "attach":
+		return a.exit(a.cmdAttach(argv[1:]))
+	case "run":
+		return a.exit(a.cmdRun(argv[1:]))
+	case "self-update":
+		return a.exit(a.cmdSelfUpdate(argv[1:]))
 	default:
 		a.usage()
 		return 2

@@ -34,3 +34,40 @@ func TestRunNoArgs(t *testing.T) {
 		t.Fatalf("exit = %d, want 2", code)
 	}
 }
+
+func TestKeygenPrintsOwnerKey(t *testing.T) {
+	t.Setenv("MIR_NO_UPDATE_CHECK", "1")
+	dir := t.TempDir()
+	var out, errb bytes.Buffer
+	if code := Run([]string{"keygen", "--dir", dir}, &out, &errb); code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, errb.String())
+	}
+	if !strings.Contains(out.String(), "owner public key") {
+		t.Fatalf("keygen output = %q", out.String())
+	}
+}
+
+func TestListEmptyThenAddMachine(t *testing.T) {
+	t.Setenv("MIR_NO_UPDATE_CHECK", "1")
+	dir := t.TempDir()
+	var out, errb bytes.Buffer
+	if code := Run([]string{"list", "--dir", dir}, &out, &errb); code != 0 {
+		t.Fatalf("list exit = %d, stderr = %q", code, errb.String())
+	}
+	if !strings.Contains(out.String(), "no machines yet") {
+		t.Fatalf("empty list = %q", out.String())
+	}
+	out.Reset()
+	add := []string{"add-machine", "--dir", dir, "--name", "box", "--id", "m1",
+		"--host-pub", "aabbcc", "--signal", "https://relay.example"}
+	if code := Run(add, &out, &errb); code != 0 {
+		t.Fatalf("add exit = %d, stderr = %q", code, errb.String())
+	}
+	out.Reset()
+	if code := Run([]string{"list", "--dir", dir}, &out, &errb); code != 0 {
+		t.Fatalf("list2 exit = %d", code)
+	}
+	if !strings.Contains(out.String(), "box") || !strings.Contains(out.String(), "m1") {
+		t.Fatalf("list after add = %q", out.String())
+	}
+}
