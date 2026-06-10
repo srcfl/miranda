@@ -34,6 +34,24 @@ looking at*.
   never sees plaintext.
 - **macOS + Linux**, single static Go binaries. MIT licensed.
 
+## Install
+
+Prebuilt binaries for macOS and Linux are published on GitHub Releases. Install the
+client with one line:
+
+```bash
+# client (mir)
+curl -fsSL https://raw.githubusercontent.com/srcfl/miranda/main/install.sh | sh
+
+# agent on a machine you want to reach
+curl -fsSL https://raw.githubusercontent.com/srcfl/miranda/main/install.sh | sh -s -- --agent
+```
+
+The installer verifies each download against the release `checksums.txt` before
+installing to `~/.local/bin`. Pin a version with `MIR_VERSION=v0.1.0`, or change the
+target with `INSTALL_DIR=/usr/local/bin`. Prefer building from source? See the
+[Quickstart](#quickstart) below.
+
 ## Quickstart
 
 ```bash
@@ -59,6 +77,24 @@ mir attach laptop macmini linux
 
 Everything defaults to the hosted relay + STUN, so no flags are needed. Point at your
 own infrastructure with `--signal` / `MIR_SIGNAL` and `--stun` / `MIR_STUN`.
+
+## Updating
+
+`mir` and `mir-agent` check GitHub for a newer release at most once a day and print a
+one-line notice — never blocking your command. Apply it when you choose:
+
+```bash
+mir self-update
+mir-agent self-update
+```
+
+Disable the check with `MIR_NO_UPDATE_CHECK=1`. For unattended machines, opt into
+automatic updates — applied only when no session is active, then the agent re-execs
+in place so its PID (and any systemd wrapper) survives:
+
+```bash
+mir-agent up --auto-update      # or MIR_AUTO_UPDATE=1
+```
 
 ## Don't trust the relay — that's the whole point
 
@@ -107,8 +143,7 @@ invisible spirit that carries messages and can't speak of what it carries).
   real shell over P2P, multiplex across all your machines, persistent `tmux`
   sessions. A hosted relay is live at `relay.sourceful-labs.net`.
 - 🚧 **Coming:** the browser client (passkeys + WebRTC + xterm.js → from your phone),
-  one-line install, signed releases, a third-party audit, and (one day) a
-  decentralized relay.
+  signed releases (cosign), a third-party audit, and (one day) a decentralized relay.
 
 > **Ops note:** agents auto-add a local `registration_secret` to `config.json` on the
 > next `mir-agent enroll`, `mir-agent pair`, or `mir-agent up`. Restart long-running
