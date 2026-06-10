@@ -2,6 +2,7 @@
 // live terminal. Data plane is P2P + Noise (see attach); the relay only brokers.
 import { HandshakeKK } from './noise/noise-kk.js';
 import { encodeData, encodeResize, encodeControl, decodeFrame, FRAME_DATA, FRAME_WINDOWS } from './noise/frame.js';
+import { awaitSocketOpen } from './net/ws-open.js';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -65,10 +66,16 @@ export async function attach(machine, termEl, onWindows) {
     wsBase(machine.signal) + '/attach?owner_id=' + encodeURIComponent(ownerHex) +
     '&machine_id=' + encodeURIComponent(machine.machine_id),
   );
+  // Capture the open/error outcome SYNCHRONOUSLY, before the awaited iceServers()
+  // fetch below — see awaitSocketOpen for why a one-shot 'open' handler attached
+  // afterwards would miss the event on a fast (localhost) path and hang attach().
+  const wsOpen = awaitSocketOpen(ws).then(
+    () => { diag.ws = 'open'; },
+    (e) => { diag.ws = 'error'; throw e; },
+  );
   const pc = new RTCPeerConnection({ iceServers: await iceServers(machine.signal) });
   const dc = pc.createDataChannel('terminal');
   dc.binaryType = 'arraybuffer';
-  ws.onerror = () => { diag.ws = 'error'; };
   pc.oniceconnectionstatechange = () => { diag.iceConn = pc.iceConnectionState; };
   pc.onconnectionstatechange = () => { diag.conn = pc.connectionState; };
 
@@ -78,7 +85,7 @@ export async function attach(machine, termEl, onWindows) {
     else if (m.type === 'error') { diag.step = 'signal-error'; term.write('\r\n[mir] signal error: ' + (m.reason || '') + '\r\n'); }
   };
   diag.step = 'ws-connecting';
-  await new Promise((r) => (ws.onopen = () => { diag.ws = 'open'; r(); }));
+  await wsOpen;
 
   diag.step = 'creating-offer';
   await pc.setLocalDescription(await pc.createOffer());
