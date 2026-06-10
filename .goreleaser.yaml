@@ -1,0 +1,78 @@
+version: 2
+project_name: miranda
+
+before:
+  hooks:
+    - sh -c "cd go && go mod tidy"
+
+builds:
+  - id: mir
+    main: ./cmd/mir
+    binary: mir
+    dir: go
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w
+      - -X github.com/srcful/terminal-relay/go/internal/version.Version={{ .Version }}
+      - -X github.com/srcful/terminal-relay/go/internal/version.Commit={{ .ShortCommit }}
+      - -X github.com/srcful/terminal-relay/go/internal/version.Date={{ .Date }}
+  - id: mir-agent
+    main: ./cmd/mir-agent
+    binary: mir-agent
+    dir: go
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w
+      - -X github.com/srcful/terminal-relay/go/internal/version.Version={{ .Version }}
+      - -X github.com/srcful/terminal-relay/go/internal/version.Commit={{ .ShortCommit }}
+      - -X github.com/srcful/terminal-relay/go/internal/version.Date={{ .Date }}
+  - id: mir-signal
+    main: ./cmd/mir-signal
+    binary: mir-signal
+    dir: go
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w
+      - -X github.com/srcful/terminal-relay/go/internal/version.Version={{ .Version }}
+      - -X github.com/srcful/terminal-relay/go/internal/version.Commit={{ .ShortCommit }}
+      - -X github.com/srcful/terminal-relay/go/internal/version.Date={{ .Date }}
+
+archives:
+  # One archive entry PER build id. A single entry covering multiple builds would
+  # bundle all binaries into one archive per platform and make {{ .Binary }}
+  # ambiguous — the installer/self-update need one archive per binary.
+  - id: mir
+    ids: [mir]
+    name_template: "{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    files: [] # binary only; no README/LICENSE noise inside the archive
+  - id: mir-agent
+    ids: [mir-agent]
+    name_template: "{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    files: []
+  - id: mir-signal
+    ids: [mir-signal]
+    name_template: "{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    files: []
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+release:
+  github:
+    owner: srcfl
+    name: miranda
+  draft: false
+  prerelease: auto
+
+changelog:
+  use: github
