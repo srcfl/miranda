@@ -45,20 +45,15 @@ function setOwner(k) { _owner = k; window.__ownerPub = bytesToHex(k.pub); }
 const wsBase = (signalURL) => 'ws' + signalURL.slice(4); // http->ws, https->wss
 
 // --- attach (P2P + Noise + xterm) ----------------------------------------
-// onWindows(snapshot) is invoked with each FrameWindows tmux snapshot.
-export async function attach(machine, termEl, onWindows) {
+// connectOnce establishes ONE P2P session into an existing `term`, routing
+// keystrokes through the shared `current` ref (current.send). It RESOLVES when an
+// established session ENDS (DataChannel/PeerConnection dropped) and REJECTS on a
+// setup failure before the channel is live. onConnected() fires once the Noise
+// channel is ready; onWindows(snapshot) gets each tmux FrameWindows snapshot. The
+// caller (makeTerminal) owns the terminal + teardown — connectOnce never disposes it.
+export async function connectOnce(machine, term, current, onConnected, onWindows) {
   const owner = ownerKey();
   const ownerHex = bytesToHex(owner.pub);
-
-  const term = new Terminal({ fontSize: 13, cursorBlink: true, theme: { background: '#0b0e14' } });
-  const fitAddon = new FitAddon();
-  term.loadAddon(fitAddon);
-  term.open(termEl);
-  const refit = () => { try { fitAddon.fit(); } catch {} };
-  refit();
-  setTimeout(refit, 80); // catch layout/font settling
-  term.write('[mir] connecting to ' + (machine.name || machine.machine_id) + '…\r\n');
-
   const diag = { step: 'start', ws: 'init', gather: '', iceConn: '', conn: '', dc: 'init' };
   window.__diag = diag;
 
@@ -66,31 +61,32 @@ export async function attach(machine, termEl, onWindows) {
     wsBase(machine.signal) + '/attach?owner_id=' + encodeURIComponent(ownerHex) +
     '&machine_id=' + encodeURIComponent(machine.machine_id),
   );
-  // Capture the open/error outcome SYNCHRONOUSLY, before the awaited iceServers()
-  // fetch below — see awaitSocketOpen for why a one-shot 'open' handler attached
-  // afterwards would miss the event on a fast (localhost) path and hang attach().
-  const wsOpen = awaitSocketOpen(ws).then(
-    () => { diag.ws = 'open'; },
-    (e) => { diag.ws = 'error'; throw e; },
-  );
+  // See awaitSocketOpen: capture 'open' SYNCHRONOUSLY before the awaited iceServers()
+  // fetch, or a fast (localhost) socket opens first and the one-shot event is missed.
+  const wsOpen = awaitSocketOpen(ws).then(() => { diag.ws = 'open'; }, (e) => { diag.ws = 'error'; throw e; });
   const pc = new RTCPeerConnection({ iceServers: await iceServers(machine.signal) });
   const dc = pc.createDataChannel('terminal');
   dc.binaryType = 'arraybuffer';
   pc.oniceconnectionstatechange = () => { diag.iceConn = pc.iceConnectionState; };
-  pc.onconnectionstatechange = () => { diag.conn = pc.connectionState; };
+
+  // `ended` resolves once when the session drops, however it manifests; it also
+  // unblocks a pending recv() so the read loop unwinds and connectOnce resolves.
+  let endSession;
+  const ended = new Promise((res) => { endSession = res; });
+  pc.onconnectionstatechange = () => { diag.conn = pc.connectionState; if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) endSession(); };
+  dc.onclose = () => endSession();
 
   ws.onmessage = async (ev) => {
     const m = JSON.parse(ev.data);
     if (m.type === 'answer') { diag.step = 'got-answer'; await pc.setRemoteDescription({ type: 'answer', sdp: m.sdp }); }
-    else if (m.type === 'error') { diag.step = 'signal-error'; term.write('\r\n[mir] signal error: ' + (m.reason || '') + '\r\n'); }
+    else if (m.type === 'error') { diag.step = 'signal-error'; }
   };
+
   diag.step = 'ws-connecting';
   await wsOpen;
-
   diag.step = 'creating-offer';
   await pc.setLocalDescription(await pc.createOffer());
-  // non-trickle: send once gathering completes OR after a cap (a slow/unreachable
-  // STUN must not hang the connect).
+  // non-trickle: send once gathering completes OR after a cap (a slow/unreachable STUN must not hang).
   await new Promise((res) => {
     if (pc.iceGatheringState === 'complete') return res();
     const finish = () => { clearTimeout(t); res(); };
@@ -101,66 +97,103 @@ export async function attach(machine, termEl, onWindows) {
   ws.send(JSON.stringify({ type: 'offer', sdp: pc.localDescription.sdp }));
 
   diag.step = 'awaiting-datachannel';
-  await new Promise((res) => (dc.onopen = () => { diag.dc = 'open'; res(); }));
-  diag.step = 'handshaking';
-
   const inbox = [];
   let waiter = null;
-  dc.onmessage = (ev) => {
-    const u = new Uint8Array(ev.data);
-    if (waiter) { const w = waiter; waiter = null; w(u); } else inbox.push(u);
-  };
-  const recv = () => new Promise((r) => (inbox.length ? r(inbox.shift()) : (waiter = r)));
+  dc.onmessage = (ev) => { const u = new Uint8Array(ev.data); if (waiter) { const w = waiter; waiter = null; w(u); } else inbox.push(u); };
+  // recv rejects if the session ends while we are waiting, so the read loop unwinds.
+  const recv = () => new Promise((resolve, reject) => {
+    if (inbox.length) return resolve(inbox.shift());
+    waiter = resolve;
+    ended.then(() => { if (waiter === resolve) { waiter = null; reject(new Error('session ended')); } });
+  });
+  await Promise.race([
+    new Promise((res) => (dc.onopen = () => { diag.dc = 'open'; res(); })),
+    ended.then(() => { throw new Error('closed before datachannel'); }),
+  ]);
+  diag.step = 'handshaking';
 
   const hs = new HandshakeKK({ initiator: true, s: owner, rs: hexToBytes(machine.host_pub) });
   dc.send(hs.writeMessage(new Uint8Array(0)));
   hs.readMessage(await recv());
 
-  const send = (framed) => dc.send(hs.encrypt(framed));
-  term.onData((d) => send(encodeData(te.encode(d))));
-  term.onResize(({ cols, rows }) => send(encodeResize(cols, rows)));
-  refit(); // fit now that the bridge is live -> emits the initial RESIZE
-  send(encodeResize(term.cols, term.rows));
+  // Channel live: publish send through the shared ref, drop signalling, tell the caller.
+  current.send = (framed) => dc.send(hs.encrypt(framed));
+  try { ws.close(); } catch {} // signalling done; the data plane is the DC
+  diag.step = 'connected';
+  current.send(encodeResize(term.cols, term.rows)); // size the (re)connected PTY to the live term
+  onConnected && onConnected();
 
-  // keep the terminal fitted to the viewport (desktop resize, iOS rotate/keyboard)
-  let rT;
-  const onViewport = () => { clearTimeout(rT); rT = setTimeout(refit, 120); };
-  window.addEventListener('resize', onViewport);
-  window.visualViewport && window.visualViewport.addEventListener('resize', onViewport);
-  window.addEventListener('orientationchange', onViewport);
-  const stopResize = () => {
-    clearTimeout(rT);
-    window.removeEventListener('resize', onViewport);
-    window.visualViewport && window.visualViewport.removeEventListener('resize', onViewport);
-    window.removeEventListener('orientationchange', onViewport);
-  };
-  (async () => {
+  try {
     for (;;) {
-      let ct;
-      try { ct = await recv(); } catch { return; }
+      const ct = await recv();
       const { type, payload } = decodeFrame(hs.decrypt(ct));
       if (type === FRAME_DATA) term.write(payload);
       else if (type === FRAME_WINDOWS) { try { onWindows && onWindows(JSON.parse(td.decode(payload))); } catch {} }
     }
-  })();
+  } catch { /* recv() rejected: the session ENDED (a normal drop). Swallow so connectOnce
+               RESOLVES — runSession then backs off and reconnects. Pre-connect failures
+               reject earlier (before onConnected): the setup-failure path. */ }
+  finally {
+    current.send = null;
+    try { pc.close(); } catch {}
+    try { ws.close(); } catch {}
+    window.__attached = false;
+  }
+}
 
-  term.focus();
-  // test hooks
+// makeTerminal builds the DURABLE terminal: the xterm, its fit/resize wiring, and a
+// `current` ref whose .send is swapped per (re)connect. Keystrokes are bound ONCE and
+// route through current.send, so they survive reconnects without rebinding handlers.
+export function makeTerminal(termEl) {
+  const term = new Terminal({ fontSize: 13, cursorBlink: true, theme: { background: '#0b0e14' } });
+  const fitAddon = new FitAddon();
+  term.loadAddon(fitAddon);
+  term.open(termEl);
+  const refit = () => { try { fitAddon.fit(); } catch {} };
+  refit();
+  setTimeout(refit, 80); // catch layout/font settling
+  const current = { send: null };
+  term.onData((d) => current.send && current.send(encodeData(te.encode(d))));
+  term.onResize(({ cols, rows }) => current.send && current.send(encodeResize(cols, rows)));
+  // keep the terminal fitted to the viewport (desktop resize, iOS rotate/keyboard)
+  let rT;
+  const onViewport = () => { clearTimeout(rT); rT = setTimeout(() => { refit(); current.send && current.send(encodeResize(term.cols, term.rows)); }, 120); };
+  window.addEventListener('resize', onViewport);
+  window.visualViewport && window.visualViewport.addEventListener('resize', onViewport);
+  window.addEventListener('orientationchange', onViewport);
+  const dispose = () => {
+    clearTimeout(rT);
+    window.removeEventListener('resize', onViewport);
+    window.visualViewport && window.visualViewport.removeEventListener('resize', onViewport);
+    window.removeEventListener('orientationchange', onViewport);
+    term.dispose();
+  };
+  // test hooks (unchanged surface)
   window.__term = term;
-  window.__send = (s) => send(encodeData(te.encode(s)));
+  window.__send = (s) => current.send && current.send(encodeData(te.encode(s)));
   window.__termText = () => {
     const b = term.buffer.active;
     let out = '';
     for (let i = 0; i < b.length; i++) out += b.getLine(i).translateToString(true) + '\n';
     return out;
   };
-  window.__attached = true;
-  return {
-    term, pc, dc, ws,
-    sendText: (s) => send(encodeData(te.encode(s))), // feed keystrokes
-    sendCtl: (obj) => send(encodeControl(te.encode(JSON.stringify(obj)))), // tmux window command
+  return { term, current, refit, dispose };
+}
 
-    close: () => { stopResize(); try { ws.close(); } catch {} try { pc.close(); } catch {} term.dispose(); },
+// attach keeps the single-session contract for callers/tests (window.trAttach): a
+// durable terminal + exactly one connectOnce, resolving when CONNECTED (not on drop)
+// so the caller gets a handle. viewTerminal uses runSession for reconnect instead.
+export async function attach(machine, termEl, onWindows) {
+  const { term, current, dispose } = makeTerminal(termEl);
+  term.write('[mir] connecting to ' + (machine.name || machine.machine_id) + '…\r\n');
+  await new Promise((resolve, reject) => {
+    connectOnce(machine, term, current, () => { window.__attached = true; term.focus(); resolve(); }, onWindows).catch(reject);
+  });
+  return {
+    term,
+    sendText: (s) => current.send && current.send(encodeData(te.encode(s))),
+    sendCtl: (obj) => current.send && current.send(encodeControl(te.encode(JSON.stringify(obj)))),
+    close: () => { current.send = null; dispose(); },
   };
 }
 
