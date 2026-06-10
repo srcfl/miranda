@@ -33,7 +33,27 @@ export function decodeCode(code) {
   if (typeof p.t !== 'string' || !/^[0-9a-fA-F]{32}$/.test(p.t)) {
     throw new Error('bad pairing code token');
   }
+  // Validate the relay URL before it ever drives fetch()/WebSocket(). The relay
+  // is untrusted by design (Noise authenticates the peer, not the transport),
+  // but a scanned/pasted code is attacker-controlled, so reject anything that is
+  // not a real http(s) origin: no javascript:/data:/file: schemes, no plain-http
+  // to a public host (mixed-content downgrade), no garbage that would corrupt the
+  // ws:// derivation. http is allowed only for localhost dev.
+  if (typeof p.s !== 'string' || !validSignalURL(p.s)) {
+    throw new Error('bad pairing code signal URL');
+  }
   return { signalURL: p.s, token: hexToBytesLocal(p.t) };
+}
+
+export function validSignalURL(s) {
+  let u;
+  try {
+    u = new URL(s);
+  } catch {
+    return false;
+  }
+  if (u.protocol === 'https:') return true;
+  return u.protocol === 'http:' && (u.hostname === 'localhost' || u.hostname === '127.0.0.1');
 }
 function hexToBytesLocal(h) {
   const out = new Uint8Array(h.length / 2);
