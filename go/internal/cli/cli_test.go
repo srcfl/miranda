@@ -71,3 +71,33 @@ func TestListEmptyThenAddMachine(t *testing.T) {
 		t.Fatalf("list after add = %q", out.String())
 	}
 }
+
+func TestEnrollPrintsMachineID(t *testing.T) {
+	t.Setenv("MIR_NO_UPDATE_CHECK", "1")
+	dir := t.TempDir()
+	var out, errb bytes.Buffer
+	code := Run([]string{"enroll", "--dir", dir, "--name", "testbox", "--signal", "https://relay.example"}, &out, &errb)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, errb.String())
+	}
+	if !strings.Contains(out.String(), "machine_id:") || !strings.Contains(out.String(), "testbox") {
+		t.Fatalf("enroll output = %q", out.String())
+	}
+}
+
+func TestPairDevPinsOwner(t *testing.T) {
+	t.Setenv("MIR_NO_UPDATE_CHECK", "1")
+	dir := t.TempDir()
+	var out, errb bytes.Buffer
+	if code := Run([]string{"enroll", "--dir", dir, "--name", "b", "--signal", "https://relay.example"}, &out, &errb); code != 0 {
+		t.Fatalf("enroll exit = %d", code)
+	}
+	out.Reset()
+	owner := "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+	if code := Run([]string{"pair-dev", "--dir", dir, "--owner-pub", owner}, &out, &errb); code != 0 {
+		t.Fatalf("pair-dev exit = %d, stderr = %q", code, errb.String())
+	}
+	if !strings.Contains(out.String(), "pinned owner") {
+		t.Fatalf("pair-dev output = %q", out.String())
+	}
+}

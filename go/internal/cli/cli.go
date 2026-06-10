@@ -47,6 +47,12 @@ func (a *app) run(argv []string) int {
 		return a.exit(a.cmdRun(argv[1:]))
 	case "self-update":
 		return a.exit(a.cmdSelfUpdate(argv[1:]))
+	case "enroll":
+		return a.exit(a.cmdEnroll(argv[1:]))
+	case "pair-dev":
+		return a.exit(a.cmdPairDev(argv[1:]))
+	case "up":
+		return a.exit(a.cmdUp(argv[1:]))
 	default:
 		a.usage()
 		return 2
