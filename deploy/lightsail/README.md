@@ -210,13 +210,29 @@ later (see below) and pass `--turn …`.
 ## Redeploy / update the binary
 
 ```bash
-# from the repo root, with the SSH key saved at deploy/lightsail/key.pem (chmod 600):
-HOST=16.171.89.172 KEY=deploy/lightsail/key.pem ./deploy/lightsail/redeploy.sh
+# from the repo root. Keep the SSH key OUTSIDE the repo tree (see below):
+HOST=16.171.89.172 KEY=~/.ssh/mir-signal.pem ./deploy/lightsail/redeploy.sh
 ```
 
-The SSH key is the Lightsail default key pair for the region:
-`aws lightsail download-default-key-pair --region eu-north-1 --query privateKeyBase64 --output text > deploy/lightsail/key.pem && chmod 600 deploy/lightsail/key.pem`
-(do NOT commit it — it is gitignored).
+`redeploy.sh` verifies the binary's sha256 on the box before installing it as
+root, so a swapped artifact in the shared `/tmp` is rejected.
+
+**SSH key handling.** Store the key under `~/.ssh/` (mode 600) — not in the repo
+working tree, where one stray `git add -f`, a `tar` of the directory, or a backup
+tool would leak it (it is `.gitignore`d, which only stops accidental `git add`).
+Prefer a **dedicated** key pair for this host over the Lightsail account default
+key pair, so its blast radius is one box rather than the whole region:
+
+```bash
+# create a dedicated key, import its public half to Lightsail, attach on (re)create:
+ssh-keygen -t ed25519 -f ~/.ssh/mir-signal -N '' -C mir-signal-deploy
+aws lightsail import-key-pair --region eu-north-1 \
+  --key-pair-name mir-signal --public-key-base64 "$(base64 < ~/.ssh/mir-signal.pub)"
+# then use KEY=~/.ssh/mir-signal with redeploy.sh
+```
+
+If you must use the region default key pair, still write it to `~/.ssh/` (mode
+600), never into `deploy/lightsail/`.
 
 ### One-time migration: `tr-signal` → `mir-signal`
 
