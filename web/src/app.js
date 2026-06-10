@@ -3,6 +3,8 @@
 import { HandshakeKK } from './noise/noise-kk.js';
 import { encodeData, encodeResize, encodeControl, decodeFrame, FRAME_DATA, FRAME_WINDOWS } from './noise/frame.js';
 import { awaitSocketOpen } from './net/ws-open.js';
+import { runSession } from './net/reconnect.js';
+import { backoff } from './net/backoff.js';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -45,20 +47,17 @@ function setOwner(k) { _owner = k; window.__ownerPub = bytesToHex(k.pub); }
 const wsBase = (signalURL) => 'ws' + signalURL.slice(4); // http->ws, https->wss
 
 // --- attach (P2P + Noise + xterm) ----------------------------------------
-// onWindows(snapshot) is invoked with each FrameWindows tmux snapshot.
-export async function attach(machine, termEl, onWindows) {
+// connectOnce establishes ONE P2P session into an existing `term`, routing
+// keystrokes through the shared `current` ref (current.send). It RESOLVES when an
+// established session ENDS (DataChannel/PeerConnection dropped) and REJECTS on a
+// setup failure before the channel is live — a relay error (agent unavailable), the
+// signal socket closing, or a 15s connect timeout — so a dead/absent agent fails the
+// attempt FAST and runSession retries, instead of hanging at 'awaiting-datachannel'.
+// onConnected() fires once the Noise channel is ready; onWindows(snapshot) gets each
+// tmux FrameWindows snapshot. The caller (makeTerminal) owns the terminal + teardown.
+export async function connectOnce(machine, term, current, onConnected, onWindows) {
   const owner = ownerKey();
   const ownerHex = bytesToHex(owner.pub);
-
-  const term = new Terminal({ fontSize: 13, cursorBlink: true, theme: { background: '#0b0e14' } });
-  const fitAddon = new FitAddon();
-  term.loadAddon(fitAddon);
-  term.open(termEl);
-  const refit = () => { try { fitAddon.fit(); } catch {} };
-  refit();
-  setTimeout(refit, 80); // catch layout/font settling
-  term.write('[mir] connecting to ' + (machine.name || machine.machine_id) + '…\r\n');
-
   const diag = { step: 'start', ws: 'init', gather: '', iceConn: '', conn: '', dc: 'init' };
   window.__diag = diag;
 
@@ -66,101 +65,152 @@ export async function attach(machine, termEl, onWindows) {
     wsBase(machine.signal) + '/attach?owner_id=' + encodeURIComponent(ownerHex) +
     '&machine_id=' + encodeURIComponent(machine.machine_id),
   );
-  // Capture the open/error outcome SYNCHRONOUSLY, before the awaited iceServers()
-  // fetch below — see awaitSocketOpen for why a one-shot 'open' handler attached
-  // afterwards would miss the event on a fast (localhost) path and hang attach().
-  const wsOpen = awaitSocketOpen(ws).then(
-    () => { diag.ws = 'open'; },
-    (e) => { diag.ws = 'error'; throw e; },
-  );
+  // See awaitSocketOpen: capture 'open' SYNCHRONOUSLY before the awaited iceServers()
+  // fetch, or a fast (localhost) socket opens first and the one-shot event is missed.
+  const wsOpen = awaitSocketOpen(ws).then(() => { diag.ws = 'open'; }, (e) => { diag.ws = 'error'; throw e; });
   const pc = new RTCPeerConnection({ iceServers: await iceServers(machine.signal) });
   const dc = pc.createDataChannel('terminal');
   dc.binaryType = 'arraybuffer';
   pc.oniceconnectionstatechange = () => { diag.iceConn = pc.iceConnectionState; };
-  pc.onconnectionstatechange = () => { diag.conn = pc.connectionState; };
 
+  // `ended` resolves once when an ESTABLISHED session drops; it also unblocks a pending
+  // recv() so the read loop unwinds and connectOnce resolves (-> prompt reconnect).
+  let endSession;
+  const ended = new Promise((res) => { endSession = res; });
+  pc.onconnectionstatechange = () => { diag.conn = pc.connectionState; if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) endSession(); };
+  dc.onclose = () => endSession();
+
+  // `setupFail` rejects if the connect never completes (relay error / closed socket /
+  // timeout). Racing it below makes a missing agent fail fast (reject -> backoff + retry)
+  // rather than hang. Guarded so a late call (after the intentional ws.close on connect)
+  // can't become an unhandled rejection.
+  let connected = false;
+  let failSetup;
+  const setupFail = new Promise((_, rej) => { failSetup = rej; });
+  setupFail.catch(() => {});
   ws.onmessage = async (ev) => {
     const m = JSON.parse(ev.data);
     if (m.type === 'answer') { diag.step = 'got-answer'; await pc.setRemoteDescription({ type: 'answer', sdp: m.sdp }); }
-    else if (m.type === 'error') { diag.step = 'signal-error'; term.write('\r\n[mir] signal error: ' + (m.reason || '') + '\r\n'); }
+    else if (m.type === 'error') { diag.step = 'signal-error'; failSetup(new Error('relay: ' + (m.reason || 'agent unavailable'))); }
   };
-  diag.step = 'ws-connecting';
-  await wsOpen;
+  ws.onclose = () => { if (!connected) failSetup(new Error('signal socket closed')); };
+  const connectTimeout = setTimeout(() => failSetup(new Error('connect timeout')), 15000);
 
-  diag.step = 'creating-offer';
-  await pc.setLocalDescription(await pc.createOffer());
-  // non-trickle: send once gathering completes OR after a cap (a slow/unreachable
-  // STUN must not hang the connect).
-  await new Promise((res) => {
-    if (pc.iceGatheringState === 'complete') return res();
-    const finish = () => { clearTimeout(t); res(); };
-    const t = setTimeout(() => { diag.gather = 'timeout'; finish(); }, 3000);
-    pc.addEventListener('icegatheringstatechange', () => { diag.gather = pc.iceGatheringState; if (pc.iceGatheringState === 'complete') finish(); });
-  });
-  diag.step = 'offer-sent';
-  ws.send(JSON.stringify({ type: 'offer', sdp: pc.localDescription.sdp }));
+  try {
+    diag.step = 'ws-connecting';
+    await Promise.race([wsOpen, setupFail]);
+    diag.step = 'creating-offer';
+    await pc.setLocalDescription(await pc.createOffer());
+    // non-trickle: send once gathering completes OR after a cap (a slow/unreachable STUN must not hang).
+    await new Promise((res) => {
+      if (pc.iceGatheringState === 'complete') return res();
+      const finish = () => { clearTimeout(t); res(); };
+      const t = setTimeout(() => { diag.gather = 'timeout'; finish(); }, 3000);
+      pc.addEventListener('icegatheringstatechange', () => { diag.gather = pc.iceGatheringState; if (pc.iceGatheringState === 'complete') finish(); });
+    });
+    diag.step = 'offer-sent';
+    ws.send(JSON.stringify({ type: 'offer', sdp: pc.localDescription.sdp }));
 
-  diag.step = 'awaiting-datachannel';
-  await new Promise((res) => (dc.onopen = () => { diag.dc = 'open'; res(); }));
-  diag.step = 'handshaking';
+    diag.step = 'awaiting-datachannel';
+    const inbox = [];
+    let waiter = null;
+    dc.onmessage = (ev) => { const u = new Uint8Array(ev.data); if (waiter) { const w = waiter; waiter = null; w(u); } else inbox.push(u); };
+    const recv = () => new Promise((resolve, reject) => {
+      if (inbox.length) return resolve(inbox.shift());
+      waiter = resolve;
+      ended.then(() => { if (waiter === resolve) { waiter = null; reject(new Error('session ended')); } });
+    });
+    await Promise.race([
+      new Promise((res) => (dc.onopen = () => { diag.dc = 'open'; res(); })),
+      ended.then(() => { throw new Error('closed before datachannel'); }),
+      setupFail,
+    ]);
+    diag.step = 'handshaking';
+    const hs = new HandshakeKK({ initiator: true, s: owner, rs: hexToBytes(machine.host_pub) });
+    dc.send(hs.writeMessage(new Uint8Array(0)));
+    hs.readMessage(await recv());
 
-  const inbox = [];
-  let waiter = null;
-  dc.onmessage = (ev) => {
-    const u = new Uint8Array(ev.data);
-    if (waiter) { const w = waiter; waiter = null; w(u); } else inbox.push(u);
-  };
-  const recv = () => new Promise((r) => (inbox.length ? r(inbox.shift()) : (waiter = r)));
+    // Channel live: stop the setup guards, publish send, drop signalling, tell the caller.
+    clearTimeout(connectTimeout);
+    current.send = (framed) => dc.send(hs.encrypt(framed));
+    try { ws.close(); } catch {} // signalling done; the data plane is the DC
+    diag.step = 'connected';
+    current.send(encodeResize(term.cols, term.rows)); // size the (re)connected PTY to the live term
+    connected = true;
+    onConnected && onConnected();
 
-  const hs = new HandshakeKK({ initiator: true, s: owner, rs: hexToBytes(machine.host_pub) });
-  dc.send(hs.writeMessage(new Uint8Array(0)));
-  hs.readMessage(await recv());
-
-  const send = (framed) => dc.send(hs.encrypt(framed));
-  term.onData((d) => send(encodeData(te.encode(d))));
-  term.onResize(({ cols, rows }) => send(encodeResize(cols, rows)));
-  refit(); // fit now that the bridge is live -> emits the initial RESIZE
-  send(encodeResize(term.cols, term.rows));
-
-  // keep the terminal fitted to the viewport (desktop resize, iOS rotate/keyboard)
-  let rT;
-  const onViewport = () => { clearTimeout(rT); rT = setTimeout(refit, 120); };
-  window.addEventListener('resize', onViewport);
-  window.visualViewport && window.visualViewport.addEventListener('resize', onViewport);
-  window.addEventListener('orientationchange', onViewport);
-  const stopResize = () => {
-    clearTimeout(rT);
-    window.removeEventListener('resize', onViewport);
-    window.visualViewport && window.visualViewport.removeEventListener('resize', onViewport);
-    window.removeEventListener('orientationchange', onViewport);
-  };
-  (async () => {
     for (;;) {
-      let ct;
-      try { ct = await recv(); } catch { return; }
+      const ct = await recv();
       const { type, payload } = decodeFrame(hs.decrypt(ct));
       if (type === FRAME_DATA) term.write(payload);
       else if (type === FRAME_WINDOWS) { try { onWindows && onWindows(JSON.parse(td.decode(payload))); } catch {} }
     }
-  })();
+  } catch (e) {
+    if (!connected) throw e; // setup failure -> runSession backs off and retries with a fresh offer
+    // else: an established session dropped -> swallow so connectOnce RESOLVES (prompt reconnect)
+  } finally {
+    clearTimeout(connectTimeout);
+    current.send = null;
+    try { dc.close(); } catch {}
+    try { pc.close(); } catch {}
+    try { ws.close(); } catch {}
+    window.__attached = false;
+  }
+}
 
-  term.focus();
-  // test hooks
+// makeTerminal builds the DURABLE terminal: the xterm, its fit/resize wiring, and a
+// `current` ref whose .send is swapped per (re)connect. Keystrokes are bound ONCE and
+// route through current.send, so they survive reconnects without rebinding handlers.
+export function makeTerminal(termEl) {
+  const term = new Terminal({ fontSize: 13, cursorBlink: true, theme: { background: '#0b0e14' } });
+  const fitAddon = new FitAddon();
+  term.loadAddon(fitAddon);
+  term.open(termEl);
+  const refit = () => { try { fitAddon.fit(); } catch {} };
+  refit();
+  setTimeout(refit, 80); // catch layout/font settling
+  const current = { send: null };
+  term.onData((d) => current.send && current.send(encodeData(te.encode(d))));
+  term.onResize(({ cols, rows }) => current.send && current.send(encodeResize(cols, rows)));
+  // keep the terminal fitted to the viewport (desktop resize, iOS rotate/keyboard)
+  let rT;
+  const onViewport = () => { clearTimeout(rT); rT = setTimeout(() => { refit(); current.send && current.send(encodeResize(term.cols, term.rows)); }, 120); };
+  window.addEventListener('resize', onViewport);
+  window.visualViewport && window.visualViewport.addEventListener('resize', onViewport);
+  window.addEventListener('orientationchange', onViewport);
+  const dispose = () => {
+    clearTimeout(rT);
+    window.removeEventListener('resize', onViewport);
+    window.visualViewport && window.visualViewport.removeEventListener('resize', onViewport);
+    window.removeEventListener('orientationchange', onViewport);
+    term.dispose();
+  };
+  // test hooks (unchanged surface)
   window.__term = term;
-  window.__send = (s) => send(encodeData(te.encode(s)));
+  window.__send = (s) => current.send && current.send(encodeData(te.encode(s)));
   window.__termText = () => {
     const b = term.buffer.active;
     let out = '';
     for (let i = 0; i < b.length; i++) out += b.getLine(i).translateToString(true) + '\n';
     return out;
   };
-  window.__attached = true;
-  return {
-    term, pc, dc, ws,
-    sendText: (s) => send(encodeData(te.encode(s))), // feed keystrokes
-    sendCtl: (obj) => send(encodeControl(te.encode(JSON.stringify(obj)))), // tmux window command
+  return { term, current, refit, dispose };
+}
 
-    close: () => { stopResize(); try { ws.close(); } catch {} try { pc.close(); } catch {} term.dispose(); },
+// attach keeps the single-session contract for callers/tests (window.trAttach): a
+// durable terminal + exactly one connectOnce, resolving when CONNECTED (not on drop)
+// so the caller gets a handle. viewTerminal uses runSession for reconnect instead.
+export async function attach(machine, termEl, onWindows) {
+  const { term, current, dispose } = makeTerminal(termEl);
+  term.write('[mir] connecting to ' + (machine.name || machine.machine_id) + '…\r\n');
+  await new Promise((resolve, reject) => {
+    connectOnce(machine, term, current, () => { window.__attached = true; term.focus(); resolve(); }, onWindows).catch(reject);
+  });
+  return {
+    term,
+    sendText: (s) => current.send && current.send(encodeData(te.encode(s))),
+    sendCtl: (obj) => current.send && current.send(encodeControl(te.encode(JSON.stringify(obj)))),
+    close: () => { current.send = null; dispose(); },
   };
 }
 
@@ -254,7 +304,9 @@ function viewPair(root, prefill = '', auto = false) {
           el('button', { className: 'link', onclick: () => viewPair(root) }, 'Cancel pairing')));
     } catch (e) {
       status.innerHTML = '';
-      status.append(el('div', { className: 'muted' }, 'pairing failed: ' + (e && e.message || e)),
+      const msg = (e && e.message) || String(e);
+      status.append(
+        el('div', { className: 'muted' }, 'Pairing failed: ' + msg + '. Codes expire after 5 min — make sure it’s fresh and the machine is still showing it.'),
         el('button', { className: 'btn', onclick: () => viewPair(root) }, 'Try again'));
     }
   };
@@ -286,6 +338,7 @@ function viewPair(root, prefill = '', auto = false) {
 
 function viewTerminal(root, machine) {
   let handle = null;
+  let session = null; // reconnect controller (runSession) for this machine
   let snap = null; // latest FrameWindows snapshot: v2 {v,sess:[...]}, or null (non-tmux)
   const close = () => { try { handle && handle.close(); } catch {} };
   const focus = () => { window.__term && window.__term.focus(); };
@@ -427,9 +480,31 @@ function viewTerminal(root, machine) {
     view.append(sheet);
   }
 
-  attach(machine, termBox, (s) => { snap = s; renderStrip(); })
-    .then((h) => { handle = h; })
-    .catch((e) => termBox.append(el('div', { className: 'status' }, 'connect failed: ' + (e && e.message || e))));
+  const { term, current, dispose } = makeTerminal(termBox);
+  term.write('[mir] connecting to ' + (machine.name || machine.machine_id) + '…\r\n');
+
+  // topbar status pill: reflects the live connection state; tap to retry when it has
+  // given up. The keystroke path is durable (current.send), swapped per (re)connect.
+  const pill = el('button', { className: 'pill status', onclick: () => { if (pill.dataset.failed) session && session.retryNow(); } }, '…');
+  const setPill = (label, cls) => { pill.className = 'pill status ' + cls; pill.textContent = label; pill.dataset.failed = cls === 'failed' ? '1' : ''; };
+  view.querySelector('.topbar').insertBefore(pill, sw);
+
+  handle = {
+    sendCtl: (obj) => { current.send && current.send(encodeControl(te.encode(JSON.stringify(obj)))); focus(); },
+    close: () => { session && session.stop(); try { current.send = null; } catch {} dispose(); },
+  };
+
+  session = runSession({
+    connectOnce: (onConnected) => connectOnce(machine, term, current, onConnected, (s) => { snap = s; renderStrip(); }),
+    onState: (state, attempt) => {
+      if (state === 'connected') { setPill('● live', 'ok'); window.__attached = true; term.focus(); }
+      else if (state === 'connecting') setPill('⟳ connecting', 'wait');
+      else if (state === 'reconnecting') { setPill('⟳ reconnecting' + (attempt ? ' (' + attempt + ')' : ''), 'wait'); if (attempt === 0) term.write('\r\n[mir] connection lost — reconnecting…\r\n'); }
+      else if (state === 'failed') { setPill('⊘ tap to retry', 'failed'); term.write('\r\n[mir] couldn\'t reconnect — tap ⊘ to retry\r\n'); }
+    },
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    backoffFor: (attempt) => backoff(attempt),
+  });
 }
 
 // after sign-in: replay a scanned pairing code, else show machines
