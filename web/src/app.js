@@ -289,7 +289,9 @@ function viewPair(root, prefill = '', auto = false) {
           el('button', { className: 'link', onclick: () => viewPair(root) }, 'Cancel pairing')));
     } catch (e) {
       status.innerHTML = '';
-      status.append(el('div', { className: 'muted' }, 'pairing failed: ' + (e && e.message || e)),
+      const msg = (e && e.message) || String(e);
+      status.append(
+        el('div', { className: 'muted' }, 'Pairing failed: ' + msg + '. Codes expire after 5 min — make sure it’s fresh and the machine is still showing it.'),
         el('button', { className: 'btn', onclick: () => viewPair(root) }, 'Try again'));
     }
   };
