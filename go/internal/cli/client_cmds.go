@@ -2,8 +2,10 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/srcful/terminal-relay/go/internal/client"
 	"github.com/srcful/terminal-relay/go/internal/defaults"
+	"github.com/srcful/terminal-relay/go/internal/peer"
 	"github.com/srcful/terminal-relay/go/internal/selfupdate"
 	"github.com/srcful/terminal-relay/go/internal/version"
 )
@@ -134,6 +137,15 @@ func (a *app) cmdList(args []string) error {
 	return nil
 }
 
+// isCleanDetach reports whether err is a normal peer disconnect — the agent went
+// away / closed the data channel (peer.ErrDataChannelClosed) or the stream hit
+// io.EOF. The mux path already treats an all-sessions disconnect as a clean exit;
+// this lets the single-machine branch match instead of printing "error: …" and
+// exiting 1 on an ordinary detach.
+func isCleanDetach(err error) bool {
+	return errors.Is(err, peer.ErrDataChannelClosed) || errors.Is(err, io.EOF)
+}
+
 func (a *app) cmdAttach(args []string) error {
 	fs := flag.NewFlagSet("attach", flag.ExitOnError)
 	dir := fs.String("dir", defaultDir(), "config directory")
@@ -170,7 +182,7 @@ func (a *app) cmdAttach(args []string) error {
 			return err
 		}
 		defer cleanup()
-		if err := client.RunInteractive(ctx, mc, sess, m.Name); err != nil && ctx.Err() == nil {
+		if err := client.RunInteractive(ctx, mc, sess, m.Name); err != nil && ctx.Err() == nil && !isCleanDetach(err) {
 			return err
 		}
 		return nil

@@ -41,10 +41,11 @@ type Mux struct {
 	quitOnce sync.Once
 }
 
+// NewMux builds a Mux over the given sessions. prefix is the switch-key byte and
+// is used verbatim: callers parse it explicitly (see cli.parsePrefix), so there
+// is no 0x00 "unset" sentinel — that byte is the real Ctrl-Space and must bind as
+// such. Use DefaultPrefix if you want the Ctrl-O default.
 func NewMux(sessions []*MuxSession, out io.Writer, prefix byte, initial Size) *Mux {
-	if prefix == 0 {
-		prefix = DefaultPrefix
-	}
 	for _, s := range sessions {
 		s.snd = newSender(s.MC, s.Sess)
 	}

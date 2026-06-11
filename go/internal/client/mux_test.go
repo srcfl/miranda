@@ -100,6 +100,49 @@ func TestMuxRoutesToFocusAndDropsBackground(t *testing.T) {
 	}
 }
 
+// TestMuxCtrlSpacePrefixBinds guards the regression where prefix 0x00 (Ctrl-Space,
+// as produced by cli.parsePrefix("ctrl-space")) was treated as "unset" and
+// silently replaced by Ctrl-O. With the 0x00-defaulting removed, NewMux must use
+// 0x00 verbatim: pressing it then '2' switches focus to box1 (proving the byte
+// was consumed as the prefix, not forwarded as data).
+func TestMuxCtrlSpacePrefixBinds(t *testing.T) {
+	const ctrlSpace = byte(0x00)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mk := func() (*MuxSession, *fakeAgent) {
+		aPriv, aPub, _ := noise.GenerateStatic()
+		cPriv, cPub, _ := noise.GenerateStatic()
+		fa, _ := startFakeAgent(t, ctx, aPriv, cPub)
+		sess, err := peer.RunInitiator(ctx, fa.mc, cPriv, aPub)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &MuxSession{MC: fa.mc, Sess: sess}, fa
+	}
+	s0, _ := mk()
+	s0.Name = "box0"
+	s1, _ := mk()
+	s1.Name = "box1"
+
+	out := &syncWriter{}
+	in := newBlockingReader()
+	mux := NewMux([]*MuxSession{s0, s1}, out, ctrlSpace, Size{Cols: 80, Rows: 24})
+	if mux.prefix != ctrlSpace {
+		t.Fatalf("NewMux prefix = %#x, want %#x (Ctrl-Space must not be defaulted away)", mux.prefix, ctrlSpace)
+	}
+	go func() { _ = mux.Run(ctx, in, make(chan Size)) }()
+
+	// Focus starts on box0.
+	in.feed([]byte("emit:HELLO0\n"))
+	waitFor(t, out, "HELLO0")
+
+	// Ctrl-Space then '2' must switch focus to box1 (the prefix is honored).
+	in.feed([]byte{ctrlSpace, '2'})
+	in.feed([]byte("emit:HELLO1\n"))
+	waitFor(t, out, "HELLO1")
+}
+
 func waitFor(t *testing.T, out *syncWriter, want string) {
 	t.Helper()
 	deadline := time.Now().Add(4 * time.Second)
