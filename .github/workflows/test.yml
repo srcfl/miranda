@@ -1,0 +1,47 @@
+name: test
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          # Match release.yml: exact floor pinned for the stdlib CVE fixes.
+          go-version: "1.26.4"
+          cache-dependency-path: go/go.sum # module lives in go/, not repo root
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l go/)"
+          if [ -n "$unformatted" ]; then echo "gofmt needed:"; echo "$unformatted"; exit 1; fi
+      - name: vet
+        working-directory: go
+        run: go vet ./...
+      - name: test
+        working-directory: go
+        run: go test ./...
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - working-directory: web
+        run: npm ci
+      - working-directory: web
+        run: npm test
+
+  # The Go and web jobs together are the byte-identical crypto gate: go test
+  # writes/asserts testdata/ vectors and npm test asserts the JS side matches the
+  # same committed vectors. A drift on either side fails this workflow.

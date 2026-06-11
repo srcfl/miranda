@@ -19,9 +19,9 @@ var (
 	fxInitEph    = mustHex("0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20")
 	fxRespEph    = mustHex("2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40")
 	fxPayload0   = []byte("pair-request")
-	fxTransport  = []byte("terminal-relay")     // initiator->responder, send nonce 0
-	fxTransport2 = []byte("second-record")      // initiator->responder, send nonce 1
-	fxTransport3 = []byte("relay->you")         // responder->initiator, send nonce 0
+	fxTransport  = []byte("terminal-relay") // initiator->responder, send nonce 0
+	fxTransport2 = []byte("second-record")  // initiator->responder, send nonce 1
+	fxTransport3 = []byte("relay->you")     // responder->initiator, send nonce 0
 	fxPrf        = mustHex("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff")
 )
 
