@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -76,7 +77,12 @@ func (a *app) cmdUp(args []string) error {
 	defer stop()
 
 	rt := agent.NewRuntime(cfg, launch, ice())
-	rt.Logf = func(f string, args ...any) { fmt.Fprintf(a.errOut, a.binary+": "+f+"\n", args...) }
+	// Structured, timestamped agent log. RFC3339-ish date+time in UTC plus the
+	// binary prefix turns a bare "owner … disconnected" line into something you
+	// can correlate against relay logs and tell a flap (low uptime) from a normal
+	// idle reconnect at a glance. Logger.Printf appends the newline.
+	rlog := log.New(a.errOut, a.binary+": ", log.LstdFlags|log.LUTC)
+	rt.Logf = rlog.Printf
 	fmt.Fprintf(a.out, "%s up: machine %s, signaling %s\n", a.binary, cfg.MachineID, cfg.SignalURL)
 	// Non-blocking update notice (cache-only display; refresh in background while serving).
 	selfupdate.New(repoSlug, a.binary).MaybeNotify(a.errOut, updateCachePath(*dir), version.Version, 24*time.Hour)
@@ -109,6 +115,15 @@ func (a *app) autoUpdateLoop(ctx context.Context, rt *agent.Runtime) {
 		}
 		if err := c.Apply(rel, exe); err != nil {
 			fmt.Fprintf(a.errOut, "%s: auto-update failed: %v\n", a.binary, err)
+			return
+		}
+		// TOCTOU guard: Apply did two HTTP fetches, during which an owner could
+		// have attached. ReExec (syscall.Exec) is immediate and would kill that
+		// session mid-stream. Re-check idleness right before the swap; if a session
+		// raced in, abort and try again on the next tick (the freshly-written
+		// binary stays on disk and is picked up then).
+		if rt.ActiveSessions() > 0 {
+			fmt.Fprintf(a.errOut, "%s: session attached during update; deferring restart\n", a.binary)
 			return
 		}
 		fmt.Fprintf(a.errOut, "%s: updated → %s, restarting\n", a.binary, rel.Tag)

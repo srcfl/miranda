@@ -5,6 +5,9 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"strings"
@@ -17,6 +20,14 @@ import (
 	"github.com/srcful/terminal-relay/go/internal/peer"
 	"github.com/srcful/terminal-relay/go/internal/signal"
 )
+
+// minHealthyUptime is the shortest a signaling connection must stay up before we
+// treat it as a genuinely healthy session whose drop warrants a prompt reconnect.
+// A connection the relay accepts then drops faster than this (a same-identity
+// ping-pong, or a crash-looping relay) is a FLAP, not a healthy reconnect:
+// resetting the backoff for it produces a flat ~1s reconnect storm, so we grow
+// the backoff instead. See nextBackoff.
+const minHealthyUptime = 10 * time.Second
 
 // defaultMaxConcurrentAttaches bounds how many attach handshakes (each a full
 // WebRTC PeerConnection + ICE gather + Noise responder) may be in flight at once
@@ -115,48 +126,95 @@ func (rt *Runtime) Up(ctx context.Context) error {
 	}
 }
 
-// serveOwner maintains one owner's registration, reconnecting with backoff.
+// nextBackoff decides the next reconnect delay from the outcome of the previous
+// attempt, decoupled from sleeping/jitter so it can be unit-tested in isolation.
+//
+//   - dialed && uptime >= minHealthyUptime: a genuinely healthy session dropped
+//     (idle timeout, relay restart) -> reset to base for a prompt reconnect.
+//   - dialed && uptime < minHealthyUptime: a FLAP (relay accepts-then-closes, a
+//     same-identity ping-pong, a crash loop) -> GROW (×2, capped) so we damp the
+//     storm instead of hammering at base.
+//   - !dialed: the dial itself failed (relay down) -> GROW (×2, capped).
+//
+// The returned value is the *ceiling* for the sleep; the caller applies full
+// jitter (a random duration in [0, ceiling]) so fleets/clones don't phase-lock.
+func nextBackoff(prev, base, max time.Duration, dialed bool, uptime time.Duration) time.Duration {
+	if dialed && uptime >= minHealthyUptime {
+		return base
+	}
+	next := prev * 2
+	if next < base { // prev was 0 or sub-base (defensive)
+		next = base
+	}
+	if next > max {
+		next = max
+	}
+	return next
+}
+
+// jitter returns a random duration in [0, d] (full jitter). Decorrelating the
+// reconnect sleep across a fleet (or several clones of one identity) prevents a
+// synchronized thundering herd against the relay.
+func (rt *Runtime) jitter(d time.Duration) time.Duration {
+	if d <= 0 {
+		return 0
+	}
+	return time.Duration(rand.Int63n(int64(d) + 1))
+}
+
+// serveOwner maintains one owner's registration, reconnecting with backoff. The
+// backoff is UPTIME-GATED: only a connection that stayed healthy for at least
+// minHealthyUptime resets it; a flap (or a failed dial) grows it. Every sleep is
+// fully jittered.
 func (rt *Runtime) serveOwner(ctx context.Context, owner string) {
 	backoff := rt.baseBackoff
 	for {
-		connected, err := rt.serveOnce(ctx, owner)
+		dialed, uptime, err := rt.serveOnce(ctx, owner)
 		if ctx.Err() != nil {
 			return
 		}
-		if connected {
-			backoff = rt.baseBackoff // a live connection dropped -> retry promptly
-		}
+		backoff = nextBackoff(backoff, rt.baseBackoff, rt.maxBackoff, dialed, uptime)
+		sleep := rt.jitter(backoff)
+		code, reason := closeCodeReason(err)
 		if rt.Logf != nil {
-			rt.Logf("owner %s disconnected (%v); reconnecting in %s", short(owner), err, backoff)
+			rt.Logf("event=disconnect owner=%s uptime=%s code=%d reason=%q backoff=%s",
+				short(owner), uptime.Round(time.Millisecond), code, reason, sleep)
 		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(backoff):
-		}
-		if !connected { // dial keeps failing (relay down) -> exponential backoff
-			if backoff *= 2; backoff > rt.maxBackoff {
-				backoff = rt.maxBackoff
-			}
+		case <-time.After(sleep):
 		}
 	}
 }
 
 // serveOnce dials the signaling channel for one owner and serves offers until
-// the connection drops. The bool reports whether the dial succeeded (a live
-// connection that later dropped), so the caller can reconnect promptly vs. back
-// off a down relay.
-func (rt *Runtime) serveOnce(ctx context.Context, owner string) (bool, error) {
+// the connection drops. It returns:
+//   - dialed: whether the dial itself succeeded (vs. relay down).
+//   - uptime: how long the read loop ran (≈ how long the connection stayed
+//     healthy). serveOwner gates its backoff on this to tell a genuine idle
+//     reconnect (long uptime) from a flap (sub-threshold uptime).
+//   - err: the read error, with any websocket.CloseError code+reason preserved
+//     so a deliberate relay rejection isn't misread as a network blip.
+func (rt *Runtime) serveOnce(ctx context.Context, owner string) (dialed bool, uptime time.Duration, err error) {
 	c, _, err := websocket.Dial(ctx, agentSignalURL(rt.cfg.SignalURL, owner, rt.cfg.MachineID), agentDialOptions(rt.cfg.RegistrationSecret))
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
 	defer c.CloseNow()
+
+	// Mark the start of the healthy read loop: uptime is measured from here so a
+	// relay that accepts-then-immediately-closes reports a tiny uptime (a flap),
+	// while a connection that idles for minutes reports a large one.
+	start := time.Now()
+	if rt.Logf != nil {
+		rt.Logf("event=connected owner=%s", short(owner))
+	}
 
 	for {
 		_, data, err := c.Read(ctx)
 		if err != nil {
-			return true, err
+			return true, time.Since(start), wrapCloseErr(err)
 		}
 		var m signal.SignalMsg
 		if json.Unmarshal(data, &m) != nil {
@@ -186,6 +244,35 @@ func short(hexKey string) string {
 		return hexKey[:8] + "…"
 	}
 	return hexKey
+}
+
+// wrapCloseErr surfaces a websocket close handshake in the returned error. The
+// relay closes with a status+reason for deliberate rejections (e.g. policy
+// violation when a registration proof is missing); without this, errors.As is
+// the only way to recover it and the human-readable disconnect log would just
+// read like a generic read failure. We annotate so even callers that only log
+// %v see the code and reason.
+func wrapCloseErr(err error) error {
+	var ce websocket.CloseError
+	if errors.As(err, &ce) {
+		return fmt.Errorf("websocket closed: code=%d reason=%q: %w", int(ce.Code), ce.Reason, err)
+	}
+	return err
+}
+
+// closeCodeReason extracts the websocket close code and reason for the
+// structured disconnect log. For a non-close error (a raw network blip, ctx
+// cancel) it returns code -1 and the error's message, so the log still carries
+// *why* the connection ended rather than discarding it.
+func closeCodeReason(err error) (code int, reason string) {
+	if err == nil {
+		return -1, ""
+	}
+	var ce websocket.CloseError
+	if errors.As(err, &ce) {
+		return int(ce.Code), ce.Reason
+	}
+	return -1, err.Error()
 }
 
 // iceFor returns the agent's static ICE servers plus ephemeral TURN creds
