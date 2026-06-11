@@ -38,12 +38,14 @@ sha256_of() { # macOS has shasum; Linux has sha256sum
 SIG_SHA="$(sha256_of /tmp/mir-signal-linux)"
 echo "   sha256(mir-signal)=$SIG_SHA"
 
-echo "== package SPA (index.html + src + vendor) =="
+echo "== package SPA (index.html + manifest + sw + icons + src + vendor) =="
 # Strip macOS metadata: without COPYFILE_DISABLE + --no-xattrs the bsdtar on a
 # Mac packs AppleDouble `._*` sidecar files (and xattr headers), which then land
 # in /opt/mir-web and get served as bogus assets. --exclude drops any that exist.
+# manifest.json/sw.js/icons are the PWA app-shell — sw.js MUST land at the webroot
+# root (served at /sw.js) so its scope covers the whole origin.
 COPYFILE_DISABLE=1 tar --no-xattrs --exclude='._*' \
-  -C "$REPO/web" -czf /tmp/mir-web.tgz index.html src vendor
+  -C "$REPO/web" -czf /tmp/mir-web.tgz index.html manifest.json sw.js icons src vendor
 
 echo "== upload to $DEST =="
 "${SCP[@]}" /tmp/mir-signal-linux "$DEST:/tmp/mir-signal"
