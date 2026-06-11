@@ -40,6 +40,7 @@ const SHELL = [
   '/src/pairing/sas.js',
   '/src/rp.js',
   '/src/store.js',
+  '/src/ui/keybar.js',
   '/vendor/jsqr.js',
   '/vendor/noble-ciphers-chacha.js',
   '/vendor/noble-curves-ed25519.js',

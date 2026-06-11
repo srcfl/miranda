@@ -96,6 +96,21 @@
   .actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-top: 14px; }
   .actions .link { margin-top: 0; }
   .termbox { flex: 1; min-height: 0; overflow: hidden; padding: 6px 10px calc(env(safe-area-inset-bottom) + 20px); }
+  /* Mobile key bar: a horizontal row of thumb-sized buttons that sits just above
+     the soft keyboard. Only rendered on coarse-pointer (touch) devices — desktop
+     never sees it. The safe-area inset lives here (not on .termbox) when present
+     so the bar clears the home indicator. flex-shrink:0 keeps it full height. */
+  .keybar { display: flex; gap: 6px; overflow-x: auto; -webkit-overflow-scrolling: touch;
+    flex: 0 0 auto; padding: 6px 8px calc(env(safe-area-inset-bottom) + 6px);
+    background: #0d121b; border-top: 1px solid var(--line); scrollbar-width: none; }
+  .keybar::-webkit-scrollbar { display: none; }
+  .keybar-btn { flex: 0 0 auto; min-width: 44px; min-height: 44px; padding: 0 14px;
+    background: #11161f; border: 1px solid var(--line); border-radius: 10px; color: var(--fg);
+    font: 16px/1 ui-monospace, monospace; cursor: pointer; touch-action: manipulation;
+    -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
+  .keybar-btn:active { background: #1b2433; }
+  /* Ctrl armed (sticky modifier): highlight so it's obvious the next key is a control code. */
+  .keybar-ctrl.armed { background: var(--acc); color: #052e16; border-color: var(--acc); font-weight: 700; }
   .scanner { width: 100%; max-height: 60vh; border-radius: 14px; background: #000; object-fit: cover; margin-bottom: 8px; }
 </style>
 </head>
