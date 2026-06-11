@@ -4,6 +4,12 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>Miranda</title>
+<link rel="manifest" href="/manifest.json" />
+<meta name="theme-color" content="#0b0e14" />
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Miranda" />
 <link rel="stylesheet" href="/vendor/xterm.css" />
 <!-- import map -> locally-vendored deps (NEVER load security-critical crypto from a CDN at runtime) -->
 <script type="importmap" nonce="__CSP_NONCE__">
@@ -26,7 +32,7 @@
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
     font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif; }
   #app { height: 100vh; }
-  .view { max-width: 760px; margin: 0 auto; padding: 40px 20px; }
+  .view { max-width: 760px; margin: 0 auto; padding: calc(env(safe-area-inset-top) + 40px) 20px 40px; }
   .view.term { max-width: none; padding: 0; height: 100vh; display: flex; flex-direction: column; }
   .topbar { display: flex; align-items: center; gap: 6px; background: #0d121b; border-bottom: 1px solid var(--line);
     padding: calc(env(safe-area-inset-top) + 8px) 10px 8px; }
