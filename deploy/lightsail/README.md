@@ -7,7 +7,12 @@ instance behind Cloudflare, which provides TLS for the browser SPA at
 origin). **The server only ever sees SDP / `roomID` / ciphertext — terminal data
 flows peer-to-peer (Noise), never through it.**
 
-## What is deployed (2026-06-06)
+## What is deployed (target state)
+
+This table is the **target state** the automation converges the box to — not a
+live snapshot. The running instance was first provisioned under the pre-rename
+`tr-signal` names; `redeploy.sh` performs the cutover (see "Cutover gotchas"
+below). After a successful `redeploy.sh` the box matches this table.
 
 | Thing              | Value                                                                                                                      |
 | ------------------ | -------------------------------------------------------------------------------------------------------------------------- |
@@ -136,12 +141,27 @@ remain valid until their embedded expiry, so keep the Cloudflare
 When `mir-signal --webroot /opt/mir-web` serves the browser SPA, the served
 JavaScript is a client trust root. `mir-signal` now emits these headers itself
 (see `setStaticSecurityHeaders`), but the `connect-src` allow-list defaults to
-`'self'` only — set the relay origins explicitly so the SPA can reach signaling:
+`'self'` only — set the relay origins explicitly so the SPA can reach signaling.
 
-```bash
-# in /etc/mir-signal.env
-MIR_CSP_CONNECT_SRC="'self' https://term.sourceful-labs.net wss://term.sourceful-labs.net https://relay.sourceful-labs.net wss://relay.sourceful-labs.net"
+Use the **repeatable `--csp-connect-src` flag** in the systemd unit, one origin
+per occurrence (this is what `deploy/lightsail/mir-signal.service` ships):
+
+```ini
+ExecStart=/usr/local/bin/mir-signal --addr :80 --webroot /opt/mir-web \
+  --csp-connect-src "'self'" \
+  --csp-connect-src https://relay.sourceful-labs.net \
+  --csp-connect-src wss://relay.sourceful-labs.net \
+  --csp-connect-src https://term.sourceful-labs.net \
+  --csp-connect-src wss://term.sourceful-labs.net
 ```
+
+> **Do NOT** put this in `MIR_CSP_CONNECT_SRC` inside `/etc/mir-signal.env`. The
+> systemd `EnvironmentFile` parser corrupts a value whose first token is
+> single-quoted — `MIR_CSP_CONNECT_SRC='self' https://…` arrives as
+> `selfhttps://…` (quotes + leading space eaten). The repeatable flag avoids
+> this; the binary joins the flag tokens verbatim, so keep `'self'`'s quotes
+> (and note the `"'self'"` double-quote wrapping needed for systemd's own
+> ExecStart parser — see the unit file's comment). See "Cutover gotchas" below.
 
 You may still layer the equivalent headers at Cloudflare (belt and suspenders);
 either way the policy below is the target. Apply it before using the browser
@@ -168,18 +188,23 @@ curl -I https://term.sourceful-labs.net/src/app.js
 
 ### WebAuthn RP ID boundary
 
-The browser owner key uses WebAuthn `prf` with RP ID `sourceful-labs.net`. This
-lets one synced passkey work across `term`, `relay`, and future trusted
-subdomains, but it also makes the registrable domain the trust boundary.
+The browser owner key uses WebAuthn `prf` with RP ID `term.sourceful-labs.net` —
+the **exact app host**, not the parent domain. The owner passkey is therefore
+bound to that single origin, and sibling `*.sourceful-labs.net` subdomains
+(including `relay.sourceful-labs.net`) are **outside** the owner-key trust
+boundary: a passkey scoped to `term.sourceful-labs.net` cannot be exercised from
+another subdomain.
 
 Rules:
 
-- Do not delegate arbitrary `sourceful-labs.net` subdomains to third parties.
-- Do not host untrusted JavaScript on any `sourceful-labs.net` subdomain that can
-  request a passkey ceremony for this RP ID.
-- If the product moves to a separate domain or a narrower RP ID such as
-  `term.sourceful-labs.net`, plan for passkey re-enrollment because existing
-  credentials are scoped to the old RP ID.
+- Keep the RP ID at the exact app host. Do **not** widen it to the registrable
+  parent `sourceful-labs.net` to "share" a passkey across subdomains — that would
+  pull every such subdomain into the trust boundary.
+- Serve the SPA (the only origin that runs a passkey ceremony for this RP ID)
+  only from `term.sourceful-labs.net`, and keep untrusted JavaScript off it.
+- If the RP ID ever changes (different app host, or a deliberate move to the
+  parent domain), plan for passkey re-enrollment — existing credentials are
+  scoped to the old RP ID and will not carry over.
 
 ### Pairing safety-number runbook
 
@@ -236,20 +261,59 @@ If you must use the region default key pair, still write it to `~/.ssh/` (mode
 
 ### One-time migration: `tr-signal` → `mir-signal`
 
-`redeploy.sh` installs the new `mir-signal` service/user/paths but does **not**
-remove the old `tr-signal` ones, so the first run leaves both. After confirming the
-new service is healthy, clean up the legacy unit on the box:
+`redeploy.sh` now performs the cutover automatically and idempotently, **before**
+it enables `mir-signal`:
+
+- stops + disables any old `tr-signal.service`, removes
+  `/etc/systemd/system/tr-signal.service` and `/opt/tr-web`, then
+  `daemon-reload`s — each step is a no-op on subsequent runs;
+- migrates the TURN secret: if `/etc/mir-signal.env` is absent and
+  `/etc/tr-signal.env` exists, it derives the former by renaming
+  `TR_TURN_SECRET=` → `MIR_TURN_SECRET=` (mode 600). It never clobbers an
+  existing `/etc/mir-signal.env`, so a rotated secret survives a re-run.
+
+So a normal `redeploy.sh` run leaves the box in the target state with no manual
+cleanup. The old `trsignal` **system user** is intentionally left in place (it is
+harmless and removing it could orphan file ownership); drop it by hand if you want
+a fully clean box:
 
 ```bash
-ssh tr-signal 'sudo systemctl disable --now tr-signal.service; \
-  sudo rm -f /etc/systemd/system/tr-signal.service; sudo systemctl daemon-reload; \
-  sudo rm -rf /opt/tr-web; sudo userdel trsignal 2>/dev/null; \
-  [ -f /etc/tr-signal.env ] && sudo mv /etc/tr-signal.env /etc/mir-signal.env; \
-  sudo systemctl restart mir-signal; systemctl is-active mir-signal'
+ssh tr-signal 'sudo userdel trsignal 2>/dev/null; echo done'
 ```
 
 (The AWS Lightsail instance + static IP keep their legacy names `tr-signal` /
 `tr-signal-ip` — those only change on a full recreate.)
+
+### Cutover gotchas / known traps
+
+Hard-won from real incidents migrating the live box off the pre-rename setup.
+The relay binary was updated in coordination with these scripts; this section
+assumes that build is deployed.
+
+- **EnvironmentFile eats a leading single-quoted CSP token.** Setting
+  `MIR_CSP_CONNECT_SRC='self' https://…` in `/etc/mir-signal.env` does **not**
+  work: systemd's `EnvironmentFile` parser strips the quotes and the leading
+  space, so the binary receives `selfhttps://…` and the SPA's `connect-src`
+  silently breaks (browser blocks every signaling connection). **Use the
+  repeatable `--csp-connect-src` flag** in `ExecStart` instead (see "SPA security
+  headers" above and the shipped `mir-signal.service`). The binary joins those
+  tokens verbatim, so keep `'self'`'s quotes — and wrap it as `"'self'"` so
+  systemd's *own* ExecStart quoting delivers the literal `'self'` token.
+- **A missing TLS cert used to crash-loop the relay.** The unit passes
+  `--tls-addr :443 --tls-cert … --tls-key …` for an eventual Cloudflare Full
+  (strict) cutover, but the box currently runs Cloudflare **Flexible** with no
+  origin cert. The binary now `os.Stat`-gates the TLS branch: if the cert/key
+  files are absent it logs a warning and serves HTTP-only instead of
+  `log.Fatal`-ing the process. So the `--tls-*` flags are safe to leave in; to
+  actually enable HTTPS later, just drop the PEMs into `/etc/ssl/mir-signal/` and
+  restart. (Before the gate, a stray `--tls-*` on a no-cert box meant
+  `Restart=always` + instant fatal = a tight crash loop.)
+- **`TR_TURN_SECRET` → `MIR_TURN_SECRET` rename.** The TURN shared secret env var
+  was renamed with the `tr-` → `mir-` cutover. `redeploy.sh` migrates an existing
+  `/etc/tr-signal.env` automatically (see above); `deploy/turn/setup-coturn.sh`
+  and `mir-signal.service` already use the new name. If you wrote the secret by
+  hand under the old name, rename the key (and the file) to match, or
+  `/turn-credentials` will return 404 (TURN silently disabled).
 
 ## Recreate from scratch
 

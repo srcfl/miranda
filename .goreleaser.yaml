@@ -3,7 +3,11 @@ project_name: miranda
 
 before:
   hooks:
-    - sh -c "cd go && go mod tidy"
+    # Use `go mod download`, NOT `go mod tidy`: tidy MUTATES go.mod/go.sum, so at
+    # release time it would build the artifacts from a tree that differs from the
+    # tagged commit. download only populates the module cache, leaving the tree
+    # byte-identical to the tag.
+    - sh -c "cd go && go mod download"
 
 builds:
   - id: mir
@@ -66,6 +70,9 @@ archives:
 checksum:
   name_template: "checksums.txt"
   algorithm: sha256
+  # Follow-up (tracked): cosign-sign checksums.txt so the installer can verify a
+  # signature, not just the digest — see the "Signed, checksummed releases"
+  # roadmap item in SECURITY.md.
 
 release:
   github:

@@ -65,6 +65,14 @@ export async function connectOnce(machine, term, current, onConnected, onWindows
     wsBase(machine.signal) + '/attach?owner_id=' + encodeURIComponent(ownerHex) +
     '&machine_id=' + encodeURIComponent(machine.machine_id),
   );
+  // `aborted` lets the caller (handle.close on Back/switch) tear down a LIVE session:
+  // session.stop() alone only flips a flag, but the read loop below blocks on recv()
+  // until pc/dc actually close, so without this an aborted session leaks the
+  // PeerConnection/DataChannel and keeps writing inbound frames to a disposed term.
+  // current.abort closes ws/pc/dc, which fires endSession() -> unblocks recv() ->
+  // connectOnce resolves and the finally runs. Guards term.write so nothing lands on
+  // a disposed terminal after abort. Cleared in finally so a stale ref can't fire.
+  let aborted = false;
   // See awaitSocketOpen: capture 'open' SYNCHRONOUSLY before the awaited iceServers()
   // fetch, or a fast (localhost) socket opens first and the one-shot event is missed.
   const wsOpen = awaitSocketOpen(ws).then(() => { diag.ws = 'open'; }, (e) => { diag.ws = 'error'; throw e; });
@@ -79,6 +87,16 @@ export async function connectOnce(machine, term, current, onConnected, onWindows
   const ended = new Promise((res) => { endSession = res; });
   pc.onconnectionstatechange = () => { diag.conn = pc.connectionState; if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) endSession(); };
   dc.onclose = () => endSession();
+
+  // Abort handle for the caller: close the transports (which triggers endSession via
+  // the close handlers above) and mark aborted so the read loop stops writing.
+  current.abort = () => {
+    aborted = true;
+    try { dc.close(); } catch {}
+    try { pc.close(); } catch {}
+    try { ws.close(); } catch {}
+    endSession();
+  };
 
   // `setupFail` rejects if the connect never completes (relay error / closed socket /
   // timeout). Racing it below makes a missing agent fail fast (reject -> backoff + retry)
@@ -113,12 +131,17 @@ export async function connectOnce(machine, term, current, onConnected, onWindows
 
     diag.step = 'awaiting-datachannel';
     const inbox = [];
-    let waiter = null;
-    dc.onmessage = (ev) => { const u = new Uint8Array(ev.data); if (waiter) { const w = waiter; waiter = null; w(u); } else inbox.push(u); };
+    let waiter = null; // { resolve, reject } of the in-flight recv(), or null
+    dc.onmessage = (ev) => { const u = new Uint8Array(ev.data); if (waiter) { const w = waiter; waiter = null; w.resolve(u); } else inbox.push(u); };
+    // Subscribe to `ended` ONCE: re-subscribing per recv() leaked a closure per frame
+    // on a high-throughput session. The single handler rejects whichever waiter is
+    // pending at drop time; a recv() that arrives AFTER the drop rejects synchronously.
+    let sessionEnded = false;
+    ended.then(() => { sessionEnded = true; if (waiter) { const w = waiter; waiter = null; w.reject(new Error('session ended')); } });
     const recv = () => new Promise((resolve, reject) => {
       if (inbox.length) return resolve(inbox.shift());
-      waiter = resolve;
-      ended.then(() => { if (waiter === resolve) { waiter = null; reject(new Error('session ended')); } });
+      if (sessionEnded) return reject(new Error('session ended'));
+      waiter = { resolve, reject };
     });
     await Promise.race([
       new Promise((res) => (dc.onopen = () => { diag.dc = 'open'; res(); })),
@@ -141,8 +164,9 @@ export async function connectOnce(machine, term, current, onConnected, onWindows
 
     for (;;) {
       const ct = await recv();
+      if (aborted) break; // caller tore us down: don't touch a possibly-disposed term
       const { type, payload } = decodeFrame(hs.decrypt(ct));
-      if (type === FRAME_DATA) term.write(payload);
+      if (type === FRAME_DATA) { if (!aborted) term.write(payload); }
       else if (type === FRAME_WINDOWS) { try { onWindows && onWindows(JSON.parse(td.decode(payload))); } catch {} }
     }
   } catch (e) {
@@ -151,6 +175,7 @@ export async function connectOnce(machine, term, current, onConnected, onWindows
   } finally {
     clearTimeout(connectTimeout);
     current.send = null;
+    current.abort = null; // this connection's transports are gone; drop the stale handle
     try { dc.close(); } catch {}
     try { pc.close(); } catch {}
     try { ws.close(); } catch {}
@@ -221,7 +246,9 @@ export async function attach(machine, termEl, onWindows) {
     term,
     sendText: (s) => current.send && current.send(encodeData(te.encode(s))),
     sendCtl: (obj) => current.send && current.send(encodeControl(te.encode(JSON.stringify(obj)))),
-    close: () => { current.send = null; dispose(); },
+    // abort() first so the live connectOnce tears down its transports and stops
+    // writing before dispose() frees the terminal (mirror of viewTerminal's close).
+    close: () => { try { current.abort && current.abort(); } catch {} current.send = null; dispose(); },
   };
 }
 
@@ -288,9 +315,27 @@ async function scanQR(videoEl, onCode, onError) {
 
 function viewPair(root, prefill = '', auto = false) {
   const status = el('div', { className: 'status' });
+
+  // Camera lifecycle: scanQR holds an open MediaStream (the rear camera + the iOS
+  // recording indicator). It is only self-stopped on explicit cancel / successful
+  // decode — so navigating away (Back, any re-render, switching to the paste flow,
+  // or the tab going hidden) would otherwise leave the camera ON. Track the active
+  // stop here and release it on EVERY transition out of the scanner. `scanGen` bumps
+  // on each stop so a getUserMedia() that resolves AFTER a navigation is dropped
+  // (stopped + not re-registered) instead of leaking a now-orphaned stream.
+  let activeScanStop = null;
+  let scanGen = 0;
+  const stopScan = () => { scanGen++; const s = activeScanStop; activeScanStop = null; if (s) { try { s(); } catch {} } };
+  const onVisibility = () => { if (document.hidden) stopScan(); };
+  document.addEventListener('visibilitychange', onVisibility);
+  // leaveScanner: stop the camera + detach the visibility listener, then navigate.
+  // Used by every path that leaves the pairing flow for good (machines / pairing UI).
+  const leaveScanner = (go) => { stopScan(); document.removeEventListener('visibilitychange', onVisibility); go(); };
+
   const pairCode = async (raw) => {
     const code = (raw || '').trim();
     if (!code) return;
+    stopScan(); // a code arrived (scan or paste) -> the camera's job is done
     mount(root, el('div', { className: 'view' }, el('h1', {}, 'pairing…'), status));
     status.textContent = 'pairing…';
     try {
@@ -310,28 +355,33 @@ function viewPair(root, prefill = '', auto = false) {
             status.innerHTML = '';
             status.append(
               el('div', { className: 'ok' }, '✓ paired ' + (persisted.name || persisted.machine_id)),
-              el('button', { className: 'btn', onclick: () => viewMachines(root) }, 'Done'));
+              el('button', { className: 'btn', onclick: () => leaveScanner(() => viewMachines(root)) }, 'Done'));
           } }, 'Safety number matches'),
-          el('button', { className: 'link', onclick: () => viewPair(root) }, 'Cancel pairing')));
+          el('button', { className: 'link', onclick: () => leaveScanner(() => viewPair(root)) }, 'Cancel pairing')));
     } catch (e) {
       status.innerHTML = '';
       const msg = (e && e.message) || String(e);
       status.append(
         el('div', { className: 'muted' }, 'Pairing failed: ' + msg + '. Codes expire after 5 min — make sure it’s fresh and the machine is still showing it.'),
-        el('button', { className: 'btn', onclick: () => viewPair(root) }, 'Try again'));
+        el('button', { className: 'btn', onclick: () => leaveScanner(() => viewPair(root)) }, 'Try again'));
     }
   };
 
   const startScan = async () => {
+    stopScan(); // never run two cameras: release any prior scanner first
+    const myGen = scanGen; // this scanner's generation; a later stop() invalidates it
     const video = el('video', { className: 'scanner' });
     const sStatus = el('div', { className: 'status' });
-    let stop = null;
     mount(root, el('div', { className: 'view' },
       el('h1', {}, 'scan the QR'),
       el('p', { className: 'muted' }, 'Point at the QR shown by `mir-agent pair`.'),
       video, sStatus,
-      el('button', { className: 'link', onclick: () => { if (stop) stop(); viewPair(root); } }, '✕ cancel')));
-    stop = await scanQR(video, (text) => pairCode(codeFromScan(text)), (err) => { sStatus.textContent = err; });
+      el('button', { className: 'link', onclick: () => leaveScanner(() => viewPair(root)) }, '✕ cancel')));
+    const stop = await scanQR(video, (text) => pairCode(codeFromScan(text)), (err) => { sStatus.textContent = err; });
+    // If we were navigated away while getUserMedia was resolving, scanGen moved on:
+    // stop this orphaned stream right now. Otherwise register it as the active scanner.
+    if (myGen !== scanGen) { try { stop(); } catch {} }
+    else activeScanStop = stop;
   };
 
   if (auto && prefill) { pairCode(prefill); return; } // arrived via QR URL -> pair now
@@ -344,7 +394,7 @@ function viewPair(root, prefill = '', auto = false) {
     input,
     el('button', { className: 'link', onclick: () => pairCode(input.value) }, 'pair with pasted code'),
     status,
-    el('button', { className: 'link back', onclick: () => viewMachines(root) }, '← machines')));
+    el('button', { className: 'link back', onclick: () => leaveScanner(() => viewMachines(root)) }, '← machines')));
 }
 
 function viewTerminal(root, machine) {
@@ -503,7 +553,10 @@ function viewTerminal(root, machine) {
 
   handle = {
     sendCtl: (obj) => { current.send && current.send(encodeControl(te.encode(JSON.stringify(obj)))); focus(); },
-    close: () => { session && session.stop(); try { current.send = null; } catch {} dispose(); },
+    // Order matters: stop() prevents a NEW attempt; abort() tears down the LIVE one
+    // (closing pc/dc so its read loop unwinds and stops writing) BEFORE dispose()
+    // frees the terminal — otherwise an inbound frame races a disposed xterm.
+    close: () => { session && session.stop(); try { current.abort && current.abort(); } catch {} try { current.send = null; } catch {} dispose(); },
   };
 
   session = runSession({
@@ -511,7 +564,15 @@ function viewTerminal(root, machine) {
     onState: (state, attempt) => {
       if (state === 'connected') { setPill('● live', 'ok'); window.__attached = true; term.focus(); if (reconnecting) { reconnecting = false; term.write('\r\n[mir] reconnected\r\n'); } }
       else if (state === 'connecting') setPill('⟳ connecting', 'wait');
-      else if (state === 'reconnecting') { reconnecting = true; setPill('⟳ reconnecting' + (attempt ? ' (' + attempt + ')' : ''), 'wait'); if (attempt === 0) term.write('\r\n[mir] connection lost — reconnecting…\r\n'); }
+      else if (state === 'reconnecting') {
+        // Edge-trigger the terminal line on the connected -> reconnecting transition
+        // ONLY (reconnecting was false). The reconnect loop re-emits 'reconnecting' on
+        // every retry; writing per-emit (the old attempt===0 check) floods the terminal.
+        const firstLossLine = !reconnecting;
+        reconnecting = true;
+        setPill('⟳ reconnecting' + (attempt ? ' (' + attempt + ')' : ''), 'wait');
+        if (firstLossLine) term.write('\r\n[mir] connection lost — reconnecting…\r\n');
+      }
       else if (state === 'failed') { setPill('⊘ tap to retry', 'failed'); term.write('\r\n[mir] couldn\'t reconnect — tap ⊘ to retry\r\n'); }
     },
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),

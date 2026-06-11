@@ -7,7 +7,34 @@ Wants=network-online.target
 # /etc/mir-signal.env (created by deploy/turn/setup-coturn.sh) holds MIR_TURN_SECRET,
 # shared with coturn so mir-signal can mint ephemeral TURN credentials. Optional.
 EnvironmentFile=-/etc/mir-signal.env
-ExecStart=/usr/local/bin/mir-signal --addr :80 --tls-addr :443 --tls-cert /etc/ssl/mir-signal/cert.pem --tls-key /etc/ssl/mir-signal/key.pem --webroot /opt/mir-web --turn-url turn:16.171.89.172:3478
+#
+# CSP connect-src: use the REPEATABLE --csp-connect-src flag, one origin per
+# occurrence. The binary joins these tokens VERBATIM into the CSP header, so the
+# 'self' keyword must keep its single quotes in the emitted policy.
+#
+# Do NOT move this into MIR_CSP_CONNECT_SRC in the EnvironmentFile: systemd's
+# EnvironmentFile parser mangles a value whose first token is single-quoted, so
+#   MIR_CSP_CONNECT_SRC='self' https://relay...   ->   selfhttps://relay...
+# (the quotes are stripped and the leading space with them).
+#
+# Note the systemd ExecStart quoting too: systemd removes one layer of quoting
+# from each word, so to deliver the literal argv token 'self' (quotes included,
+# as CSP requires) the 'self' token is wrapped in DOUBLE quotes -> "'self'".
+# The URL tokens have no special characters and are passed bare.
+#
+# TLS: the --tls-* flags below are os.Stat-gated by the binary — it only enters
+# the HTTPS branch when BOTH cert and key files exist. On a Cloudflare-Flexible
+# (HTTP-only, no cert) box it logs a warning and serves HTTP-only instead of
+# crash-looping, so it is safe to leave these flags in for an eventual Full
+# (strict) cutover (just drop the PEM files into /etc/ssl/mir-signal/).
+ExecStart=/usr/local/bin/mir-signal --addr :80 \
+  --tls-addr :443 --tls-cert /etc/ssl/mir-signal/cert.pem --tls-key /etc/ssl/mir-signal/key.pem \
+  --webroot /opt/mir-web --turn-url turn:16.171.89.172:3478 \
+  --csp-connect-src "'self'" \
+  --csp-connect-src https://relay.sourceful-labs.net \
+  --csp-connect-src wss://relay.sourceful-labs.net \
+  --csp-connect-src https://term.sourceful-labs.net \
+  --csp-connect-src wss://term.sourceful-labs.net
 Restart=always
 RestartSec=2
 User=mirsignal

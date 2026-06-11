@@ -2,11 +2,36 @@ package cli
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
+	"io"
 	"strings"
 	"testing"
 
+	"github.com/srcful/terminal-relay/go/internal/peer"
 	"github.com/srcful/terminal-relay/go/internal/version"
 )
+
+// TestIsCleanDetach: a normal peer disconnect (data channel closed) or io.EOF is a
+// clean exit (nil-worthy); a real failure is not. This is what lets single-machine
+// `attach` stop printing "error: …"/exit 1 on an ordinary agent detach.
+func TestIsCleanDetach(t *testing.T) {
+	if !isCleanDetach(peer.ErrDataChannelClosed) {
+		t.Error("ErrDataChannelClosed should be a clean detach")
+	}
+	if !isCleanDetach(fmt.Errorf("attach %s: %w", "box", peer.ErrDataChannelClosed)) {
+		t.Error("wrapped ErrDataChannelClosed should be a clean detach")
+	}
+	if !isCleanDetach(io.EOF) {
+		t.Error("io.EOF should be a clean detach")
+	}
+	if isCleanDetach(errors.New("dial timeout")) {
+		t.Error("an arbitrary error must not be treated as a clean detach")
+	}
+	if isCleanDetach(nil) {
+		t.Error("nil is not a detach error")
+	}
+}
 
 func TestRunVersion(t *testing.T) {
 	var out, errb bytes.Buffer
