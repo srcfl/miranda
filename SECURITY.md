@@ -62,7 +62,12 @@ the network is hostile — provided the trust roots below are intact.
 2. **Your passkey / iCloud Keychain** (browser) or your **owner key file** (CLI).
    Whoever holds these is you.
 3. **The target machine.** The agent runs a real shell as you; a compromised host
-   is game over (that is true of SSH too).
+   is game over (that is true of SSH too). **Run the agent as a dedicated,
+   low-privilege user — never as root.** The shell it spawns inherits the agent's
+   privileges, so anyone who reaches that shell gets exactly that user's rights;
+   running as root turns a single agent compromise (or a leaked pairing token)
+   into full control of the box. Give it its own unprivileged account, no
+   passwordless sudo, and only the access that account genuinely needs.
 4. **The code you run.** This is why open source + verifiable builds matter (see
    roadmap). Do **not** install binaries fetched blindly from the relay.
 5. **The browser JavaScript served by `term.sourceful-labs.net`.** When the SPA is
@@ -103,7 +108,7 @@ these controls to every Cloudflare hostname that routes to `mir-signal`.
   edge can rate-limit the initial HTTP upgrade request, but it will not inspect
   frames after the socket is established.
 - **Monitor TURN as a paid abuse surface.** `/turn-credentials` issues coturn REST
-  credentials when `TR_TURN_SECRET` and `--turn-url` are configured. The current
+  credentials when `MIR_TURN_SECRET` and `--turn-url` are configured. The current
   credential TTL is 12 hours, so an exposed credential can consume relay bandwidth
   until expiry. Watch both Cloudflare request volume and coturn allocation logs;
   rotate the shared secret and close TURN firewall ports if abuse appears.
@@ -113,11 +118,14 @@ these controls to every Cloudflare hostname that routes to `mir-signal`.
   scripts/assets from the same origin and `connect-src` to the live signaling
   hostnames.
 - **Keep the WebAuthn RP ID boundary small and intentional.** The browser code
-  currently uses `sourceful-labs.net` as the RP ID so passkeys work across
-  subdomains. That means any trusted web origin under `sourceful-labs.net` capable
-  of running Miranda client code is inside the owner-key trust boundary.
-  Do not delegate arbitrary subdomains or host untrusted JavaScript under this
-  registrable domain without revisiting the RP ID and re-enrollment plan.
+  uses `term.sourceful-labs.net` — the exact app host — as the RP ID, so the
+  owner passkey is bound to that single origin. Sibling `*.sourceful-labs.net`
+  subdomains (including `relay`) are therefore **outside** the owner-key trust
+  boundary: a passkey scoped to `term.sourceful-labs.net` cannot be exercised by
+  another subdomain, and the registrable parent domain is **not** the RP ID.
+  Keep it that way: do not widen the RP ID to the parent domain to "share"
+  passkeys across subdomains without a deliberate re-enrollment plan, since that
+  would pull every such subdomain into the trust boundary.
 - **Require pairing safety-number confirmation.** A scanned/pasted pairing code is
   not enough for high-assurance pairing. The operator and browser/CLI user must
   compare the printed `safety number: xxxx-xxxx-xxxx-xxxx` out of band and abort

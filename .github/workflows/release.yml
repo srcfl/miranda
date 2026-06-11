@@ -15,7 +15,10 @@ jobs:
           fetch-depth: 0 # full history for changelog
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.x"
+          # Pin an exact floor, not "1.26.x": go.mod's toolchain directive pins
+          # go1.26.4 for the stdlib CVE fixes, and the wildcard guarantees no
+          # minimum version (setup-go could resolve an older patch).
+          go-version: "1.26.4"
           cache-dependency-path: go/go.sum # module lives in go/, not repo root
       - uses: goreleaser/goreleaser-action@v7
         with:
