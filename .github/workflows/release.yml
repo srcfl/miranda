@@ -5,6 +5,7 @@ on:
 
 permissions:
   contents: write # required to create the GitHub Release
+  id-token: write # required for cosign keyless signing (Fulcio OIDC token exchange)
 
 jobs:
   goreleaser:
@@ -20,6 +21,10 @@ jobs:
           # minimum version (setup-go could resolve an older patch).
           go-version: "1.26.4"
           cache-dependency-path: go/go.sum # module lives in go/, not repo root
+      # cosign must be on PATH before goreleaser: the `signs:` block shells out to
+      # it to keyless-sign checksums.txt. No key material is configured — signing
+      # uses the job's OIDC identity (hence id-token: write above).
+      - uses: sigstore/cosign-installer@v3
       - uses: goreleaser/goreleaser-action@v7
         with:
           version: "~> v2"

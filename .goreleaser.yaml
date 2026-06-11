@@ -70,9 +70,40 @@ archives:
 checksum:
   name_template: "checksums.txt"
   algorithm: sha256
-  # Follow-up (tracked): cosign-sign checksums.txt so the installer can verify a
-  # signature, not just the digest — see the "Signed, checksummed releases"
-  # roadmap item in SECURITY.md.
+
+# Cosign keyless signing of checksums.txt (Sigstore / Fulcio / Rekor).
+#
+# Trust chain: checksums.txt pins the SHA256 of every release archive, and the
+# installer / `mir self-update` verify each downloaded archive against it. That
+# digest is only trustworthy if checksums.txt itself is authentic — otherwise an
+# attacker who can publish a release could swap both an archive AND its checksum.
+# This block closes that gap by signing checksums.txt with cosign.
+#
+# "Keyless" means there is NO long-lived signing key to store or leak: cosign
+# requests a short-lived (~10 min) certificate from Fulcio, bound to the CI job's
+# GitHub Actions OIDC identity (the release workflow's SAN), and records the
+# signature in the Rekor transparency log. Verification (see install.sh and
+# selfupdate/verify.go) pins that SAN, so a valid signature proves checksums.txt
+# was produced by THIS repo's release workflow on a tag push — not by anyone else
+# with write access to the releases page.
+#
+# Produces checksums.txt.sig (signature) and checksums.txt.pem (the Fulcio
+# signing cert) as release assets. Requires `id-token: write` in the workflow
+# (OIDC) and cosign on PATH — both wired up in .github/workflows/release.yml.
+signs:
+  - cmd: cosign
+    artifacts: checksum # sign checksums.txt only; its digest already covers every binary
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.pem"
+    # ${artifact}/${signature}/${certificate} are expanded by GoReleaser per file.
+    # --yes skips cosign's interactive confirmation (no TTY in CI).
+    args:
+      - sign-blob
+      - "--yes"
+      - "--output-signature=${signature}"
+      - "--output-certificate=${certificate}"
+      - "${artifact}"
+    output: true # echo cosign's stdout/stderr into the release log
 
 release:
   github:

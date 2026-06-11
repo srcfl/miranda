@@ -42,6 +42,11 @@ type Release struct {
 	AssetURL     string // archive for this binary/os/arch
 	AssetName    string // archive filename (matched against checksums.txt)
 	ChecksumsURL string
+	// Cosign keyless signing artifacts for checksums.txt. Both stay empty for
+	// releases cut before signing existed; Apply() degrades gracefully in that
+	// case (and whenever cosign is not installed locally).
+	ChecksumsSigURL  string // checksums.txt.sig  (signature)
+	ChecksumsCertURL string // checksums.txt.pem  (Fulcio signing cert)
 }
 
 type ghRelease struct {
@@ -82,6 +87,10 @@ func (c *Client) Latest() (*Release, error) {
 			rel.AssetURL = a.URL
 		case "checksums.txt":
 			rel.ChecksumsURL = a.URL
+		case "checksums.txt.sig":
+			rel.ChecksumsSigURL = a.URL
+		case "checksums.txt.pem":
+			rel.ChecksumsCertURL = a.URL
 		}
 	}
 	if rel.AssetURL == "" {
