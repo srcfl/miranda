@@ -12,6 +12,7 @@ import { listMachines, addMachine } from './store.js';
 import { pairWithCode } from './pair.js';
 import { confirmPairingSafety, machineAfterConfirmedPairing, pendingPairingConfirmation } from './pairing/confirm.js';
 import { registerPasskey, signInPasskey, devOwnerKey, passkeySupported, isLocalhost } from './identity.js';
+import { makeKeybar, shouldShowKeybar } from './ui/keybar.js';
 import jsQR from '/vendor/jsqr.js';
 
 const te = new TextEncoder();
@@ -544,6 +545,21 @@ function viewTerminal(root, machine) {
 
   const { term, current, dispose } = makeTerminal(termBox);
   term.write('[mir] connecting to ' + (machine.name || machine.machine_id) + '…\r\n');
+
+  // mobile keyboard accessory bar: Esc / Ctrl / Tab / arrows / extras, only on
+  // touch (coarse-pointer) devices so desktop keeps a clean terminal. Its presses
+  // go through the SAME reconnect-safe path as typed keys — current.send is read
+  // LIVE each press and the raw bytes are framed with encodeData, byte-identical
+  // to term.onData — so the bar keeps working across reconnects (current.send is
+  // swapped per (re)connect, never captured here). preventDefault on the buttons'
+  // pointerdown keeps focus on the terminal so the soft keyboard stays up.
+  if (shouldShowKeybar()) {
+    const { el: keybar } = makeKeybar(
+      (bytes) => { current.send && current.send(encodeData(bytes)); },
+      () => term.focus(),
+    );
+    view.append(keybar);
+  }
 
   // topbar status pill: reflects the live connection state; tap to retry when it has
   // given up. The keystroke path is durable (current.send), swapped per (re)connect.
