@@ -1,0 +1,10 @@
+{
+  "wallet": "C2XYPfExbj6azVqYLWeUphzsdKK2dQ53dm83Brd3THmS",
+  "wallet_priv": "fb0d9e4a24019fc5d35ba3d44561d1b03d111ff670347af59c27d57304dafcd5",
+  "device": "a1b2c3d4e5f60718",
+  "x25519": "269863f7f8d945c83cb429b6f16ab5655229a70b08272318267f41b1e8a28613",
+  "ts": 1749600000,
+  "canonical": "{\"v\":1,\"wallet\":\"C2XYPfExbj6azVqYLWeUphzsdKK2dQ53dm83Brd3THmS\",\"device\":\"a1b2c3d4e5f60718\",\"x25519\":\"269863f7f8d945c83cb429b6f16ab5655229a70b08272318267f41b1e8a28613\",\"ts\":1749600000}",
+  "sig": "T5qdAoXkYPBaJmdihCpJdCTVQteMJasBykpfJMYN461wUxz4HLcHxrspQAenVbNbKVtkoKEC4HvK6UNb7WVwzKT",
+  "record": "{\"v\":1,\"wallet\":\"C2XYPfExbj6azVqYLWeUphzsdKK2dQ53dm83Brd3THmS\",\"device\":\"a1b2c3d4e5f60718\",\"x25519\":\"269863f7f8d945c83cb429b6f16ab5655229a70b08272318267f41b1e8a28613\",\"ts\":1749600000,\"sig\":\"T5qdAoXkYPBaJmdihCpJdCTVQteMJasBykpfJMYN461wUxz4HLcHxrspQAenVbNbKVtkoKEC4HvK6UNb7WVwzKT\"}"
+}

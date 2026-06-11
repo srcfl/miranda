@@ -27,6 +27,7 @@ const SHELL = [
   '/src/app.js',
   '/src/boot.js',
   '/src/identity.js',
+  '/src/identity/binding.js',
   '/src/identity/owner.js',
   '/src/identity/wallet.js',
   '/src/net/backoff.js',
