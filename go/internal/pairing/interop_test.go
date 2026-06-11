@@ -17,7 +17,7 @@ import (
 )
 
 var (
-	fxToken   = mustHex("00112233445566778899aabbccddeeff")            // 16-byte token
+	fxToken   = mustHex("00112233445566778899aabbccddeeff") // 16-byte token
 	fxInitEph = mustHex("0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20")
 	fxRespEph = mustHex("2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40")
 	fxOwner   = mustHex("a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf") // owner pub
@@ -31,7 +31,11 @@ type fixedReader struct {
 	pos  int
 }
 
-func (r *fixedReader) Read(p []byte) (int, error) { n := copy(p, r.data[r.pos:]); r.pos += n; return n, nil }
+func (r *fixedReader) Read(p []byte) (int, error) {
+	n := copy(p, r.data[r.pos:])
+	r.pos += n
+	return n, nil
+}
 
 type pairVectors struct {
 	Token     string `json:"token"`
