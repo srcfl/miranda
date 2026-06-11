@@ -1,7 +1,10 @@
 // go/internal/signal/proofstore.go
 package signal
 
-import "crypto/subtle"
+import (
+	"crypto/subtle"
+	"time"
+)
 
 const (
 	// defaultMaxAgentProofs bounds how many learned registration proofs the relay
@@ -90,3 +93,92 @@ func (p *proofStore) evictLRU() {
 }
 
 func (p *proofStore) len() int { return len(p.entries) }
+
+// flapCounter tracks, per owner|machine slot, the timestamps of recent agent
+// replacements within a sliding window. It exists to detect the same-identity
+// register ping-pong: two agents under one owner|machine each tearing the other
+// down every ~1s. When a slot is replaced more than `threshold` times inside
+// `window`, record reports it so the caller can emit a single alertable
+// event=agent_flap line.
+//
+// Like proofStore it is NOT internally synchronized — the Server holds s.mu
+// around record — and it is entry-count bounded so a flood of distinct slots
+// cannot grow it without limit. When full it evicts the slot whose most recent
+// replacement is oldest (a slot that is actively flapping is refreshed on every
+// replacement, so it is the last evicted).
+type flapCounter struct {
+	threshold int
+	window    time.Duration
+	max       int
+	slots     map[string]*flapSlot
+}
+
+type flapSlot struct {
+	stamps []time.Time // replacement times within the window, oldest first
+}
+
+func newFlapCounter(threshold int, window time.Duration, max int) *flapCounter {
+	if max <= 0 {
+		max = defaultMaxAgentProofs
+	}
+	return &flapCounter{
+		threshold: threshold,
+		window:    window,
+		max:       max,
+		slots:     map[string]*flapSlot{},
+	}
+}
+
+// record registers a replacement of slot k at time now. It prunes timestamps
+// older than the window, then reports whether the slot has now flapped (more
+// than threshold replacements inside the window) along with the current count.
+func (f *flapCounter) record(k string, now time.Time) (flapped bool, count int) {
+	s := f.slots[k]
+	if s == nil {
+		if len(f.slots) >= f.max {
+			f.evictOldest()
+		}
+		s = &flapSlot{}
+		f.slots[k] = s
+	}
+	cutoff := now.Add(-f.window)
+	// Drop stamps that have aged out of the window. stamps is append-only in time
+	// order, so the survivors are a suffix.
+	keep := s.stamps[:0]
+	for _, t := range s.stamps {
+		if t.After(cutoff) {
+			keep = append(keep, t)
+		}
+	}
+	s.stamps = append(keep, now)
+	count = len(s.stamps)
+	return count > f.threshold, count
+}
+
+// evictOldest removes the slot whose most recent replacement is the oldest. O(n);
+// only runs once the counter is at capacity. A slot with no stamps (shouldn't
+// happen in practice) sorts as oldest and is evicted first.
+func (f *flapCounter) evictOldest() {
+	var victim string
+	var oldest time.Time
+	first := true
+	for k, s := range f.slots {
+		last := s.last()
+		if first || last.Before(oldest) {
+			victim, oldest, first = k, last, false
+		}
+	}
+	if !first {
+		delete(f.slots, victim)
+	}
+}
+
+// last returns the most recent stamp, or the zero time if there are none.
+func (s *flapSlot) last() time.Time {
+	if len(s.stamps) == 0 {
+		return time.Time{}
+	}
+	return s.stamps[len(s.stamps)-1]
+}
+
+func (f *flapCounter) len() int { return len(f.slots) }

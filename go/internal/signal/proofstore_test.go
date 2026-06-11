@@ -4,6 +4,7 @@ package signal
 import (
 	"strconv"
 	"testing"
+	"time"
 )
 
 func TestProofStoreTOFUAndMatch(t *testing.T) {
@@ -91,5 +92,106 @@ func TestProofStoreEvictsLeastRecentlySeen(t *testing.T) {
 	}
 	if !p.ok("k|cold", "") {
 		t.Fatal("least-recently-seen slot should have been evicted (now open again)")
+	}
+}
+
+// TestFlapCounterFiresAboveThreshold is the core alert logic: with threshold 3,
+// the 4th replacement inside the window is the first to report a flap. This is
+// the same-identity ping-pong (two agents under one owner|machine each replacing
+// the other every ~1s).
+func TestFlapCounterFiresAboveThreshold(t *testing.T) {
+	f := newFlapCounter(3, 30*time.Second, 8)
+	base := time.Unix(1_700_000_000, 0)
+	// 1s apart, well inside the 30s window.
+	for i := 1; i <= 3; i++ {
+		flapped, count := f.record("o|m", base.Add(time.Duration(i)*time.Second))
+		if flapped {
+			t.Fatalf("replacement %d (count=%d) must not flap at threshold 3", i, count)
+		}
+		if count != i {
+			t.Fatalf("replacement %d: count=%d, want %d", i, count, i)
+		}
+	}
+	flapped, count := f.record("o|m", base.Add(4*time.Second))
+	if !flapped {
+		t.Fatalf("4th replacement inside window must flap (count=%d)", count)
+	}
+	if count != 4 {
+		t.Fatalf("count=%d, want 4", count)
+	}
+}
+
+// TestFlapCounterAgesOutOldReplacements verifies the sliding window: replacements
+// older than the window do not count, so a slowly-restarting agent never trips
+// the alert.
+func TestFlapCounterAgesOutOldReplacements(t *testing.T) {
+	f := newFlapCounter(3, 30*time.Second, 8)
+	base := time.Unix(1_700_000_000, 0)
+	// Four replacements spaced 20s apart: any 30s window holds at most 2, so it
+	// must never flap.
+	for i := 0; i < 4; i++ {
+		flapped, count := f.record("o|m", base.Add(time.Duration(i)*20*time.Second))
+		if flapped {
+			t.Fatalf("spaced replacement %d must not flap (count=%d)", i, count)
+		}
+		if count > 2 {
+			t.Fatalf("window should retain at most 2 stamps, got count=%d at i=%d", count, i)
+		}
+	}
+}
+
+// TestFlapCounterIsPerKey verifies one flapping slot does not implicate a
+// different owner|machine.
+func TestFlapCounterIsPerKey(t *testing.T) {
+	f := newFlapCounter(3, 30*time.Second, 8)
+	base := time.Unix(1_700_000_000, 0)
+	for i := 1; i <= 4; i++ {
+		f.record("hot|m", base.Add(time.Duration(i)*time.Second))
+	}
+	flapped, count := f.record("calm|m", base.Add(time.Second))
+	if flapped {
+		t.Fatalf("a quiet key must not inherit another key's flap (count=%d)", count)
+	}
+	if count != 1 {
+		t.Fatalf("quiet key count=%d, want 1", count)
+	}
+}
+
+// TestFlapCounterBoundsGrowth is the DoS guard mirroring the proof store: a flood
+// of distinct slots must not grow the counter past its cap.
+func TestFlapCounterBoundsGrowth(t *testing.T) {
+	const max = 16
+	f := newFlapCounter(3, 30*time.Second, max)
+	base := time.Unix(1_700_000_000, 0)
+	for i := 0; i < 10*max; i++ {
+		f.record("owner|"+strconv.Itoa(i), base.Add(time.Duration(i)*time.Second))
+		if f.len() > max {
+			t.Fatalf("flap counter grew past cap: len=%d max=%d after %d records", f.len(), max, i+1)
+		}
+	}
+	if f.len() != max {
+		t.Fatalf("flap counter should saturate at the cap: len=%d max=%d", f.len(), max)
+	}
+}
+
+// TestFlapCounterEvictsOldest verifies an actively-flapping slot survives
+// eviction (it is refreshed on every replacement) while a cold slot is dropped.
+func TestFlapCounterEvictsOldest(t *testing.T) {
+	const max = 2
+	f := newFlapCounter(3, time.Hour, max)
+	base := time.Unix(1_700_000_000, 0)
+	f.record("k|cold", base)                 // oldest, never touched again
+	f.record("k|hot", base.Add(time.Second)) // will be refreshed below
+	// Refresh "hot" so "cold" is the oldest-by-last-replacement victim.
+	f.record("k|hot", base.Add(2*time.Second))
+	f.record("k|new", base.Add(3*time.Second)) // forces one eviction (cold)
+	if f.len() != max {
+		t.Fatalf("len=%d, want %d", f.len(), max)
+	}
+	if _, ok := f.slots["k|cold"]; ok {
+		t.Fatal("least-recently-replaced slot must be evicted")
+	}
+	if _, ok := f.slots["k|hot"]; !ok {
+		t.Fatal("recently-refreshed slot must survive eviction")
 	}
 }
