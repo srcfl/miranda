@@ -48,8 +48,9 @@ func main() {
 	flag.Parse()
 
 	// Default to timestamped log.Printf. Lstdflags gives date+time so each relay
-	// event line is sortable in production logs.
-	log.SetFlags(log.LstdFlags)
+	// event line is sortable in production logs; LUTC keeps relay timestamps in
+	// UTC to match the agent's logs, so the two sides correlate during an incident.
+	log.SetFlags(log.LstdFlags | log.LUTC)
 
 	s := signal.New()
 	s.Logf = log.Printf // structured per-event relay lines (register/replace/reject/gone/attach/flap/stats)
