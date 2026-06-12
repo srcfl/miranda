@@ -39,3 +39,38 @@ export function mnemonicToSeed(mnemonic, passphrase = '') {
   const salt = enc.encode(('mnemonic' + passphrase).normalize('NFKD'));
   return pbkdf2(sha512, m, salt, { c: 2048, dkLen: 64 });
 }
+
+const wordIndexMap = (() => {
+  const m = new Map();
+  for (let i = 0; i < wordlist.length; i++) m.set(wordlist[i], i);
+  return m;
+})();
+
+// mnemonicToEntropy reverses entropyToMnemonic: maps words back to entropy and
+// verifies the BIP39 checksum. Throws on an unknown word, bad word count, or
+// checksum mismatch. Mirrors go/internal/bip39/bip39.go.
+export function mnemonicToEntropy(mnemonic) {
+  const words = mnemonic.normalize('NFKD').trim().split(/\s+/);
+  const n = words.length;
+  if (n < 12 || n > 24 || n % 3 !== 0) throw new Error(`bip39: invalid word count ${n} (want 12,15,18,21,24)`);
+  const totalBits = n * 11;
+  const csBits = totalBits / 33;
+  const entBits = totalBits - csBits;
+
+  const bits = [];
+  for (const w of words) {
+    const idx = wordIndexMap.get(w);
+    if (idx === undefined) throw new Error(`bip39: unknown word ${JSON.stringify(w)}`);
+    for (let b = 10; b >= 0; b--) bits.push((idx >> b) & 1);
+  }
+
+  const entropy = new Uint8Array(entBits / 8);
+  for (let i = 0; i < entBits; i++) if (bits[i]) entropy[i >> 3] |= 1 << (7 - (i & 7));
+
+  const hash = sha256(entropy);
+  for (let i = 0; i < csBits; i++) {
+    const want = (hash[i >> 3] >> (7 - (i & 7))) & 1;
+    if (bits[entBits + i] !== want) throw new Error('bip39: checksum mismatch');
+  }
+  return entropy;
+}

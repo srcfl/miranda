@@ -110,6 +110,16 @@ mir wallet import-phrase    restore prf from a phrase (re-derives everything, no
 
 `export-phrase`/`import-phrase` are the opt-in backup path. Default: phrase never shown.
 
+### CLI identity model (decided 2026-06-12, B1.3)
+
+The CLI client previously stored a **directly-generated** X25519 owner key (`owner.json:
+owner_priv`) with no prf root, so there was nothing to derive a wallet from. Resolved:
+**new identities are prf-rooted** — `owner.json` gains a 32-byte `secret` that derives
+**both** the X25519 transport key (`DeriveOwnerKey`) and the wallet (`DeriveWallet`).
+**Legacy** identities (no `secret`) keep working for transport; `mir wallet` reports they
+have no wallet, and `mir keygen --wallet` re-keys into a prf-rooted identity (new
+`owner_id` → re-pair, matching Fork 2's "re-pair to upgrade"). No forced migration.
+
 ---
 
 ## What stays unchanged (guardrails)

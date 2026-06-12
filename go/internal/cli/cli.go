@@ -65,6 +65,8 @@ func (a *app) run(argv []string) int {
 		return a.exit(a.cmdUp(argv[1:]))
 	case "pair":
 		return a.exit(a.cmdPair(argv[1:]))
+	case "wallet":
+		return a.exit(a.cmdWallet(argv[1:]))
 	default:
 		a.usage()
 		return 2
@@ -81,5 +83,5 @@ func (a *app) exit(err error) int {
 }
 
 func (a *app) usage() {
-	fmt.Fprintln(a.errOut, "usage: "+a.binary+" <up|attach|list|pair|enroll|pair-dev|keygen|add-machine|run|self-update|--version> [flags]")
+	fmt.Fprintln(a.errOut, "usage: "+a.binary+" <up|attach|list|pair|enroll|pair-dev|keygen|wallet|add-machine|run|self-update|--version> [flags]")
 }

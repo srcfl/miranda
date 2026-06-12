@@ -3,6 +3,7 @@ package identity
 
 import (
 	"crypto/ed25519"
+	"fmt"
 
 	"github.com/srcful/terminal-relay/go/internal/base58"
 	"github.com/srcful/terminal-relay/go/internal/bip39"
@@ -29,18 +30,27 @@ type Wallet struct {
 // re-derives the same wallet without the passkey. Mirrors
 // web/src/identity/wallet.js exactly.
 func DeriveWallet(prf []byte) (*Wallet, error) {
+	return DeriveWalletAccount(prf, 0)
+}
+
+// DeriveWalletAccount derives HD sub-account `account` (m/44'/501'/account'/0').
+func DeriveWalletAccount(prf []byte, account uint32) (*Wallet, error) {
 	mnemonic, err := bip39.EntropyToMnemonic(prf)
 	if err != nil {
 		return nil, err
 	}
-	return WalletFromMnemonic(mnemonic)
+	return walletFromMnemonicPath(mnemonic, fmt.Sprintf("m/44'/501'/%d'/0'", account))
 }
 
 // WalletFromMnemonic derives the account-0 wallet from a BIP39 mnemonic (the
 // import path). Empty BIP39 passphrase, matching DeriveWallet.
 func WalletFromMnemonic(mnemonic string) (*Wallet, error) {
+	return walletFromMnemonicPath(mnemonic, WalletPath)
+}
+
+func walletFromMnemonicPath(mnemonic, path string) (*Wallet, error) {
 	seed := bip39.MnemonicToSeed(mnemonic, "")
-	node, err := slip10.DerivePath(seed, WalletPath)
+	node, err := slip10.DerivePath(seed, path)
 	if err != nil {
 		return nil, err
 	}

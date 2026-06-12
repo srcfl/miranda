@@ -53,3 +53,56 @@ func MnemonicToSeed(mnemonic, passphrase string) []byte {
 	}
 	return seed
 }
+
+var wordIndexMap = func() map[string]int {
+	m := make(map[string]int, len(wordlist))
+	for i, w := range wordlist {
+		m[w] = i
+	}
+	return m
+}()
+
+// MnemonicToEntropy reverses EntropyToMnemonic: it maps words back to entropy and
+// verifies the BIP39 checksum. Errors on an unknown word, an invalid word count,
+// or a checksum mismatch. Mirrors web/src/wallet/bip39.js.
+func MnemonicToEntropy(mnemonic string) ([]byte, error) {
+	words := strings.Fields(mnemonic)
+	n := len(words)
+	if n < 12 || n > 24 || n%3 != 0 {
+		return nil, fmt.Errorf("bip39: invalid word count %d (want 12,15,18,21,24)", n)
+	}
+	totalBits := n * 11
+	csBits := totalBits / 33
+	entBits := totalBits - csBits
+
+	bits := make([]bool, 0, totalBits)
+	for _, w := range words {
+		idx, ok := wordIndexMap[w]
+		if !ok {
+			return nil, fmt.Errorf("bip39: unknown word %q", w)
+		}
+		for b := 10; b >= 0; b-- {
+			bits = append(bits, (idx>>uint(b))&1 == 1)
+		}
+	}
+
+	entropy := make([]byte, entBits/8)
+	for i := 0; i < entBits; i++ {
+		if bits[i] {
+			entropy[i/8] |= 1 << (7 - uint(i%8))
+		}
+	}
+
+	hash := sha256.Sum256(entropy)
+	for i := 0; i < csBits; i++ {
+		want := (hash[i/8] >> (7 - uint(i%8))) & 1
+		got := byte(0)
+		if bits[entBits+i] {
+			got = 1
+		}
+		if got != want {
+			return nil, fmt.Errorf("bip39: checksum mismatch")
+		}
+	}
+	return entropy, nil
+}

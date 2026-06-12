@@ -89,12 +89,22 @@ func (a *app) cmdRun(args []string) error {
 func (a *app) cmdKeygen(args []string) error {
 	fs := flag.NewFlagSet("keygen", flag.ExitOnError)
 	dir := fs.String("dir", defaultDir(), "config directory")
+	wallet := fs.Bool("wallet", false, "re-key a legacy identity into a prf-rooted wallet identity (changes owner_id; re-pair needed)")
 	_ = fs.Parse(args)
 	id, err := client.LoadOrCreateIdentity(*dir)
 	if err != nil {
 		return err
 	}
+	if *wallet && !id.HasWallet() {
+		if id, err = client.Rekey(*dir); err != nil {
+			return err
+		}
+		fmt.Fprintln(a.errOut, "re-keyed to a prf-rooted wallet identity — owner_id changed, re-pair your machines")
+	}
 	fmt.Fprintf(a.out, "owner public key:\n  %s\n\nPin it on each machine:\n  mir pair-dev --owner-pub %s\n", id.OwnerPubHex, id.OwnerPubHex)
+	if id.HasWallet() {
+		fmt.Fprintf(a.out, "\nwallet address:\n  %s\n", id.WalletAddress)
+	}
 	return nil
 }
 

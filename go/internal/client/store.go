@@ -2,19 +2,26 @@
 package client
 
 import (
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 
-	"github.com/srcful/terminal-relay/go/internal/noise"
+	"github.com/srcful/terminal-relay/go/internal/identity"
 )
 
-// Identity is the client's SSH-style owner keypair (owner.json).
+// Identity is the client's owner identity (owner.json). New identities are
+// prf-rooted: a 32-byte secret derives BOTH the X25519 transport key (owner_priv)
+// and the Solana wallet (wallet_address). Legacy identities created before B1
+// have only owner_priv (a directly-generated X25519 key) and no secret — they
+// keep working for transport but have no wallet until re-keyed.
 type Identity struct {
-	OwnerPrivHex string `json:"owner_priv"`
-	OwnerPubHex  string `json:"owner_pub"`
+	SecretHex     string `json:"secret,omitempty"`         // 32-byte prf root (hex); absent on legacy identities
+	OwnerPrivHex  string `json:"owner_priv"`               // X25519 transport private key (hex)
+	OwnerPubHex   string `json:"owner_pub"`                // X25519 transport public key (hex) — the legacy owner_id
+	WalletAddress string `json:"wallet_address,omitempty"` // base58 Solana address — the wallet owner_id
 }
 
 // Machine is a known agent (machines.json), pinned by host pubkey.
@@ -41,14 +48,15 @@ func LoadOrCreateIdentity(dir string) (*Identity, error) {
 		}
 	}
 	if id.OwnerPrivHex == "" {
-		priv, pub, err := noise.GenerateStatic()
-		if err != nil {
+		// Fresh identity: prf-rooted. One secret derives transport + wallet.
+		secret := make([]byte, 32)
+		if _, err := rand.Read(secret); err != nil {
 			return nil, err
 		}
-		id.OwnerPrivHex = hex.EncodeToString(priv)
-		id.OwnerPubHex = hex.EncodeToString(pub)
-		data, _ := json.MarshalIndent(id, "", "  ")
-		if err := os.WriteFile(identityPath(dir), data, 0o600); err != nil {
+		if err := id.SetFromSecret(secret); err != nil {
+			return nil, err
+		}
+		if err := SaveIdentity(dir, id); err != nil {
 			return nil, err
 		}
 	}
@@ -56,8 +64,73 @@ func LoadOrCreateIdentity(dir string) (*Identity, error) {
 	return id, nil
 }
 
+// SetFromSecret roots the identity in a 32-byte prf secret, deriving both the
+// X25519 transport key and the Solana wallet from it.
+func (i *Identity) SetFromSecret(secret []byte) error {
+	priv, pub, err := identity.DeriveOwnerKey(secret)
+	if err != nil {
+		return err
+	}
+	w, err := identity.DeriveWallet(secret)
+	if err != nil {
+		return err
+	}
+	i.SecretHex = hex.EncodeToString(secret)
+	i.OwnerPrivHex = hex.EncodeToString(priv)
+	i.OwnerPubHex = hex.EncodeToString(pub)
+	i.WalletAddress = w.Address
+	return nil
+}
+
+// Rekey replaces the identity with a fresh prf-rooted one (new secret -> new
+// owner_id + wallet). Used to migrate a legacy identity or rotate keys. Machines
+// pinned to the old owner_id must be re-paired.
+func Rekey(dir string) (*Identity, error) {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		return nil, err
+	}
+	id := &Identity{}
+	if err := id.SetFromSecret(secret); err != nil {
+		return nil, err
+	}
+	if err := SaveIdentity(dir, id); err != nil {
+		return nil, err
+	}
+	return id, nil
+}
+
+// SaveIdentity writes owner.json with 0600 perms (it holds the root secret).
+func SaveIdentity(dir string, id *Identity) error {
+	data, err := json.MarshalIndent(id, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(identityPath(dir), data, 0o600); err != nil {
+		return err
+	}
+	return os.Chmod(identityPath(dir), 0o600)
+}
+
 func (i *Identity) OwnerPriv() []byte { b, _ := hex.DecodeString(i.OwnerPrivHex); return b }
 func (i *Identity) OwnerPub() []byte  { b, _ := hex.DecodeString(i.OwnerPubHex); return b }
+
+// Secret returns the 32-byte prf root, or nil for a legacy identity.
+func (i *Identity) Secret() []byte { b, _ := hex.DecodeString(i.SecretHex); return b }
+
+// HasWallet reports whether this identity is prf-rooted (and thus has a wallet).
+func (i *Identity) HasWallet() bool { return i.SecretHex != "" }
+
+// Wallet derives the account-0 Solana wallet, or errors for a legacy identity.
+func (i *Identity) Wallet() (*identity.Wallet, error) {
+	if !i.HasWallet() {
+		return nil, fmt.Errorf("this identity predates wallets (no secret root); re-key with `mir keygen --wallet` to create one")
+	}
+	return identity.DeriveWallet(i.Secret())
+}
 
 // AddMachine inserts or updates a known machine by name.
 func AddMachine(dir string, m Machine) error {
