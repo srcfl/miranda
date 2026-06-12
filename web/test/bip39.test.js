@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
-import { entropyToMnemonic, mnemonicToSeed } from '../src/wallet/bip39.js';
+import { entropyToMnemonic, mnemonicToSeed, mnemonicToEntropy } from '../src/wallet/bip39.js';
 import { wordlist } from '../src/wallet/wordlist.js';
 
 test('wordlist integrity', () => {
@@ -34,4 +34,19 @@ test('entropy bounds', () => {
   for (const n of [0, 12, 15, 17, 33]) {
     assert.throws(() => entropyToMnemonic(new Uint8Array(n)));
   }
+});
+
+test('mnemonicToEntropy round-trips and validates checksum', () => {
+  const prf = hexToBytes('00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff');
+  const m = entropyToMnemonic(prf);
+  assert.equal(bytesToHex(mnemonicToEntropy(m)), bytesToHex(prf));
+  for (const n of [16, 32]) {
+    const mm = entropyToMnemonic(new Uint8Array(n));
+    assert.equal(mnemonicToEntropy(mm).length, n);
+  }
+  // unknown word, bad checksum, bad length all throw.
+  assert.throws(() => mnemonicToEntropy('abandon abandon notaword'));
+  const good = entropyToMnemonic(new Uint8Array(32)); // ...abandon art
+  assert.throws(() => mnemonicToEntropy(good.replace(/art$/, 'zoo')));
+  assert.throws(() => mnemonicToEntropy('abandon abandon abandon'));
 });

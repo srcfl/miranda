@@ -54,3 +54,40 @@ func TestEntropyBounds(t *testing.T) {
 		}
 	}
 }
+
+func TestMnemonicToEntropyRoundTrip(t *testing.T) {
+	prf, _ := hex.DecodeString("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff")
+	m, _ := EntropyToMnemonic(prf)
+	got, err := MnemonicToEntropy(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hex.EncodeToString(got) != hex.EncodeToString(prf) {
+		t.Fatalf("round-trip = %x", got)
+	}
+	// zero-entropy anchors round-trip too.
+	for _, n := range []int{16, 32} {
+		mm, _ := EntropyToMnemonic(make([]byte, n))
+		e, err := MnemonicToEntropy(mm)
+		if err != nil || len(e) != n {
+			t.Fatalf("%dB zero round-trip: %v len=%d", n, err, len(e))
+		}
+	}
+}
+
+func TestMnemonicToEntropyRejects(t *testing.T) {
+	// unknown word
+	if _, err := MnemonicToEntropy("abandon abandon notaword"); err == nil {
+		t.Error("unknown word should error")
+	}
+	// bad checksum: 24 valid words but last word swapped to break the checksum.
+	good, _ := EntropyToMnemonic(make([]byte, 32)) // ...abandon art
+	broken := strings.TrimSuffix(good, "art") + "zoo"
+	if _, err := MnemonicToEntropy(broken); err == nil {
+		t.Error("checksum mismatch should error")
+	}
+	// bad length
+	if _, err := MnemonicToEntropy("abandon abandon abandon"); err == nil {
+		t.Error("3-word mnemonic should error")
+	}
+}
