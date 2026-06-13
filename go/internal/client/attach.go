@@ -6,10 +6,19 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/srcful/terminal-relay/go/internal/noise"
 	"github.com/srcful/terminal-relay/go/internal/peer"
 )
+
+// relayHeadStart is how long the relay locator waits before it starts, giving the
+// LAN locator a head start. On the LAN, LAN-direct connects in tens of ms, so it
+// wins inside this window and the relay is never contacted (a successful LAN attach
+// stays relay-free — no relay round-trip, no metadata). When there is no LAN answer
+// the relay starts after this delay, so a remote attach pays only ~this much rather
+// than the full LAN budget. See dialStaggered.
+const relayHeadStart = 200 * time.Millisecond
 
 // Attach connects to the named machine's agent over the first locator that can
 // reach it, runs the Noise KK initiator over that MsgConn, and returns the
@@ -23,7 +32,7 @@ func Attach(ctx context.Context, m Machine, id *Identity, ice []peer.ICEServer, 
 		return nil, nil, nil, fmt.Errorf("this identity has no wallet; run `mir keygen --wallet`")
 	}
 
-	mc, cleanup, err = dialFirst(attachLocators(relayOnly), ctx, m, id, ice)
+	mc, cleanup, err = dialStaggered(ctx, attachLocators(relayOnly), relayHeadStart, m, id, ice)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -50,25 +59,88 @@ func attachLocators(relayOnly bool) []Locator {
 	return []Locator{lanLocator{res: newMDNSResolver()}, relayLocator{}}
 }
 
-// dialFirst tries each locator in order, falling through on ErrUnreachable and
-// aborting on any other (real) error. It returns the MsgConn from the first
-// locator that connects, or the last ErrUnreachable (or a generic "unreachable"
-// error) if none did.
-func dialFirst(locators []Locator, ctx context.Context, m Machine, id *Identity, ice []peer.ICEServer) (peer.MsgConn, func(), error) {
-	var lastErr error
-	for _, loc := range locators {
-		mc, cleanup, err := loc.Dial(ctx, m, id, ice)
-		if errors.Is(err, ErrUnreachable) {
-			lastErr = err
-			continue
-		}
-		if err != nil {
-			return nil, nil, err
-		}
-		return mc, cleanup, nil
+// dialStaggered races the locators "happy-eyeballs" style: locator[0] starts
+// immediately and each later locator starts after an additional headStart, so a
+// LAN that answers wins before the relay is ever contacted. The FIRST locator to
+// return a live MsgConn wins; the others are cancelled and any that also connected
+// is cleaned up. If all fail it returns the most informative error (a real failure
+// in preference to ErrUnreachable). A single locator (relay-only) dials directly.
+func dialStaggered(parent context.Context, locators []Locator, headStart time.Duration, m Machine, id *Identity, ice []peer.ICEServer) (peer.MsgConn, func(), error) {
+	if len(locators) == 0 {
+		return nil, nil, fmt.Errorf("machine %q: no locators", m.Name)
 	}
-	if lastErr == nil {
-		lastErr = fmt.Errorf("machine %q unreachable", m.Name)
+	if len(locators) == 1 {
+		return locators[0].Dial(parent, m, id, ice)
 	}
-	return nil, nil, lastErr
+
+	type dialResult struct {
+		mc      peer.MsgConn
+		cleanup func()
+		err     error
+		i       int
+	}
+	results := make(chan dialResult, len(locators))
+	cancels := make([]context.CancelFunc, len(locators))
+	for i, loc := range locators {
+		cctx, cancel := context.WithCancel(parent)
+		cancels[i] = cancel
+		go func(i int, loc Locator, cctx context.Context) {
+			if i > 0 { // stagger later locators; cancellation pre-empts the wait
+				select {
+				case <-time.After(time.Duration(i) * headStart):
+				case <-cctx.Done():
+					results <- dialResult{err: context.Canceled, i: i}
+					return
+				}
+			}
+			mc, cleanup, err := loc.Dial(cctx, m, id, ice)
+			results <- dialResult{mc, cleanup, err, i}
+		}(i, loc, cctx)
+	}
+
+	var bestErr error
+	for pending := len(locators); pending > 0; pending-- {
+		r := <-results
+		if r.err == nil && r.mc != nil {
+			// Winner. Cancel the losers (keep the winner's ctx alive until its
+			// session ends), and drain+close any loser that also connected.
+			for j := range cancels {
+				if j != r.i {
+					cancels[j]()
+				}
+			}
+			remaining := pending - 1
+			go func() {
+				for ; remaining > 0; remaining-- {
+					lr := <-results
+					if lr.mc != nil && lr.cleanup != nil {
+						lr.cleanup()
+					}
+				}
+			}()
+			winnerCancel := cancels[r.i]
+			return r.mc, func() {
+				if r.cleanup != nil {
+					r.cleanup()
+				}
+				winnerCancel()
+			}, nil
+		}
+		// Track the best error: a real failure beats ErrUnreachable / cancellation.
+		if r.err != nil && !errors.Is(r.err, context.Canceled) {
+			if bestErr == nil || (errors.Is(bestErr, ErrUnreachable) && !errors.Is(r.err, ErrUnreachable)) {
+				bestErr = r.err
+			}
+		}
+	}
+	for _, c := range cancels {
+		c()
+	}
+	if bestErr == nil {
+		if parent.Err() != nil {
+			return nil, nil, parent.Err()
+		}
+		bestErr = fmt.Errorf("machine %q unreachable", m.Name)
+	}
+	return nil, nil, bestErr
 }
