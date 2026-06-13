@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -57,6 +59,36 @@ func TestRunNoArgs(t *testing.T) {
 	var out, errb bytes.Buffer
 	if code := Run(nil, &out, &errb); code != 2 {
 		t.Fatalf("exit = %d, want 2", code)
+	}
+}
+
+// No-args prints the getting-started guide (not just a terse usage line).
+func TestNoArgsShowsGuide(t *testing.T) {
+	var out, errb bytes.Buffer
+	Run(nil, &out, &errb)
+	g := out.String()
+	for _, want := range []string{"mir attach", "mir pair", "wallet", "LAN"} {
+		if !strings.Contains(g, want) {
+			t.Fatalf("guide missing %q:\n%s", want, g)
+		}
+	}
+}
+
+// A legacy (pre-wallet) identity attaching is guided to `mir keygen --wallet`
+// rather than failing with a cryptic handshake/usage error.
+func TestAttachLegacyIdentityGuidesToKeygen(t *testing.T) {
+	t.Setenv("MIR_NO_UPDATE_CHECK", "1")
+	dir := t.TempDir()
+	legacy := `{"owner_priv":"` + strings.Repeat("aa", 32) + `","owner_pub":"` + strings.Repeat("bb", 32) + `"}`
+	if err := os.WriteFile(filepath.Join(dir, "owner.json"), []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	if code := Run([]string{"attach", "--dir", dir, "box"}, &out, &errb); code == 0 {
+		t.Fatal("attach with a wallet-less identity should fail")
+	}
+	if !strings.Contains(errb.String(), "keygen --wallet") || !strings.Contains(errb.String(), "re-paired") {
+		t.Fatalf("expected a keygen + re-pair migration hint, got:\n%s", errb.String())
 	}
 }
 

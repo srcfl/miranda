@@ -38,6 +38,13 @@ type Machine struct {
 func identityPath(dir string) string { return filepath.Join(dir, "owner.json") }
 func machinesPath(dir string) string { return filepath.Join(dir, "machines.json") }
 
+// IdentityExists reports whether an owner identity is already stored in dir, so the
+// CLI can show a one-time intro the first time it creates one.
+func IdentityExists(dir string) bool {
+	_, err := os.Stat(identityPath(dir))
+	return err == nil
+}
+
 // LoadOrCreateIdentity reads owner.json, creating a fresh owner keypair on first use.
 func LoadOrCreateIdentity(dir string) (*Identity, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {

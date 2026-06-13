@@ -138,13 +138,16 @@ func (a *app) pairInitiate(dir, codeStr string, gate sasGate) error {
 	if err != nil {
 		return err
 	}
-	idn, err := client.LoadOrCreateIdentity(dir)
+	idn, err := a.identity(dir)
 	if err != nil {
+		return err
+	}
+	if err := a.requireWallet(idn); err != nil {
 		return err
 	}
 	w, err := idn.Wallet()
 	if err != nil {
-		return fmt.Errorf("pairing needs a wallet; run `mir keygen --wallet`: %w", err)
+		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
