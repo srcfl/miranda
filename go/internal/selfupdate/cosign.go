@@ -36,26 +36,36 @@ func cosignIdentityRegexp(repo string) string {
 // genuinely came from THIS repo's release pipeline. It does NOT attest to the
 // source that was built — only to the checksum file's origin.
 //
-// Degradation policy (mirrors install.sh):
-//   - cosign not on PATH       -> warn once, return nil (checksum-only fallback;
-//     keep self-update working for users without cosign).
+// Degradation policy:
+//   - cosign not on PATH       -> stay SILENT and return nil (checksum-only
+//     fallback). Most users don't have cosign installed, and the per-file SHA256
+//     already guards against a corrupted download, so a successful update must not
+//     look like a failure. Set MIR_REQUIRE_COSIGN to turn this into a hard error.
 //   - signing assets absent    -> if the release predates signing (no .sig/.pem
-//     URLs at all), warn and fall back. If cosign is present AND the assets are
-//     expected but unfetchable, that is a hard failure.
+//     URLs at all), fall back silently (or hard-fail under MIR_REQUIRE_COSIGN). If
+//     cosign is present AND the assets are expected but unfetchable, hard failure.
 //   - verification fails        -> return error; the caller MUST abort the update.
+//   - verification passes       -> emit a positive one-line confirmation via note.
 //
-// warnf receives a single human-readable warning line (no trailing newline) for
-// the fallback cases; pass a stderr writer in production, nil to silence.
-func (c *Client) verifyChecksumsSignature(rel *Release, sums []byte, warnf func(string)) error {
-	warn := func(msg string) {
-		if warnf != nil {
-			warnf(msg)
+// note receives a single human-readable line (no trailing newline) for the success
+// confirmation; pass a stderr writer in production, nil to silence.
+func (c *Client) verifyChecksumsSignature(rel *Release, sums []byte, note func(string)) error {
+	emit := func(msg string) {
+		if note != nil {
+			note(msg)
 		}
+	}
+	// soft degrades a missing-provenance case: silent by default (don't nag the
+	// majority without cosign), a hard error when the operator demands verification.
+	soft := func(reason string) error {
+		if os.Getenv("MIR_REQUIRE_COSIGN") != "" {
+			return fmt.Errorf("%s, and MIR_REQUIRE_COSIGN is set", reason)
+		}
+		return nil
 	}
 
 	if _, err := exec.LookPath("cosign"); err != nil {
-		warn("cosign not found; skipping signature check of checksums.txt (install cosign for supply-chain verification) — falling back to checksum-only")
-		return nil
+		return soft("cosign is not installed, so the release signature was not verified")
 	}
 
 	// A release cut before signing was introduced carries no .sig/.pem. cosign
@@ -63,8 +73,7 @@ func (c *Client) verifyChecksumsSignature(rel *Release, sums []byte, warnf func(
 	// upgrading FROM an old release still works. (The next signed tag is the
 	// first one that will actually exercise verification.)
 	if rel.ChecksumsSigURL == "" || rel.ChecksumsCertURL == "" {
-		warn("release has no cosign signature for checksums.txt (unsigned/legacy release) — falling back to checksum-only")
-		return nil
+		return soft("this release has no cosign signature")
 	}
 
 	sig, err := c.fetch(rel.ChecksumsSigURL)
@@ -107,5 +116,6 @@ func (c *Client) verifyChecksumsSignature(rel *Release, sums []byte, warnf func(
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("cosign verify-blob failed for checksums.txt (possible tampering): %w", err)
 	}
+	emit("✓ verified the release signature (cosign keyless)")
 	return nil
 }

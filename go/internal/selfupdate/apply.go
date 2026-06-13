@@ -18,8 +18,9 @@ import (
 //
 // Verification order matters: we authenticate checksums.txt (cosign keyless,
 // when available — see verifyChecksumsSignature) BEFORE trusting any digest it
-// contains, then check the archive against that now-trusted digest. Warnings for
-// the cosign-absent / unsigned-release fallback paths go to stderr.
+// contains, then check the archive against that now-trusted digest. When cosign
+// isn't installed the update stays quiet (the checksum still guards the download);
+// set MIR_REQUIRE_COSIGN to demand signature verification.
 func (c *Client) Apply(rel *Release, targetPath string) error {
 	archive, err := c.fetch(rel.AssetURL)
 	if err != nil {
@@ -30,7 +31,7 @@ func (c *Client) Apply(rel *Release, targetPath string) error {
 		return fmt.Errorf("download checksums: %w", err)
 	}
 	if err := c.verifyChecksumsSignature(rel, sums, func(msg string) {
-		fmt.Fprintln(os.Stderr, "warning: "+msg)
+		fmt.Fprintln(os.Stderr, msg)
 	}); err != nil {
 		return err
 	}
