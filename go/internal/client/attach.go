@@ -21,9 +21,12 @@ import (
 // DataChannel with the named machine's agent, runs the Noise KK initiator, and
 // returns the established session. Call cleanup when done.
 func Attach(ctx context.Context, m Machine, id *Identity, ice []peer.ICEServer) (mc *peer.DataChannel, sess *noise.Session, cleanup func(), err error) {
-	ownerPubHex := id.OwnerPubHex
+	if !id.HasWallet() {
+		return nil, nil, nil, fmt.Errorf("this identity has no wallet; run `mir keygen --wallet`")
+	}
+	ownerID := id.WalletAddress
 	wsURL := "ws" + strings.TrimPrefix(m.SignalURL, "http") +
-		"/attach?owner_id=" + url.QueryEscape(ownerPubHex) +
+		"/attach?owner_id=" + url.QueryEscape(ownerID) +
 		"&machine_id=" + url.QueryEscape(m.MachineID)
 
 	c, _, err := websocket.Dial(ctx, wsURL, nil)
@@ -44,7 +47,7 @@ func Attach(ctx context.Context, m Machine, id *Identity, ice []peer.ICEServer) 
 		cleanup()
 		return nil, nil, nil, err
 	}
-	offerMsg, _ := json.Marshal(signal.SignalMsg{Type: signal.TypeOffer, SDP: offerSDP})
+	offerMsg, _ := json.Marshal(signal.SignalMsg{Type: signal.TypeOffer, SDP: offerSDP, Binding: id.BindingJSON})
 	if err := c.Write(ctx, websocket.MessageText, offerMsg); err != nil {
 		cleanup()
 		return nil, nil, nil, err

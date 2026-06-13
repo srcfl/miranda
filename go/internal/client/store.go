@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/srcful/terminal-relay/go/internal/identity"
 )
@@ -22,6 +23,8 @@ type Identity struct {
 	OwnerPrivHex  string `json:"owner_priv"`               // X25519 transport private key (hex)
 	OwnerPubHex   string `json:"owner_pub"`                // X25519 transport public key (hex) — the legacy owner_id
 	WalletAddress string `json:"wallet_address,omitempty"` // base58 Solana address — the wallet owner_id
+	DeviceID      string `json:"device_id,omitempty"`      // stable per-identity device id (binding.device)
+	BindingJSON   string `json:"binding,omitempty"`        // cached wallet->x25519 binding (signed at re-key)
 }
 
 // Machine is a known agent (machines.json), pinned by host pubkey.
@@ -79,6 +82,22 @@ func (i *Identity) SetFromSecret(secret []byte) error {
 	i.OwnerPrivHex = hex.EncodeToString(priv)
 	i.OwnerPubHex = hex.EncodeToString(pub)
 	i.WalletAddress = w.Address
+	if i.DeviceID == "" {
+		d := make([]byte, 8)
+		if _, err := rand.Read(d); err != nil {
+			return err
+		}
+		i.DeviceID = hex.EncodeToString(d)
+	}
+	sb, err := w.SignBinding(i.DeviceID, i.OwnerPubHex, time.Now().Unix())
+	if err != nil {
+		return err
+	}
+	rec, err := sb.JSON()
+	if err != nil {
+		return err
+	}
+	i.BindingJSON = rec
 	return nil
 }
 

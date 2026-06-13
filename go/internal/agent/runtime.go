@@ -17,9 +17,30 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/pion/webrtc/v4"
+	"github.com/srcful/terminal-relay/go/internal/identity"
 	"github.com/srcful/terminal-relay/go/internal/peer"
 	"github.com/srcful/terminal-relay/go/internal/signal"
 )
+
+// ownerPubFromBinding verifies the offer's wallet binding and returns the X25519
+// transport key to pin for Noise-KK. owner is the routing wallet (owner_id). There
+// is no legacy hex path: a valid binding whose wallet == owner_id is required.
+func ownerPubFromBinding(bindingJSON, owner string) ([]byte, error) {
+	if bindingJSON == "" {
+		return nil, fmt.Errorf("attach: missing wallet binding")
+	}
+	sb, err := identity.ParseSignedBinding([]byte(bindingJSON))
+	if err != nil {
+		return nil, err
+	}
+	if sb.Wallet != owner {
+		return nil, fmt.Errorf("attach: binding wallet %q != owner_id %q", sb.Wallet, owner)
+	}
+	if err := identity.VerifyBinding(sb); err != nil {
+		return nil, err
+	}
+	return hex.DecodeString(sb.X25519)
+}
 
 // minHealthyUptime is the shortest a signaling connection must stay up before we
 // treat it as a genuinely healthy session whose drop warrants a prompt reconnect.
@@ -332,7 +353,7 @@ func (rt *Runtime) handleOffer(ctx context.Context, c *websocket.Conn, m signal.
 		return // no P2P path (strict P2P) — give up this attach
 	}
 
-	ownerPub, err := hex.DecodeString(owner)
+	ownerPub, err := ownerPubFromBinding(m.Binding, owner)
 	if err != nil {
 		return
 	}

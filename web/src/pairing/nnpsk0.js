@@ -13,6 +13,7 @@ import { chacha20poly1305 } from '@noble/ciphers/chacha';
 import { sha256 } from '@noble/hashes/sha2';
 import { hmac } from '@noble/hashes/hmac';
 import { pskFromToken } from './code.js';
+import { signAuth, verifyAuth } from '../identity/auth.js';
 
 const PROTOCOL_NAME = 'Noise_NNpsk0_25519_ChaChaPoly_SHA256';
 const PROLOGUE = new TextEncoder().encode('terminal-relay/pair/v1');
@@ -225,26 +226,33 @@ export class HandshakeNNpsk0 {
   }
 }
 
-// runInitiator (client): sends ownerPub in msg1, reads agent info from msg2.
+// runInitiator (client): sends PairClaim{wallet} in msg1, reads agent info from
+// msg2, then proves wallet control with msg3 = signAuth(channelBinding).
 // Returns { info, binding }. `ephemeralPriv` is optional (deterministic tests).
-export async function runInitiator(mc, token, ownerPub, ephemeralPriv = null) {
+export async function runInitiator(mc, token, wallet, ephemeralPriv = null) {
   const hs = new HandshakeNNpsk0({ initiator: true, psk: pskFromToken(token), ephemeralPriv });
-  const msg1 = hs.writeMessage(ownerPub);
+  const msg1 = hs.writeMessage(new TextEncoder().encode(JSON.stringify({ wallet: wallet.address })));
   await mc.send(msg1);
   const msg2 = await mc.recv();
   const payload = hs.readMessage(msg2);
   const info = JSON.parse(new TextDecoder().decode(payload));
-  return { info, binding: hs.binding() };
+  const binding = hs.binding();
+  await mc.send(signAuth(wallet, binding)); // msg3, raw 64-byte sig
+  return { info, binding };
 }
 
-// runResponder (agent): reads ownerPub from msg1, sends info in msg2.
-// Returns { ownerPub, binding }. `ephemeralPriv` is optional (deterministic tests).
+// runResponder (agent): reads PairClaim{wallet} from msg1, sends info in msg2,
+// then verifies msg3 (wallet auth over the channel binding). Returns
+// { wallet, binding }. `ephemeralPriv` is optional (deterministic tests).
 export async function runResponder(mc, token, info, ephemeralPriv = null) {
   const hs = new HandshakeNNpsk0({ initiator: false, psk: pskFromToken(token), ephemeralPriv });
   const msg1 = await mc.recv();
-  const ownerPub = hs.readMessage(msg1);
+  const claim = JSON.parse(new TextDecoder().decode(hs.readMessage(msg1)));
   const infoJSON = new TextEncoder().encode(JSON.stringify(info));
   const msg2 = hs.writeMessage(infoJSON);
   await mc.send(msg2);
-  return { ownerPub, binding: hs.binding() };
+  const binding = hs.binding();
+  const sig = await mc.recv(); // msg3
+  if (!verifyAuth(claim.wallet, binding, sig)) throw new Error('pairing: wallet auth failed');
+  return { wallet: claim.wallet, binding };
 }

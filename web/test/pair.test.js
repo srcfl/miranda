@@ -8,6 +8,7 @@ import { hexToBytes } from '@noble/hashes/utils';
 import { encodeCode } from '../src/pairing/code.js';
 import { runResponder } from '../src/pairing/nnpsk0.js';
 import { safetyNumber } from '../src/pairing/sas.js';
+import { deriveWallet } from '../src/identity/wallet.js';
 
 // pairWithCode is the browser pairing entry point. These tests pin its FAILURE
 // handling — the bug being fixed: with no recv timeout and close/error wired only
@@ -15,10 +16,11 @@ import { safetyNumber } from '../src/pairing/sas.js';
 // "pairing…" forever. We drive it with a fake WebSocket and node's mock timers.
 //
 // We import pair.js lazily (after installing the fake WebSocket on globalThis) so the
-// module under test constructs our fake. ownerPub is unused on the failure paths
-// (runInitiator's first await is a recv()), so a 32-byte zero key is fine.
+// module under test constructs our fake. On the failure paths the wallet is only
+// used to build msg1 (runInitiator's first await is a recv()), so any valid wallet
+// is fine; the happy path derives the wallet from the Go vector's prf root.
 
-const ownerPub = new Uint8Array(32);
+const wallet = deriveWallet(new Uint8Array(32));
 // A well-formed code: 16-byte (32-hex) token + an https relay URL passes decodeCode.
 const CODE = encodeCode('https://relay.example.test', new Uint8Array(16).fill(7));
 
@@ -56,7 +58,7 @@ test('rejects (does not hang) when the relay opens but never sends — timeout f
   const ws = installFakeWS();
   mock.timers.enable({ apis: ['setTimeout'] });
   try {
-    const p = pairWithCode(CODE, ownerPub);
+    const p = pairWithCode(CODE, wallet);
     const settled = p.then(() => 'resolved', (e) => e); // capture without throwing yet
     await Promise.resolve();
     ws.created[0].fireOpen(); // socket opens, runInitiator sends msg1 and awaits recv()
@@ -76,7 +78,7 @@ test('rejects (does not hang) when the relay opens but never sends — timeout f
 test('rejects when the relay closes mid-handshake (post-open close wired)', async () => {
   const ws = installFakeWS();
   try {
-    const p = pairWithCode(CODE, ownerPub);
+    const p = pairWithCode(CODE, wallet);
     const settled = p.then(() => 'resolved', (e) => e);
     await Promise.resolve();
     ws.created[0].fireOpen();
@@ -94,7 +96,7 @@ test('rejects when the relay closes mid-handshake (post-open close wired)', asyn
 test('rejects when the relay errors mid-handshake (post-open error wired)', async () => {
   const ws = installFakeWS();
   try {
-    const p = pairWithCode(CODE, ownerPub);
+    const p = pairWithCode(CODE, wallet);
     const settled = p.then(() => 'resolved', (e) => e);
     await Promise.resolve();
     ws.created[0].fireOpen();
@@ -112,7 +114,7 @@ test('rejects when the relay errors mid-handshake (post-open error wired)', asyn
 test('rejects when the relay is unreachable (pre-open error)', async () => {
   const ws = installFakeWS();
   try {
-    const p = pairWithCode(CODE, ownerPub);
+    const p = pairWithCode(CODE, wallet);
     const settled = p.then(() => 'resolved', (e) => e);
     await Promise.resolve();
     ws.created[0].fireError(); // never opened
@@ -127,7 +129,7 @@ test('rejects when the relay is unreachable (pre-open error)', async () => {
 test('rejects when the relay closes before opening (pre-open close)', async () => {
   const ws = installFakeWS();
   try {
-    const p = pairWithCode(CODE, ownerPub);
+    const p = pairWithCode(CODE, wallet);
     const settled = p.then(() => 'resolved', (e) => e);
     await Promise.resolve();
     ws.created[0].fireClose(); // closed before open
@@ -150,7 +152,7 @@ test('completes the handshake and returns the machine + safety number', async ()
   const ws = installFakeWS();
   try {
     const token = hexToBytes(vec.token);
-    const owner = hexToBytes(vec.owner_pub);
+    const vecWallet = deriveWallet(hexToBytes(vec.wallet_prf));
     const goodCode = encodeCode('https://relay.example.test', token);
     const info = JSON.parse(vec.info_json);
 
@@ -172,7 +174,7 @@ test('completes the handshake and returns the machine + safety number', async ()
     // agree on the binding and that the SAS is well-formed.
     const responderP = runResponder(responderMC, token, info, hexToBytes('2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40'));
 
-    const p = pairWithCode(goodCode, owner);
+    const p = pairWithCode(goodCode, vecWallet);
     await Promise.resolve();
     sock[0].fireOpen();
     const result = await p;

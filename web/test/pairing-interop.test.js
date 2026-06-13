@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 import { runInitiator, runResponder } from '../src/pairing/nnpsk0.js';
 import { safetyNumber } from '../src/pairing/sas.js';
+import { deriveWallet } from '../src/identity/wallet.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const v = JSON.parse(readFileSync(join(here, '..', '..', 'testdata', 'pair-interop.json'), 'utf8'));
@@ -32,24 +33,28 @@ function pipe() {
   return [mk(a2b, b2a, 'a2b'), mk(b2a, a2b, 'b2a'), sent];
 }
 
-test('JS NNpsk0 reproduces the Go pairing wire bytes + safety number', async () => {
+test('JS NNpsk0 reproduces the Go pairing wire bytes + wallet auth + safety number', async () => {
   const [clientMC, agentMC, sent] = pipe();
   const token = hexToBytes(v.token);
-  const ownerPub = hexToBytes(v.owner_pub);
+  // The wallet is derived from the SAME prf root the Go vector used, so the JS
+  // side reproduces msg1 (PairClaim) and msg3 (the Ed25519 auth signature, which
+  // is deterministic) byte-for-byte.
+  const wallet = deriveWallet(hexToBytes(v.wallet_prf));
   const info = JSON.parse(v.info_json);
 
   // fixed ephemerals so the bytes are deterministic (match the Go vectors)
   const agentP = runResponder(agentMC, token, info, hexToBytes('2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40'));
-  const client = await runInitiator(clientMC, token, ownerPub, hexToBytes('0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20'));
+  const client = await runInitiator(clientMC, token, wallet, hexToBytes('0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20'));
   const agent = await agentP;
 
   // The exact wire bytes the client/agent put on the pipe must equal the Go vectors.
-  assert.equal(bytesToHex(sent.a2b[0]), v.msg1, 'msg1 (client->agent) must match Go');
-  assert.equal(bytesToHex(sent.b2a[0]), v.msg2, 'msg2 (agent->client) must match Go');
+  assert.equal(bytesToHex(sent.a2b[0]), v.msg1, 'msg1 PairClaim (client->agent) must match Go');
+  assert.equal(bytesToHex(sent.b2a[0]), v.msg2, 'msg2 AgentInfo (agent->client) must match Go');
+  assert.equal(bytesToHex(sent.a2b[1]), v.msg3, 'msg3 wallet auth (client->agent) must match Go');
 
-  // Decrypted payloads + channel bindings (safety number) must match Go too.
+  // The agent recovers the proven wallet; payloads + channel bindings match Go too.
+  assert.equal(agent.wallet, v.wallet);
   assert.equal(client.info.host_pub, info.host_pub);
-  assert.equal(bytesToHex(agent.ownerPub), v.owner_pub);
   assert.equal(safetyNumber(client.binding), v.safety_number);
   assert.equal(safetyNumber(agent.binding), v.safety_number);
 });

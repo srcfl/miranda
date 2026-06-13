@@ -4,7 +4,6 @@ package agent
 import (
 	"bytes"
 	"context"
-	"encoding/hex"
 	"encoding/json"
 	"net/http/httptest"
 	"net/url"
@@ -28,12 +27,14 @@ func TestRuntimeReclaimsAttachOnDisconnect(t *testing.T) {
 	srv := httptest.NewServer(signal.New().Handler())
 	defer srv.Close()
 
-	ownerPriv, ownerPub, _ := noise.GenerateStatic()
+	// Wallet-rooted owner: owner_id is the base58 wallet address and the Noise pin
+	// is recovered from a wallet-signed binding carried on the offer (B1.4.1).
+	ownerPriv, _, ownerID, bindingJSON := ownerBinding(t, bytes.Repeat([]byte{0x22}, 32), "owner-device-leak")
 	dir := t.TempDir()
 	if _, err := LoadOrInit(dir, "leak-machine", srv.URL); err != nil {
 		t.Fatal(err)
 	}
-	if err := PinOwner(dir, hex.EncodeToString(ownerPub)); err != nil {
+	if err := PinOwner(dir, ownerID); err != nil {
 		t.Fatal(err)
 	}
 	cfg, _ := LoadOrInit(dir, "leak-machine", srv.URL)
@@ -52,7 +53,7 @@ func TestRuntimeReclaimsAttachOnDisconnect(t *testing.T) {
 	defer dialCancel()
 
 	bws := "ws" + strings.TrimPrefix(srv.URL, "http") +
-		"/attach?owner_id=" + url.QueryEscape(hex.EncodeToString(ownerPub)) +
+		"/attach?owner_id=" + url.QueryEscape(ownerID) +
 		"&machine_id=" + url.QueryEscape(cfg.MachineID)
 	bc, _, err := websocket.Dial(dialCtx, bws, nil)
 	if err != nil {
@@ -67,7 +68,7 @@ func TestRuntimeReclaimsAttachOnDisconnect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	offerMsg, _ := json.Marshal(signal.SignalMsg{Type: signal.TypeOffer, SDP: offerSDP})
+	offerMsg, _ := json.Marshal(signal.SignalMsg{Type: signal.TypeOffer, SDP: offerSDP, Binding: bindingJSON})
 	if err := bc.Write(dialCtx, websocket.MessageText, offerMsg); err != nil {
 		t.Fatal(err)
 	}

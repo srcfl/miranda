@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/srcful/terminal-relay/go/internal/identity"
 	"github.com/srcful/terminal-relay/go/internal/noise"
 	"github.com/srcful/terminal-relay/go/internal/pairing"
 	"github.com/srcful/terminal-relay/go/internal/signal"
@@ -20,7 +21,14 @@ func TestPairThroughSignalingServer(t *testing.T) {
 	token := pairing.NewToken()
 	code := pairing.EncodeCode(srv.URL, token)
 
-	_, ownerPub, _ := noise.GenerateStatic()
+	prf := make([]byte, 32)
+	for i := range prf {
+		prf[i] = byte(i + 1)
+	}
+	wallet, err := identity.DeriveWallet(prf)
+	if err != nil {
+		t.Fatal(err)
+	}
 	_, hostPub, _ := noise.GenerateStatic()
 	info := pairing.AgentInfo{HostPubHex: hex.EncodeToString(hostPub), MachineID: "mid42", Name: "box"}
 
@@ -28,16 +36,16 @@ func TestPairThroughSignalingServer(t *testing.T) {
 	defer cancel()
 
 	// Agent side (responder).
-	gotOwner := make(chan []byte, 1)
+	gotWallet := make(chan string, 1)
 	go func() {
 		mc, closeConn, err := pairing.DialPair(ctx, srv.URL, pairing.RoomID(token))
 		if err != nil {
 			return
 		}
 		defer closeConn()
-		op, _, err := pairing.RunResponder(ctx, mc, token, info)
+		wal, _, err := pairing.RunResponder(ctx, mc, token, info)
 		if err == nil {
-			gotOwner <- op
+			gotWallet <- wal
 		}
 	}()
 	time.Sleep(150 * time.Millisecond) // let the agent register the room first
@@ -52,7 +60,7 @@ func TestPairThroughSignalingServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closeConn()
-	got, _, err := pairing.RunInitiator(ctx, mc, tok, ownerPub)
+	got, _, err := pairing.RunInitiator(ctx, mc, tok, wallet)
 	if err != nil {
 		t.Fatalf("client pair: %v", err)
 	}
@@ -60,9 +68,9 @@ func TestPairThroughSignalingServer(t *testing.T) {
 		t.Fatalf("client pinned wrong info: %+v", got)
 	}
 	select {
-	case op := <-gotOwner:
-		if hex.EncodeToString(op) != hex.EncodeToString(ownerPub) {
-			t.Fatal("agent pinned wrong owner")
+	case wal := <-gotWallet:
+		if wal != wallet.Address {
+			t.Fatalf("agent pinned wrong wallet: got %s want %s", wal, wallet.Address)
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("agent never paired")

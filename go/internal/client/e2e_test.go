@@ -29,7 +29,7 @@ func TestEndToEndTrClientDrivesRealShell(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := agent.PinOwner(agentDir, id.OwnerPubHex); err != nil {
+	if err := agent.PinOwner(agentDir, id.WalletAddress); err != nil {
 		t.Fatal(err)
 	}
 	acfg, _ = agent.LoadOrInit(agentDir, "e2e-box", srv.URL)

@@ -4,7 +4,6 @@ package agent
 import (
 	"bytes"
 	"context"
-	"encoding/hex"
 	"encoding/json"
 	"net/http/httptest"
 	"net/url"
@@ -22,14 +21,16 @@ func TestEndToEndRealShellOverP2P(t *testing.T) {
 	srv := httptest.NewServer(signal.New().Handler())
 	defer srv.Close()
 
-	// Owner (browser) identity + agent keystore with that owner pinned.
-	ownerPriv, ownerPub, _ := noise.GenerateStatic()
+	// Owner (browser) identity + agent keystore with that owner pinned. The owner
+	// is a real wallet: owner_id is the base58 wallet address, and the Noise pin is
+	// recovered from a wallet-signed binding carried on the offer (B1.4.1).
+	ownerPriv, _, ownerID, bindingJSON := ownerBinding(t, bytes.Repeat([]byte{0x11}, 32), "owner-device-e2e")
 	dir := t.TempDir()
 	cfg, err := LoadOrInit(dir, "e2e-machine", srv.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := PinOwner(dir, hex.EncodeToString(ownerPub)); err != nil {
+	if err := PinOwner(dir, ownerID); err != nil {
 		t.Fatal(err)
 	}
 	cfg, _ = LoadOrInit(dir, "e2e-machine", srv.URL) // reload with the pinned owner
@@ -43,7 +44,7 @@ func TestEndToEndRealShellOverP2P(t *testing.T) {
 
 	// Browser-stand-in: attach, offer, await answer, open DataChannel, Noise init.
 	bws := "ws" + strings.TrimPrefix(srv.URL, "http") +
-		"/attach?owner_id=" + url.QueryEscape(hex.EncodeToString(ownerPub)) +
+		"/attach?owner_id=" + url.QueryEscape(ownerID) +
 		"&machine_id=" + url.QueryEscape(cfg.MachineID)
 	bc, _, err := websocket.Dial(ctx, bws, nil)
 	if err != nil {
@@ -59,7 +60,7 @@ func TestEndToEndRealShellOverP2P(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	offerMsg, _ := json.Marshal(signal.SignalMsg{Type: signal.TypeOffer, SDP: offerSDP})
+	offerMsg, _ := json.Marshal(signal.SignalMsg{Type: signal.TypeOffer, SDP: offerSDP, Binding: bindingJSON})
 	if err := bc.Write(ctx, websocket.MessageText, offerMsg); err != nil {
 		t.Fatal(err)
 	}

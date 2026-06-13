@@ -12,9 +12,10 @@ const wsBase = (signalURL) => 'ws' + signalURL.slice(4); // http->ws, https->wss
 // "pairing…" forever. 30s is generous for a human-paced QR scan + two round trips.
 const PAIR_TIMEOUT_MS = 30000;
 
-// pairWithCode runs the pairing handshake using `ownerPub` as our identity.
-// Returns { machine, safetyNumber }.
-export async function pairWithCode(code, ownerPub) {
+// pairWithCode runs the pairing handshake using `wallet` ({ address, priv }) as our
+// identity: it sends the base58 wallet as a PairClaim and proves control with an auth
+// signature over the channel binding. Returns { machine, safetyNumber }.
+export async function pairWithCode(code, wallet) {
   const { signalURL, token } = decodeCode(code);
 
   const ws = new WebSocket(wsBase(signalURL) + '/pair?room=' + roomID(token));
@@ -62,7 +63,7 @@ export async function pairWithCode(code, ownerPub) {
       }),
     };
 
-    const { info, binding } = await runInitiator(mc, token, ownerPub);
+    const { info, binding } = await runInitiator(mc, token, wallet);
     return {
       machine: { machine_id: info.machine_id, host_pub: info.host_pub, name: info.name, signal: signalURL },
       safetyNumber: safetyNumber(binding),

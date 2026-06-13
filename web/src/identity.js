@@ -1,12 +1,22 @@
 // web/src/identity.js — owner identity from a passkey (WebAuthn prf), with a
 // degraded dev fallback. The prf output (deterministic per credential+salt, and
-// the same on every device the synced passkey reaches) is fed UNCHANGED into the
-// existing deriveOwnerKey() so the owner_id follows you across devices and is
+// the same on every device the synced passkey reaches) is fed UNCHANGED into
+// BOTH deriveOwnerKey() (X25519 transport key) and deriveWallet() (the Ed25519
+// Solana wallet that anchors ownership). They share only the prf root, so the
+// owner_id (wallet address) and transport key follow you across devices and are
 // gated by Face ID / Touch ID. The relay never sees any of this.
 import { deriveOwnerKey } from './identity/owner.js';
+import { deriveWallet } from './identity/wallet.js';
 import { resolveRPID } from './rp.js';
-import { x25519 } from '@noble/curves/ed25519';
+import { randomBytes } from '@noble/hashes/utils';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
+
+// identityFromPRF derives the full identity ({ owner, wallet }) rooted in one
+// 32-byte secret — the passkey prf output, or the dev secret. Mirrors how the Go
+// owner.json roots both keys in a single seed.
+function identityFromPRF(secret) {
+  return { owner: deriveOwnerKey(secret), wallet: deriveWallet(secret) };
+}
 
 const enc = new TextEncoder();
 // rp.id is scoped to the exact production app host. Localhost remains separate
@@ -72,21 +82,26 @@ export async function signInPasskey() {
   const prf = assertion.getClientExtensionResults().prf?.results?.first;
   if (!prf) throw new Error('NO_PRF');
   localStorage.setItem('tr_cred_id', b64url(assertion.rawId));
-  return deriveOwnerKey(new Uint8Array(prf));
+  return identityFromPRF(new Uint8Array(prf));
 }
 
-// devOwnerKey is the DEGRADED localhost-only fallback: a plaintext x25519 key in
-// localStorage (not biometric-gated, not synced). It is hard-guarded to localhost
-// so a real owner private key can NEVER be minted/persisted in the clear on a
-// production origin (where any same-origin script could read it) — not even when
-// the browser lacks WebAuthn. On a public host the passkey path is the only way in.
+// devOwnerKey is the DEGRADED localhost-only fallback: a plaintext 32-byte secret
+// in localStorage (not biometric-gated, not synced) that roots BOTH the X25519
+// transport key and the Ed25519 wallet — exactly as the prf output does on the
+// real path, mirroring Go's owner.json single-seed model. It is hard-guarded to
+// localhost so a real owner identity can NEVER be minted/persisted in the clear
+// on a production origin (where any same-origin script could read it) — not even
+// when the browser lacks WebAuthn. On a public host the passkey path is the only
+// way in. Returns { owner, wallet }.
 export function devOwnerKey() {
   if (!isLocalhost()) throw new Error('dev key is localhost-only; use a passkey on a public origin');
   let h = localStorage.getItem('tr_owner');
   if (!h) {
-    h = bytesToHex(x25519.utils.randomPrivateKey());
+    // 32-byte secret seed: the BIP39/wallet derivation needs 16..32 bytes.
+    h = bytesToHex(randomBytes(32));
     localStorage.setItem('tr_owner', h);
   }
-  const priv = hexToBytes(h);
-  return { priv, pub: x25519.getPublicKey(priv) };
+  // Migration: a pre-B1.5 tr_owner held a raw 32-byte x25519 priv. Reuse it as the
+  // secret seed so an existing dev install keeps a stable (if re-rooted) identity.
+  return identityFromPRF(hexToBytes(h));
 }
