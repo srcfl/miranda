@@ -21,7 +21,7 @@ func startAgent(t *testing.T, ctx context.Context, srvURL, name string, id *Iden
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := agent.PinOwner(dir, id.OwnerPubHex); err != nil {
+	if err := agent.PinOwner(dir, id.WalletAddress); err != nil {
 		t.Fatal(err)
 	}
 	cfg, _ = agent.LoadOrInit(dir, name, srvURL)
