@@ -116,10 +116,17 @@ registration. Each accepted connection runs the frame0-verify → pin → `RunRe
 **LAN is on by default** (`mir up --no-lan` opts out); the relay path always runs too.
 
 ### Attach ordering (client)
-`Attach` composes `[LANLocator, RelayLocator]`. `LANLocator.Dial` does an mDNS lookup with a
-short timeout (~1.5 s); on a hit it QUIC-dials + sends frame0 and returns the `quicConn`; on
-no hit / dial failure it returns `ErrUnreachable` and `Attach` falls through to the relay
-(today's path). A `mir attach --no-lan` / `--relay-only` flag forces the relay path.
+`Attach` composes `[LANLocator, RelayLocator]`. `LANLocator.Dial` does an mDNS lookup +
+QUIC dial bounded by a **~600 ms budget** (`lanAttachBudget`); on a hit it sends frame0 and
+returns the `quicConn`; on no hit / dial failure / timeout it returns `ErrUnreachable` and
+`Attach` falls through to the relay (today's path). The budget keeps the remote-attach
+penalty small (a remote machine has no LAN answer, so it drops to the relay within ~600 ms).
+`mir attach --relay-only` skips LAN entirely (zero penalty when you know you're remote).
+
+> **Future refinement (not built now): happy-eyeballs.** The ~600 ms sequential budget can be
+> removed by racing the LAN and relay locators concurrently (start both, take the first
+> `MsgConn`, cancel the loser) — zero added latency for remote attaches. Deferred to keep
+> this slice from adding concurrency to the working relay path ("Robust Over Feature-Rich").
 
 ---
 
@@ -163,9 +170,12 @@ browser is unaffected (no web changes).
   with the relay path; `admit()` bound.
 - **C2.3** wiring: `Attach` order `[LAN, Relay]`; `mir up --no-lan`, `mir attach
   --relay-only`.
-- **C2.4** e2e: `mir up` + `mir attach` over QUIC on loopback with **no relay running**;
-  mDNS resolve test; bad/missing binding rejected; relay fallback when LAN is absent. Extend
-  `deploy/netsim` with an mDNS-within-a-Docker-network LAN path.
+- **C2.4** tests + docs: real-shell echo over QUIC with **no relay** (agent-side
+  `startLAN` ↔ a QUIC client); bad/unpinned binding rejected pre-Noise; `attachLocators`
+  composition; a **skippable** live-mDNS resolve test (multicast-dependent); `SECURITY.md` +
+  `README.md` LAN-direct notes. **Follow-up (not in this PR):** extend `deploy/netsim` with
+  an mDNS-within-a-Docker-network LAN path — the Go tests already prove the wire/transport;
+  netsim adds cross-container NAT/LAN integration coverage and is tracked separately.
 
 Each step is independently shippable; C1 alone is a pure refactor.
 

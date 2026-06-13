@@ -92,6 +92,21 @@ the network is hostile — provided the trust roots below are intact.
   operator may enable a TURN relay. Even then the relay forwards only ciphertext —
   Noise keeps it blind — but it does carry (encrypted) bytes and learns more
   timing/volume. It is **off by default**.
+- **LAN-direct (mDNS + QUIC).** `mir up` advertises itself on the local network
+  (mDNS `_miranda._udp`, instance = your opaque `machine_id`) and listens for direct
+  QUIC connections, so a `mir attach` on the same LAN reaches it **without the relay**.
+  This changes nothing about trust: the QUIC layer uses a throwaway self-signed cert
+  (the client skips TLS verification), and the **real** authentication is the unchanged
+  Noise-KK handshake + the wallet binding that runs *inside* the QUIC stream — exactly
+  as over the relay. A rogue LAN host that spoofs the mDNS record or connects to the
+  listener can at worst cause a **failed handshake (DoS)**: it cannot impersonate your
+  agent (Noise-KK pins `host_pub`), cannot attach as you (the agent rejects any
+  unpinned wallet *before* Noise, and a binding requires your wallet key), and cannot
+  read traffic (Noise). The new exposure is (a) the agent now accepts inbound LAN
+  connections — bounded by the same pre-auth handshake limiter as relay attaches — and
+  (b) the mDNS advertisement reveals that a Miranda node with a given `machine_id`
+  exists on the LAN. Disable both with `mir up --no-lan`; skip LAN discovery on a
+  client with `mir attach --relay-only`.
 - **Compromised endpoints / Keychain.** Out of scope — the same trust you already
   place in your own devices.
 
