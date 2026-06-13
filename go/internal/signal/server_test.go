@@ -109,6 +109,34 @@ func TestOfferReachesAgentAnswerReachesBrowser(t *testing.T) {
 	}
 }
 
+func TestOfferBindingReachesAgentVerbatim(t *testing.T) {
+	srv := httptest.NewServer(New().Handler())
+	defer srv.Close()
+
+	agent := dialJSON(t, wsURL(srv.URL, "/agent/signal", map[string]string{"owner_id": "o", "machine_id": "m"}))
+	if ready := readMsg(t, agent); ready.Type != TypeReady {
+		t.Fatalf("expected ready, got %q", ready.Type)
+	}
+
+	browser := dialJSON(t, wsURL(srv.URL, "/attach", map[string]string{"owner_id": "o", "machine_id": "m"}))
+	attach := readMsg(t, agent)
+	if attach.Type != TypeAttach || attach.Session == "" {
+		t.Fatalf("expected attach with session, got %+v", attach)
+	}
+
+	// Browser sends an offer carrying an opaque wallet-binding record. The relay
+	// must forward it verbatim without interpreting it.
+	const binding = "OPAQUE-WALLET-BINDING-RECORD"
+	writeMsg(t, browser, SignalMsg{Type: TypeOffer, SDP: "OFFER-SDP", Binding: binding})
+	gotOffer := readMsg(t, agent)
+	if gotOffer.Type != TypeOffer || gotOffer.SDP != "OFFER-SDP" || gotOffer.Session != attach.Session {
+		t.Fatalf("agent got wrong offer: %+v", gotOffer)
+	}
+	if gotOffer.Binding != binding {
+		t.Fatalf("binding not forwarded verbatim: got %q want %q", gotOffer.Binding, binding)
+	}
+}
+
 func TestAttachOfflineMachineGetsError(t *testing.T) {
 	srv := httptest.NewServer(New().Handler())
 	defer srv.Close()

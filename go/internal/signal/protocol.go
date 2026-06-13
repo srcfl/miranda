@@ -21,6 +21,7 @@ type SignalMsg struct {
 	Session string `json:"session,omitempty"`
 	SDP     string `json:"sdp,omitempty"`
 	Reason  string `json:"reason,omitempty"`
+	Binding string `json:"binding,omitempty"` // opaque wallet-binding record; relay forwards, never reads
 }
 
 func (m SignalMsg) encode() ([]byte, error) { return json.Marshal(m) }

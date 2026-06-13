@@ -514,7 +514,7 @@ func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
 					bc.fail("machine offline")
 					return
 				}
-				if !agentSend(live, bc.done, SignalMsg{Type: TypeOffer, Session: sess, SDP: m.SDP}) {
+				if !agentSend(live, bc.done, SignalMsg{Type: TypeOffer, Session: sess, SDP: m.SDP, Binding: m.Binding}) {
 					bc.fail("machine offline")
 					return
 				}
