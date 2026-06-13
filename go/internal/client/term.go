@@ -16,7 +16,7 @@ import (
 
 // RunInteractive puts the real terminal into raw mode, wires SIGWINCH to RESIZE,
 // and runs the bridge against stdin/stdout. Restores the terminal on exit.
-func RunInteractive(ctx context.Context, mc *peer.DataChannel, sess *noise.Session, machineName string) error {
+func RunInteractive(ctx context.Context, mc peer.MsgConn, sess *noise.Session, machineName string) error {
 	fd := int(os.Stdin.Fd())
 	if !term.IsTerminal(fd) {
 		return fmt.Errorf("mir attach requires a TTY (stdin is not a terminal)")
