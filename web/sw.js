@@ -53,6 +53,7 @@ const SHELL = [
   '/vendor/noble-curves-ed25519.js',
   '/vendor/noble-hashes-hkdf.js',
   '/vendor/noble-hashes-hmac.js',
+  '/vendor/noble-hashes-pbkdf2.js',
   '/vendor/noble-hashes-sha2.js',
   '/vendor/noble-hashes-utils.js',
   '/vendor/xterm-addon-fit.js',
