@@ -62,6 +62,7 @@ func (a *app) cmdUp(args []string) error {
 	shell := fs.String("shell", "tmux:new:-A:-s:main", "launch command, ':'-separated")
 	ice := iceFlags(fs)
 	autoUpdate := fs.Bool("auto-update", os.Getenv("MIR_AUTO_UPDATE") == "1", "opt-in: automatically self-update when idle")
+	noLAN := fs.Bool("no-lan", false, "disable LAN-direct (no QUIC listener, no mDNS advertise); serve the relay only")
 	_ = fs.Parse(args)
 
 	cfg, err := agent.LoadOrInit(*dir, *name, *signalURL)
@@ -77,6 +78,7 @@ func (a *app) cmdUp(args []string) error {
 	defer stop()
 
 	rt := agent.NewRuntime(cfg, launch, ice())
+	rt.DisableLAN = *noLAN
 	// Structured, timestamped agent log. RFC3339-ish date+time in UTC plus the
 	// binary prefix turns a bare "owner … disconnected" line into something you
 	// can correlate against relay logs and tell a flap (low uptime) from a normal

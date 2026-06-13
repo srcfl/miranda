@@ -14,12 +14,16 @@ import (
 // Attach connects to the named machine's agent over the first locator that can
 // reach it, runs the Noise KK initiator over that MsgConn, and returns the
 // established session. Call cleanup when done.
-func Attach(ctx context.Context, m Machine, id *Identity, ice []peer.ICEServer) (mc peer.MsgConn, sess *noise.Session, cleanup func(), err error) {
+//
+// By default it tries LAN-direct (mDNS + QUIC) first, then falls back to the
+// relay; the LAN attempt is bounded (see lanLocator.Dial) so a remote attach
+// drops to the relay fast. relayOnly skips LAN entirely.
+func Attach(ctx context.Context, m Machine, id *Identity, ice []peer.ICEServer, relayOnly bool) (mc peer.MsgConn, sess *noise.Session, cleanup func(), err error) {
 	if !id.HasWallet() {
 		return nil, nil, nil, fmt.Errorf("this identity has no wallet; run `mir keygen --wallet`")
 	}
 
-	mc, cleanup, err = dialFirst([]Locator{relayLocator{}}, ctx, m, id, ice)
+	mc, cleanup, err = dialFirst(attachLocators(relayOnly), ctx, m, id, ice)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -35,6 +39,15 @@ func Attach(ctx context.Context, m Machine, id *Identity, ice []peer.ICEServer) 
 		return nil, nil, nil, fmt.Errorf("noise handshake (wrong key / not paired?): %w", err)
 	}
 	return mc, sess, cleanup, nil
+}
+
+// attachLocators is the ordered locator list Attach tries: LAN-direct first (a
+// bounded mDNS+QUIC attempt) then the relay, unless relayOnly skips LAN.
+func attachLocators(relayOnly bool) []Locator {
+	if relayOnly {
+		return []Locator{relayLocator{}}
+	}
+	return []Locator{lanLocator{res: newMDNSResolver()}, relayLocator{}}
 }
 
 // dialFirst tries each locator in order, falling through on ErrUnreachable and
