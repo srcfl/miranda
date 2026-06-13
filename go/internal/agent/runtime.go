@@ -74,6 +74,8 @@ type Runtime struct {
 	maxBackoff     time.Duration        // cap
 	reloadInterval time.Duration        // how often to re-read config for newly-paired owners
 	Logf           func(string, ...any) // optional reconnect/status log (set by the CLI)
+
+	DisableLAN bool // when set, mir up serves the relay only (no QUIC listener / mDNS advertise)
 }
 
 // admit reserves a slot for a new attach handshake, returning false immediately
@@ -108,6 +110,18 @@ func NewRuntime(cfg *Config, launch []string, ice []peer.ICEServer) *Runtime {
 func (rt *Runtime) Up(ctx context.Context) error {
 	if len(rt.cfg.PairedOwners) == 0 {
 		return errNoOwner
+	}
+	// LAN-direct: advertise + listen for relay-less attach on the local network.
+	// Start failure is NON-FATAL — the relay path below always serves.
+	if !rt.DisableLAN {
+		if addr, stop, err := rt.startLAN(ctx); err == nil {
+			defer stop()
+			if rt.Logf != nil {
+				rt.Logf("LAN-direct listening (mDNS _miranda._udp) at %s", addr)
+			}
+		} else if rt.Logf != nil {
+			rt.Logf("LAN-direct disabled: %v", err)
+		}
 	}
 	var mu sync.Mutex
 	served := map[string]bool{}

@@ -14,8 +14,9 @@ import (
 )
 
 // AttachAll attaches every named machine and returns their sessions + a cleanup.
-// On any failure it cleans up the ones already attached.
-func AttachAll(ctx context.Context, dir string, names []string, id *Identity, ice []peer.ICEServer) ([]*MuxSession, func(), error) {
+// On any failure it cleans up the ones already attached. relayOnly is threaded to
+// each Attach to skip LAN-direct discovery.
+func AttachAll(ctx context.Context, dir string, names []string, id *Identity, ice []peer.ICEServer, relayOnly bool) ([]*MuxSession, func(), error) {
 	var sessions []*MuxSession
 	var cleanups []func()
 	cleanupAll := func() {
@@ -29,7 +30,7 @@ func AttachAll(ctx context.Context, dir string, names []string, id *Identity, ic
 			cleanupAll()
 			return nil, nil, err
 		}
-		mc, sess, cleanup, err := Attach(ctx, *m, id, ice)
+		mc, sess, cleanup, err := Attach(ctx, *m, id, ice, relayOnly)
 		if err != nil {
 			cleanupAll()
 			return nil, nil, fmt.Errorf("attach %s: %w", name, err)

@@ -32,11 +32,16 @@ func (l lanLocator) Dial(ctx context.Context, m Machine, id *Identity, _ []peer.
 	if !id.HasWallet() {
 		return nil, nil, ErrUnreachable // LAN attach requires a wallet binding
 	}
-	addr, err := l.res.resolve(ctx, m.MachineID)
+	// Bound the whole LAN attempt (resolve + dial) so a remote attach — where no
+	// LAN peer answers — falls through to the relay fast instead of waiting out
+	// the resolver's own cap. resolveTimeout still bounds the browse itself.
+	dctx, cancel := context.WithTimeout(ctx, lanAttachBudget)
+	defer cancel()
+	addr, err := l.res.resolve(dctx, m.MachineID)
 	if err != nil {
 		return nil, nil, ErrUnreachable
 	}
-	conn, err := quicmsg.Dial(ctx, addr)
+	conn, err := quicmsg.Dial(dctx, addr)
 	if err != nil {
 		return nil, nil, ErrUnreachable
 	}
@@ -56,6 +61,13 @@ const mdnsDomain = "local."
 // resolveTimeout bounds the mDNS browse so a miss fails fast (ErrUnreachable)
 // rather than blocking Attach's first locator indefinitely.
 var resolveTimeout = 1500 * time.Millisecond
+
+// lanAttachBudget is the ceiling for the entire LAN attach attempt (resolve +
+// QUIC dial). It keeps the remote-attach penalty small: when no LAN peer answers,
+// Attach falls back to the relay within this window rather than blocking on the
+// resolver's full cap. The LAN tests inject a static resolver, so this budget
+// doesn't affect them.
+const lanAttachBudget = 600 * time.Millisecond
 
 // mdnsResolver is the production resolver: it browses the LAN over mDNS for the
 // Miranda service and matches the requested machine_id.

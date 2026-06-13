@@ -75,7 +75,7 @@ func (a *app) cmdRun(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	mc, sess, cleanup, err := client.Attach(ctx, *m, idn, ice())
+	mc, sess, cleanup, err := client.Attach(ctx, *m, idn, ice(), false)
 	if err != nil {
 		return err
 	}
@@ -160,6 +160,7 @@ func (a *app) cmdAttach(args []string) error {
 	fs := flag.NewFlagSet("attach", flag.ExitOnError)
 	dir := fs.String("dir", defaultDir(), "config directory")
 	prefixFlag := fs.String("prefix", "ctrl-o", "multiplexer switch key (e.g. ctrl-o, ctrl-a, ctrl-space)")
+	relayOnly := fs.Bool("relay-only", false, "skip LAN-direct discovery; use the relay")
 	ice := iceFlags(fs)
 	_ = fs.Parse(args)
 	names := fs.Args()
@@ -187,7 +188,7 @@ func (a *app) cmdAttach(args []string) error {
 		if err != nil {
 			return err
 		}
-		mc, sess, cleanup, err := client.Attach(ctx, *m, idn, servers)
+		mc, sess, cleanup, err := client.Attach(ctx, *m, idn, servers, *relayOnly)
 		if err != nil {
 			return err
 		}
@@ -198,7 +199,7 @@ func (a *app) cmdAttach(args []string) error {
 		return nil
 	}
 
-	sessions, cleanup, err := client.AttachAll(ctx, *dir, names, idn, servers)
+	sessions, cleanup, err := client.AttachAll(ctx, *dir, names, idn, servers, *relayOnly)
 	if err != nil {
 		return err
 	}
