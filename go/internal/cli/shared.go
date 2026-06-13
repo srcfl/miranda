@@ -20,6 +20,18 @@ func defaultDir() string {
 
 func updateCachePath(dir string) string { return filepath.Join(dir, "update-check.json") }
 
+// freshSetup reports whether the default config dir holds no mir state yet, so the
+// no-argument guide can lead with a one-time welcome.
+func freshSetup() bool {
+	dir := defaultDir()
+	for _, f := range []string{"owner.json", "config.json", "machines.json"} {
+		if _, err := os.Stat(filepath.Join(dir, f)); err == nil {
+			return false
+		}
+	}
+	return true
+}
+
 func hostname() string {
 	h, err := os.Hostname()
 	if err != nil {

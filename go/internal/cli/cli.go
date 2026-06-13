@@ -38,7 +38,7 @@ func RunAgentCompat(argv []string, stdout, stderr io.Writer) int {
 
 func (a *app) run(argv []string) int {
 	if len(argv) == 0 {
-		a.usage()
+		a.guide()
 		return 2
 	}
 	switch argv[0] {
@@ -84,4 +84,39 @@ func (a *app) exit(err error) int {
 
 func (a *app) usage() {
 	fmt.Fprintln(a.errOut, "usage: "+a.binary+" <up|attach|list|pair|enroll|pair-dev|keygen|wallet|add-machine|run|self-update|--version> [flags]")
+}
+
+// guide is the no-argument landing: a friendly walkthrough of the core flow, with a
+// first-run welcome when there is no config yet. It goes to stdout (it's help the
+// user asked for), while terse usage on an unknown command stays on stderr.
+func (a *app) guide() {
+	b := a.binary
+	p := func(s string) { fmt.Fprintln(a.out, s) }
+	if freshSetup() {
+		p("👋  Welcome to " + b + ". Looks like a fresh setup.")
+		p("")
+		p(b + " opens a real shell on your own machines from anywhere — no SSH, fully")
+		p("end-to-end encrypted. Your identity is a wallet created locally the first time")
+		p("you run a command; keep its 24-word phrase safe and you can restore it anywhere.")
+		p("")
+	}
+	p(b + " — a real shell on your machines, from anywhere. Every node is symmetric: it")
+	p("can serve and it can attach.")
+	p("")
+	p("  Serve a machine (on the box you want to reach):")
+	p("    " + b + " up                keep it reachable (persistent tmux sessions)")
+	p("    " + b + " pair              make it pairable — prints a code + QR, then waits")
+	p("")
+	p("  Reach your machines (where you are):")
+	p("    " + b + " pair <code>       pair to a machine (compare the safety numbers)")
+	p("    " + b + " attach <name>     open its shell, peer-to-peer")
+	p("    " + b + " attach a b c      several at once — Ctrl-O then 1–9 to switch")
+	p("")
+	p("  Identity & machines:")
+	p("    " + b + " wallet address    your wallet — this is your owner id")
+	p("    " + b + " wallet export-phrase   back it up (24 words; restores everything)")
+	p("    " + b + " list              machines you've paired")
+	p("")
+	p("On the same network, " + b + " attach connects directly over the LAN (no relay) and")
+	p("falls back to the relay automatically. Full help for any command: " + b + " <command> -h")
 }

@@ -20,6 +20,41 @@ import (
 	"github.com/srcful/terminal-relay/go/internal/version"
 )
 
+// identity loads the client owner identity (creating it on first use), printing a
+// one-time intro when it was just created so a new user learns they have a wallet
+// identity and how to back it up. The intro goes to stderr, keeping command stdout
+// clean for scripts.
+func (a *app) identity(dir string) (*client.Identity, error) {
+	fresh := !client.IdentityExists(dir)
+	id, err := client.LoadOrCreateIdentity(dir)
+	if err != nil {
+		return nil, err
+	}
+	if fresh && id.HasWallet() {
+		fmt.Fprintf(a.errOut, "✓ created your %s identity — wallet %s\n", a.binary, id.WalletAddress)
+		fmt.Fprintf(a.errOut, "  back it up anytime: %s wallet export-phrase  (24 words restore your whole identity)\n\n", a.binary)
+	}
+	return id, nil
+}
+
+// requireWallet returns a guided error when a legacy (pre-wallet) identity tries to
+// attach, spelling out the one-time keygen + re-pair migration so the user isn't
+// surprised when re-pairing turns out to be necessary.
+func (a *app) requireWallet(id *client.Identity) error {
+	if id.HasWallet() {
+		return nil
+	}
+	b := a.binary
+	fmt.Fprintln(a.errOut, "This identity predates wallets, so it can't attach on this version of "+b+".")
+	fmt.Fprintln(a.errOut)
+	fmt.Fprintln(a.errOut, "Upgrade it (one-time):")
+	fmt.Fprintln(a.errOut, "    "+b+" keygen --wallet")
+	fmt.Fprintln(a.errOut)
+	fmt.Fprintln(a.errOut, "That mints a NEW identity (new owner id + wallet), so each machine you paired")
+	fmt.Fprintln(a.errOut, "before must be re-paired: run `"+b+" pair` on the machine and `"+b+" pair <code>` here.")
+	return fmt.Errorf("no wallet identity — run `%s keygen --wallet`", b)
+}
+
 // cmdSelfUpdate replaces the running binary with the latest GitHub Release
 // (verified by SHA256) when a newer version exists. a.binary selects the asset
 // (mir / mir-agent), so the deprecated shim updates its own binary.
@@ -63,8 +98,11 @@ func (a *app) cmdRun(args []string) error {
 	name := rest[0]
 	cmd := strings.Join(rest[1:], " ")
 
-	idn, err := client.LoadOrCreateIdentity(*dir)
+	idn, err := a.identity(*dir)
 	if err != nil {
+		return err
+	}
+	if err := a.requireWallet(idn); err != nil {
 		return err
 	}
 	m, err := client.GetMachine(*dir, name)
@@ -91,7 +129,7 @@ func (a *app) cmdKeygen(args []string) error {
 	dir := fs.String("dir", defaultDir(), "config directory")
 	wallet := fs.Bool("wallet", false, "re-key a legacy identity into a prf-rooted wallet identity (changes owner_id; re-pair needed)")
 	_ = fs.Parse(args)
-	id, err := client.LoadOrCreateIdentity(*dir)
+	id, err := a.identity(*dir)
 	if err != nil {
 		return err
 	}
@@ -172,8 +210,11 @@ func (a *app) cmdAttach(args []string) error {
 		return err
 	}
 	servers := ice()
-	idn, err := client.LoadOrCreateIdentity(*dir)
+	idn, err := a.identity(*dir)
 	if err != nil {
+		return err
+	}
+	if err := a.requireWallet(idn); err != nil {
 		return err
 	}
 	// attach is long-lived, so the backgrounded refresh has time to land for the
