@@ -357,24 +357,27 @@ func (rt *Runtime) handleOffer(ctx context.Context, c *websocket.Conn, m signal.
 	if err != nil {
 		return
 	}
-	sess, err := peer.RunResponder(attachCtx, dc, rt.cfg.HostPriv(), ownerPub)
+	_ = rt.serveAuthenticated(attachCtx, dc, ownerPub)
+}
+
+// serveAuthenticated runs the Noise-KK responder against the pinned owner X25519 key
+// and then the PTY session over mc. Shared by the relay offer path and LAN-direct.
+//
+// The active-session bracket lives HERE — after auth — not at the transport accept:
+// pre-auth handshakes (already bounded by admit()) must not inflate the active count
+// and starve opt-in auto-update, which defers binary swaps until the agent is idle.
+func (rt *Runtime) serveAuthenticated(ctx context.Context, mc peer.MsgConn, ownerPub []byte) error {
+	sess, err := peer.RunResponder(ctx, mc, rt.cfg.HostPriv(), ownerPub)
 	if err != nil {
-		return
+		return err
 	}
-	// Authenticated session established (Noise KK passed). Count it as active so
-	// opt-in auto-update defers any binary swap until the agent is idle. Bracketed
-	// HERE — after auth — not at handleOffer's top: pre-auth attach handshakes
-	// (already bounded by admit()) must not inflate the active count and starve
-	// auto-update.
 	rt.sessionStarted()
 	defer rt.sessionEnded()
-
-	pty, err := StartPTY(attachCtx, rt.launch)
+	pty, err := StartPTY(ctx, rt.launch)
 	if err != nil {
-		return
+		return err
 	}
 	defer pty.Close()
-
 	// For a tmux launch, push whole-server session/window snapshots so clients
 	// render an overview, and accept window+session control commands (select/new/
 	// rename/kill, switch-session). Targeting OUR client for cross-session switches
@@ -387,7 +390,7 @@ func (rt *Runtime) handleOffer(ctx context.Context, c *websocket.Conn, m signal.
 	if pid > 0 {
 		windows = func() []byte { return tmuxSessionsJSON(pid) }
 	}
-	_ = RunAgentSession(attachCtx, dc, sess, pty, rt.cfg.MachineName, windows, pid)
+	return RunAgentSession(ctx, mc, sess, pty, rt.cfg.MachineName, windows, pid)
 }
 
 // agentSignalURL builds ws(s)://host/agent/signal?owner_id=..&machine_id=..
