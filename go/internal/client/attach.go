@@ -4,80 +4,24 @@ package client
 import (
 	"context"
 	"encoding/hex"
-	"encoding/json"
+	"errors"
 	"fmt"
-	"net/url"
-	"strings"
-	"time"
-
-	"github.com/coder/websocket"
 
 	"github.com/srcful/terminal-relay/go/internal/noise"
 	"github.com/srcful/terminal-relay/go/internal/peer"
-	"github.com/srcful/terminal-relay/go/internal/signal"
 )
 
-// Attach connects to the signaling server as the owner, negotiates a P2P
-// DataChannel with the named machine's agent, runs the Noise KK initiator, and
-// returns the established session. Call cleanup when done.
-func Attach(ctx context.Context, m Machine, id *Identity, ice []peer.ICEServer) (mc *peer.DataChannel, sess *noise.Session, cleanup func(), err error) {
+// Attach connects to the named machine's agent over the first locator that can
+// reach it, runs the Noise KK initiator over that MsgConn, and returns the
+// established session. Call cleanup when done.
+func Attach(ctx context.Context, m Machine, id *Identity, ice []peer.ICEServer) (mc peer.MsgConn, sess *noise.Session, cleanup func(), err error) {
 	if !id.HasWallet() {
 		return nil, nil, nil, fmt.Errorf("this identity has no wallet; run `mir keygen --wallet`")
 	}
-	ownerID := id.WalletAddress
-	wsURL := "ws" + strings.TrimPrefix(m.SignalURL, "http") +
-		"/attach?owner_id=" + url.QueryEscape(ownerID) +
-		"&machine_id=" + url.QueryEscape(m.MachineID)
 
-	c, _, err := websocket.Dial(ctx, wsURL, nil)
+	mc, cleanup, err = dialFirst([]Locator{relayLocator{}}, ctx, m, id, ice)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("dial signaling: %w", err)
-	}
-	closeWS := func() { _ = c.CloseNow() }
-
-	off, opened, err := peer.NewOfferer(ice)
-	if err != nil {
-		closeWS()
 		return nil, nil, nil, err
-	}
-	cleanup = func() { _ = off.Close(); closeWS() }
-
-	offerSDP, err := peer.CreateOffer(off)
-	if err != nil {
-		cleanup()
-		return nil, nil, nil, err
-	}
-	offerMsg, _ := json.Marshal(signal.SignalMsg{Type: signal.TypeOffer, SDP: offerSDP, Binding: id.BindingJSON})
-	if err := c.Write(ctx, websocket.MessageText, offerMsg); err != nil {
-		cleanup()
-		return nil, nil, nil, err
-	}
-
-	_, data, err := c.Read(ctx)
-	if err != nil {
-		cleanup()
-		return nil, nil, nil, err
-	}
-	var ans signal.SignalMsg
-	if json.Unmarshal(data, &ans) != nil || ans.Type != signal.TypeAnswer {
-		cleanup()
-		if ans.Type == signal.TypeError {
-			return nil, nil, nil, fmt.Errorf("signaling: %s", ans.Reason)
-		}
-		return nil, nil, nil, fmt.Errorf("unexpected signaling reply: %s", string(data))
-	}
-	if err := peer.AcceptAnswer(off, ans.SDP); err != nil {
-		cleanup()
-		return nil, nil, nil, err
-	}
-
-	octx, ocancel := context.WithTimeout(ctx, 20*time.Second)
-	defer ocancel()
-	select {
-	case mc = <-opened:
-	case <-octx.Done():
-		cleanup()
-		return nil, nil, nil, fmt.Errorf("no direct P2P path to %q (strict P2P, no relay fallback)", m.Name)
 	}
 
 	hostPub, err := hex.DecodeString(m.HostPubHex)
@@ -91,4 +35,27 @@ func Attach(ctx context.Context, m Machine, id *Identity, ice []peer.ICEServer) 
 		return nil, nil, nil, fmt.Errorf("noise handshake (wrong key / not paired?): %w", err)
 	}
 	return mc, sess, cleanup, nil
+}
+
+// dialFirst tries each locator in order, falling through on ErrUnreachable and
+// aborting on any other (real) error. It returns the MsgConn from the first
+// locator that connects, or the last ErrUnreachable (or a generic "unreachable"
+// error) if none did.
+func dialFirst(locators []Locator, ctx context.Context, m Machine, id *Identity, ice []peer.ICEServer) (peer.MsgConn, func(), error) {
+	var lastErr error
+	for _, loc := range locators {
+		mc, cleanup, err := loc.Dial(ctx, m, id, ice)
+		if errors.Is(err, ErrUnreachable) {
+			lastErr = err
+			continue
+		}
+		if err != nil {
+			return nil, nil, err
+		}
+		return mc, cleanup, nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("machine %q unreachable", m.Name)
+	}
+	return nil, nil, lastErr
 }
