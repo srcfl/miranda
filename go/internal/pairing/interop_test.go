@@ -13,6 +13,7 @@ import (
 
 	"github.com/flynn/noise"
 
+	"github.com/srcful/terminal-relay/go/internal/identity"
 	"github.com/srcful/terminal-relay/go/internal/sas"
 )
 
@@ -20,8 +21,10 @@ var (
 	fxToken   = mustHex("00112233445566778899aabbccddeeff") // 16-byte token
 	fxInitEph = mustHex("0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20")
 	fxRespEph = mustHex("2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40")
-	fxOwner   = mustHex("a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf") // owner pub
-	fxInfo    = `{"host_pub":"5051525354555657585950515253545550515253545556575859505152535455","machine_id":"m42","name":"box"}`
+	// fxWalletPRF is the fixed 32-byte prf root the fixture wallet derives from,
+	// so msg1 (PairClaim{wallet}) and msg3 (the auth signature) are deterministic.
+	fxWalletPRF = mustHex("a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf")
+	fxInfo      = `{"host_pub":"5051525354555657585950515253545550515253545556575859505152535455","machine_id":"m42","name":"box"}`
 )
 
 func mustHex(s string) []byte { b, _ := hex.DecodeString(s); return b }
@@ -39,12 +42,14 @@ func (r *fixedReader) Read(p []byte) (int, error) {
 
 type pairVectors struct {
 	Token     string `json:"token"`
-	OwnerPub  string `json:"owner_pub"`
+	Wallet    string `json:"wallet"` // base58 wallet the claim carries
+	Claim     string `json:"claim"`  // msg1 payload (JSON PairClaim) before Noise framing
 	InfoJSON  string `json:"info_json"`
 	RoomID    string `json:"room_id"`
 	PSK       string `json:"psk"`
-	Msg1      string `json:"msg1"`
-	Msg2      string `json:"msg2"`
+	Msg1      string `json:"msg1"` // Noise-framed PairClaim
+	Msg2      string `json:"msg2"` // Noise-framed AgentInfo
+	Msg3      string `json:"msg3"` // raw 64-byte wallet auth signature over the binding
 	SafetyNum string `json:"safety_number"`
 }
 
@@ -65,9 +70,18 @@ func nnpsk0(initiator bool) *noise.HandshakeState {
 
 func runFixed(t *testing.T) pairVectors {
 	t.Helper()
+	wallet, err := identity.DeriveWallet(fxWalletPRF)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim, err := json.Marshal(PairClaim{Wallet: wallet.Address})
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	ini := nnpsk0(true)
 	res := nnpsk0(false)
-	msg1, _, _, err := ini.WriteMessage(nil, fxOwner)
+	msg1, _, _, err := ini.WriteMessage(nil, claim)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,12 +95,21 @@ func runFixed(t *testing.T) pairVectors {
 	if _, _, _, err := ini.ReadMessage(nil, msg2); err != nil {
 		t.Fatal(err)
 	}
+	// msg3 is the raw wallet auth signature over the channel binding. Both ends
+	// derive the same binding, so signing the initiator's binding is canonical.
+	binding := ini.ChannelBinding()
+	msg3 := wallet.SignAuth(binding)
+	if err := identity.VerifyAuth(wallet.Address, binding, msg3); err != nil {
+		t.Fatalf("fixture auth must verify: %v", err)
+	}
 	psk := sha256.Sum256(append([]byte("terminal-relay/pair/psk"), fxToken...))
 	return pairVectors{
-		Token: hex.EncodeToString(fxToken), OwnerPub: hex.EncodeToString(fxOwner),
-		InfoJSON: fxInfo, RoomID: RoomID(fxToken), PSK: hex.EncodeToString(psk[:]),
+		Token: hex.EncodeToString(fxToken), Wallet: wallet.Address,
+		Claim: string(claim), InfoJSON: fxInfo, RoomID: RoomID(fxToken),
+		PSK:  hex.EncodeToString(psk[:]),
 		Msg1: hex.EncodeToString(msg1), Msg2: hex.EncodeToString(msg2),
-		SafetyNum: sas.FromBinding(ini.ChannelBinding()),
+		Msg3:      hex.EncodeToString(msg3),
+		SafetyNum: sas.FromBinding(binding),
 	}
 }
 
@@ -108,7 +131,8 @@ func TestPairInteropVectorsStable(t *testing.T) {
 	}
 	var want pairVectors
 	_ = json.Unmarshal(raw, &want)
-	if v.Msg1 != want.Msg1 || v.Msg2 != want.Msg2 || v.SafetyNum != want.SafetyNum {
+	if v.Msg1 != want.Msg1 || v.Msg2 != want.Msg2 || v.Msg3 != want.Msg3 ||
+		v.Claim != want.Claim || v.Wallet != want.Wallet || v.SafetyNum != want.SafetyNum {
 		t.Fatalf("Go pairing drifted from committed vectors")
 	}
 	_ = io.Discard

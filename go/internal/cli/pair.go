@@ -3,7 +3,6 @@ package cli
 import (
 	"bufio"
 	"context"
-	"encoding/hex"
 	"flag"
 	"fmt"
 	"io"
@@ -143,6 +142,10 @@ func (a *app) pairInitiate(dir, codeStr string, gate sasGate) error {
 	if err != nil {
 		return err
 	}
+	w, err := idn.Wallet()
+	if err != nil {
+		return fmt.Errorf("pairing needs a wallet; run `mir keygen --wallet`: %w", err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	mc, closeConn, err := pairing.DialPair(ctx, signalURL, pairing.RoomID(token))
@@ -150,7 +153,7 @@ func (a *app) pairInitiate(dir, codeStr string, gate sasGate) error {
 		return err
 	}
 	defer closeConn()
-	info, binding, err := pairing.RunInitiator(ctx, mc, token, idn.OwnerPub())
+	info, binding, err := pairing.RunInitiator(ctx, mc, token, w)
 	if err != nil {
 		return err
 	}
@@ -199,11 +202,10 @@ func (a *app) pairRespond(dir, name, signalURL, webURL string, gate sasGate) err
 	defer closeConn()
 
 	info := pairing.AgentInfo{HostPubHex: cfg.HostPubHex, MachineID: cfg.MachineID, Name: cfg.MachineName}
-	ownerPub, binding, err := pairing.RunResponder(ctx, mc, token, info)
+	wallet, binding, err := pairing.RunResponder(ctx, mc, token, info)
 	if err != nil {
 		return err
 	}
-	ownerHex := hex.EncodeToString(ownerPub)
 
 	// Show the safety number FIRST, then require confirmation BEFORE pinning the
 	// owner — otherwise the printed number is advisory and a MITM is never caught.
@@ -212,9 +214,9 @@ func (a *app) pairRespond(dir, name, signalURL, webURL string, gate sasGate) err
 	if ok, reason := gate.confirm(safety, a.out); !ok {
 		return fmt.Errorf("pairing cancelled: %s", reason)
 	}
-	if err := agent.PinOwner(dir, ownerHex); err != nil {
+	if err := agent.PinOwner(dir, wallet); err != nil {
 		return err
 	}
-	fmt.Fprintf(a.out, "✓ paired — trusting owner %s…\n", ownerHex[:16])
+	fmt.Fprintf(a.out, "✓ paired — trusting wallet %s…\n", wallet[:16])
 	return nil
 }
