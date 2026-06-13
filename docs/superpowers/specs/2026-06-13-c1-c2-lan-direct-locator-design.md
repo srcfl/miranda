@@ -115,18 +115,22 @@ registration. Each accepted connection runs the frame0-verify → pin → `RunRe
 `RunAgentSession` path above (a shared helper with the relay path's post-pin logic).
 **LAN is on by default** (`mir up --no-lan` opts out); the relay path always runs too.
 
-### Attach ordering (client)
-`Attach` composes `[LANLocator, RelayLocator]`. `LANLocator.Dial` does an mDNS lookup +
-QUIC dial bounded by a **~600 ms budget** (`lanAttachBudget`); on a hit it sends frame0 and
-returns the `quicConn`; on no hit / dial failure / timeout it returns `ErrUnreachable` and
-`Attach` falls through to the relay (today's path). The budget keeps the remote-attach
-penalty small (a remote machine has no LAN answer, so it drops to the relay within ~600 ms).
-`mir attach --relay-only` skips LAN entirely (zero penalty when you know you're remote).
+### Attach ordering (client) — staggered happy-eyeballs
+`Attach` races `[LANLocator, RelayLocator]` (`dialStaggered`): the LAN locator starts
+immediately; the relay starts only after a **~200 ms head start** (`relayHeadStart`). The
+first locator to return a live `MsgConn` wins; the loser is cancelled and cleaned up.
+- **On the LAN**, LAN-direct connects in tens of ms, so it wins inside the head start and
+  **the relay is never contacted** — a successful LAN attach stays relay-free (no relay
+  round-trip, no metadata exposure). `LANLocator.Dial` is itself bounded by `lanAttachBudget`
+  (~600 ms) so a stuck mDNS browse can't hang the race.
+- **Remote** (no LAN answer): the relay starts after ~200 ms and wins, so the penalty vs a
+  pure relay attach is just the head start (not the full LAN budget).
+- `mir attach --relay-only` collapses the list to `[RelayLocator]` — a direct dial, no race,
+  zero penalty when you know you're remote.
 
-> **Future refinement (not built now): happy-eyeballs.** The ~600 ms sequential budget can be
-> removed by racing the LAN and relay locators concurrently (start both, take the first
-> `MsgConn`, cancel the loser) — zero added latency for remote attaches. Deferred to keep
-> this slice from adding concurrency to the working relay path ("Robust Over Feature-Rich").
+The staggered design (rather than a naive simultaneous race) is deliberate: it preserves the
+relay-free property for successful LAN attaches — the whole point of LAN-direct — instead of
+opening a throwaway relay connection on every attach.
 
 ---
 
@@ -176,6 +180,8 @@ browser is unaffected (no web changes).
   `README.md` LAN-direct notes. **Follow-up (not in this PR):** extend `deploy/netsim` with
   an mDNS-within-a-Docker-network LAN path — the Go tests already prove the wire/transport;
   netsim adds cross-container NAT/LAN integration coverage and is tracked separately.
+  (The happy-eyeballs race that earlier sat here as a follow-up is now implemented — see
+  "Attach ordering" above.)
 
 Each step is independently shippable; C1 alone is a pure refactor.
 
