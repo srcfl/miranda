@@ -12,6 +12,7 @@ import { listMachines, addMachine } from './store.js';
 import { pairWithCode } from './pair.js';
 import { confirmPairingSafety, machineAfterConfirmedPairing, pendingPairingConfirmation } from './pairing/confirm.js';
 import { registerPasskey, signInPasskey, devOwnerKey, passkeySupported, isLocalhost } from './identity.js';
+import { signBinding, recordJSON } from './identity/binding.js';
 import { makeKeybar, shouldShowKeybar } from './ui/keybar.js';
 import jsQR from '/vendor/jsqr.js';
 
@@ -38,12 +39,26 @@ async function iceServers(signalURL) {
 // Resolved once at the sign-in gate and cached; ownerKey() stays synchronous so
 // attach()/pairWithCode() are untouched (passkey get() is async + needs a user
 // gesture, so it can't run inside a sync call).
-let _owner = null;
+// _id holds the full prf-rooted identity { owner, wallet }: `owner` is the X25519
+// transport keypair (Noise-KK static, unchanged) and `wallet` is the Ed25519 Solana
+// wallet ({ address, priv, ... }) that now serves as owner_id on the wire.
+let _id = null;
 export function ownerKey() {
-  if (!_owner) throw new Error('not signed in');
-  return _owner;
+  if (!_id) throw new Error('not signed in');
+  return _id.owner;
 }
-function setOwner(k) { _owner = k; window.__ownerPub = bytesToHex(k.pub); }
+export function walletKey() {
+  if (!_id) throw new Error('not signed in');
+  return _id.wallet;
+}
+function setOwner(id) { _id = id; window.__ownerPub = bytesToHex(id.owner.pub); window.__wallet = id.wallet.address; }
+
+// deviceID returns a stable per-browser device id (binding.device), generated once.
+function deviceID() {
+  let d = localStorage.getItem('tr_device_id');
+  if (!d) { d = bytesToHex(crypto.getRandomValues(new Uint8Array(8))); localStorage.setItem('tr_device_id', d); }
+  return d;
+}
 
 const wsBase = (signalURL) => 'ws' + signalURL.slice(4); // http->ws, https->wss
 
@@ -58,12 +73,16 @@ const wsBase = (signalURL) => 'ws' + signalURL.slice(4); // http->ws, https->wss
 // tmux FrameWindows snapshot. The caller (makeTerminal) owns the terminal + teardown.
 export async function connectOnce(machine, term, current, onConnected, onWindows) {
   const owner = ownerKey();
-  const ownerHex = bytesToHex(owner.pub);
+  const wallet = walletKey();
+  // owner_id is the base58 wallet address; the agent recovers the X25519 KK pin from
+  // the signed binding carried on the offer (it cannot hex-decode the wallet).
+  const ownerId = wallet.address;
+  const binding = recordJSON(signBinding(wallet, deviceID(), bytesToHex(owner.pub), Math.floor(Date.now() / 1000)));
   const diag = { step: 'start', ws: 'init', gather: '', iceConn: '', conn: '', dc: 'init' };
   window.__diag = diag;
 
   const ws = new WebSocket(
-    wsBase(machine.signal) + '/attach?owner_id=' + encodeURIComponent(ownerHex) +
+    wsBase(machine.signal) + '/attach?owner_id=' + encodeURIComponent(ownerId) +
     '&machine_id=' + encodeURIComponent(machine.machine_id),
   );
   // `aborted` lets the caller (handle.close on Back/switch) tear down a LIVE session:
@@ -128,7 +147,7 @@ export async function connectOnce(machine, term, current, onConnected, onWindows
       pc.addEventListener('icegatheringstatechange', () => { diag.gather = pc.iceGatheringState; if (pc.iceGatheringState === 'complete') finish(); });
     });
     diag.step = 'offer-sent';
-    ws.send(JSON.stringify({ type: 'offer', sdp: pc.localDescription.sdp }));
+    ws.send(JSON.stringify({ type: 'offer', sdp: pc.localDescription.sdp, binding }));
 
     diag.step = 'awaiting-datachannel';
     const inbox = [];
@@ -340,7 +359,7 @@ function viewPair(root, prefill = '', auto = false) {
     mount(root, el('div', { className: 'view' }, el('h1', {}, 'pairing…'), status));
     status.textContent = 'pairing…';
     try {
-      const { machine, safetyNumber } = await pairWithCode(code, ownerKey().pub);
+      const { machine, safetyNumber } = await pairWithCode(code, walletKey());
       const pending = pendingPairingConfirmation(machine, safetyNumber);
       window.__lastSafety = safetyNumber;
       status.innerHTML = '';
@@ -667,5 +686,5 @@ export function start(root) {
     window.__useDevKey = () => { setOwner(devOwnerKey()); localStorage.setItem('tr_identity_mode', 'dev'); viewMachines(root); };
   }
   window.trAttach = (m) => attach(m, root.querySelector('.termbox') || root);
-  window.trPair = (code) => pairWithCode(code, ownerKey().pub);
+  window.trPair = (code) => pairWithCode(code, walletKey());
 }

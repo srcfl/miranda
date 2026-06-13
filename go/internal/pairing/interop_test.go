@@ -42,8 +42,9 @@ func (r *fixedReader) Read(p []byte) (int, error) {
 
 type pairVectors struct {
 	Token     string `json:"token"`
-	Wallet    string `json:"wallet"` // base58 wallet the claim carries
-	Claim     string `json:"claim"`  // msg1 payload (JSON PairClaim) before Noise framing
+	WalletPRF string `json:"wallet_prf"` // 32-byte prf root the wallet derives from (so JS reproduces msg3)
+	Wallet    string `json:"wallet"`     // base58 wallet the claim carries
+	Claim     string `json:"claim"`      // msg1 payload (JSON PairClaim) before Noise framing
 	InfoJSON  string `json:"info_json"`
 	RoomID    string `json:"room_id"`
 	PSK       string `json:"psk"`
@@ -104,7 +105,7 @@ func runFixed(t *testing.T) pairVectors {
 	}
 	psk := sha256.Sum256(append([]byte("terminal-relay/pair/psk"), fxToken...))
 	return pairVectors{
-		Token: hex.EncodeToString(fxToken), Wallet: wallet.Address,
+		Token: hex.EncodeToString(fxToken), WalletPRF: hex.EncodeToString(fxWalletPRF), Wallet: wallet.Address,
 		Claim: string(claim), InfoJSON: fxInfo, RoomID: RoomID(fxToken),
 		PSK:  hex.EncodeToString(psk[:]),
 		Msg1: hex.EncodeToString(msg1), Msg2: hex.EncodeToString(msg2),

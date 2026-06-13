@@ -1,5 +1,6 @@
 {
   "token": "00112233445566778899aabbccddeeff",
+  "wallet_prf": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
   "wallet": "5hoo57BiX5M1dQJF6BKtFm4iRpBAgmZGEQKeqqeJjGX5",
   "claim": "{\"wallet\":\"5hoo57BiX5M1dQJF6BKtFm4iRpBAgmZGEQKeqqeJjGX5\"}",
   "info_json": "{\"host_pub\":\"5051525354555657585950515253545550515253545556575859505152535455\",\"machine_id\":\"m42\",\"name\":\"box\"}",
