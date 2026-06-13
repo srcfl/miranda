@@ -43,7 +43,7 @@ func TestEndToEndTrClientDrivesRealShell(t *testing.T) {
 	// Register the machine in the client (as `tr add-machine` would).
 	m := Machine{Name: "box", MachineID: acfg.MachineID, HostPubHex: acfg.HostPubHex, SignalURL: srv.URL}
 
-	mc, sess, cleanup, err := Attach(ctx, m, id, nil)
+	mc, sess, cleanup, err := Attach(ctx, m, id, nil, false)
 	if err != nil {
 		t.Fatalf("attach: %v", err)
 	}

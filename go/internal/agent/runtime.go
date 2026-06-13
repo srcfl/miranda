@@ -74,6 +74,8 @@ type Runtime struct {
 	maxBackoff     time.Duration        // cap
 	reloadInterval time.Duration        // how often to re-read config for newly-paired owners
 	Logf           func(string, ...any) // optional reconnect/status log (set by the CLI)
+
+	DisableLAN bool // when set, mir up serves the relay only (no QUIC listener / mDNS advertise)
 }
 
 // admit reserves a slot for a new attach handshake, returning false immediately
@@ -108,6 +110,18 @@ func NewRuntime(cfg *Config, launch []string, ice []peer.ICEServer) *Runtime {
 func (rt *Runtime) Up(ctx context.Context) error {
 	if len(rt.cfg.PairedOwners) == 0 {
 		return errNoOwner
+	}
+	// LAN-direct: advertise + listen for relay-less attach on the local network.
+	// Start failure is NON-FATAL — the relay path below always serves.
+	if !rt.DisableLAN {
+		if addr, stop, err := rt.startLAN(ctx); err == nil {
+			defer stop()
+			if rt.Logf != nil {
+				rt.Logf("LAN-direct listening (mDNS _miranda._udp) at %s", addr)
+			}
+		} else if rt.Logf != nil {
+			rt.Logf("LAN-direct disabled: %v", err)
+		}
 	}
 	var mu sync.Mutex
 	served := map[string]bool{}
@@ -357,24 +371,27 @@ func (rt *Runtime) handleOffer(ctx context.Context, c *websocket.Conn, m signal.
 	if err != nil {
 		return
 	}
-	sess, err := peer.RunResponder(attachCtx, dc, rt.cfg.HostPriv(), ownerPub)
+	_ = rt.serveAuthenticated(attachCtx, dc, ownerPub)
+}
+
+// serveAuthenticated runs the Noise-KK responder against the pinned owner X25519 key
+// and then the PTY session over mc. Shared by the relay offer path and LAN-direct.
+//
+// The active-session bracket lives HERE — after auth — not at the transport accept:
+// pre-auth handshakes (already bounded by admit()) must not inflate the active count
+// and starve opt-in auto-update, which defers binary swaps until the agent is idle.
+func (rt *Runtime) serveAuthenticated(ctx context.Context, mc peer.MsgConn, ownerPub []byte) error {
+	sess, err := peer.RunResponder(ctx, mc, rt.cfg.HostPriv(), ownerPub)
 	if err != nil {
-		return
+		return err
 	}
-	// Authenticated session established (Noise KK passed). Count it as active so
-	// opt-in auto-update defers any binary swap until the agent is idle. Bracketed
-	// HERE — after auth — not at handleOffer's top: pre-auth attach handshakes
-	// (already bounded by admit()) must not inflate the active count and starve
-	// auto-update.
 	rt.sessionStarted()
 	defer rt.sessionEnded()
-
-	pty, err := StartPTY(attachCtx, rt.launch)
+	pty, err := StartPTY(ctx, rt.launch)
 	if err != nil {
-		return
+		return err
 	}
 	defer pty.Close()
-
 	// For a tmux launch, push whole-server session/window snapshots so clients
 	// render an overview, and accept window+session control commands (select/new/
 	// rename/kill, switch-session). Targeting OUR client for cross-session switches
@@ -387,7 +404,7 @@ func (rt *Runtime) handleOffer(ctx context.Context, c *websocket.Conn, m signal.
 	if pid > 0 {
 		windows = func() []byte { return tmuxSessionsJSON(pid) }
 	}
-	_ = RunAgentSession(attachCtx, dc, sess, pty, rt.cfg.MachineName, windows, pid)
+	return RunAgentSession(ctx, mc, sess, pty, rt.cfg.MachineName, windows, pid)
 }
 
 // agentSignalURL builds ws(s)://host/agent/signal?owner_id=..&machine_id=..

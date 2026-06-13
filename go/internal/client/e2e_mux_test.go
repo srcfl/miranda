@@ -47,12 +47,12 @@ func TestEndToEndMuxSwitchesBetweenTwoMachines(t *testing.T) {
 	m1 := startAgent(t, ctx, srv.URL, "box1", id)
 	time.Sleep(400 * time.Millisecond)
 
-	s0mc, s0sess, c0, err := Attach(ctx, m0, id, nil)
+	s0mc, s0sess, c0, err := Attach(ctx, m0, id, nil, false)
 	if err != nil {
 		t.Fatalf("attach box0: %v", err)
 	}
 	defer c0()
-	s1mc, s1sess, c1, err := Attach(ctx, m1, id, nil)
+	s1mc, s1sess, c1, err := Attach(ctx, m1, id, nil, false)
 	if err != nil {
 		t.Fatalf("attach box1: %v", err)
 	}

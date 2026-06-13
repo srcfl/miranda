@@ -78,6 +78,13 @@ mir attach laptop macmini linux
 Everything defaults to the hosted relay + STUN, so no flags are needed. Point at your
 own infrastructure with `--signal` / `MIR_SIGNAL` and `--stun` / `MIR_STUN`.
 
+**LAN-direct (no relay on the same network).** When the client and the machine are on
+the same LAN, `mir attach` finds it over mDNS and connects straight over QUIC — no relay
+round-trip. It's automatic and falls back to the relay within ~0.6 s if there's no local
+answer. Same trust as ever: Noise-KK + the wallet binding run inside, so the LAN only
+supplies an address. Turn it off with `mir up --no-lan` (agent) or
+`mir attach --relay-only` (client).
+
 ## Updating
 
 `mir` checks GitHub for a newer release at most once a day and prints a one-line
