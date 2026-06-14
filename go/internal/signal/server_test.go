@@ -3,7 +3,11 @@ package signal
 
 import (
 	"context"
+	"encoding/json"
+	"io"
+	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -198,4 +202,149 @@ func TestAttachCapacityPerAgentFailsFast(t *testing.T) {
 		t.Fatalf("expected capacity error, got %+v", msg)
 	}
 	assertNoSignal(t, agent, 250*time.Millisecond)
+}
+
+// registryEntry mirrors the JSON shape returned by GET /registry.
+type registryEntry struct {
+	MachineID string `json:"machine_id"`
+	Blob      string `json:"blob"`
+}
+
+// getRegistry fetches GET /registry?wallet=W against the httptest base URL and
+// decodes the response into entries, asserting the status code.
+func getRegistry(t *testing.T, base, wallet string, wantStatus int) []registryEntry {
+	t.Helper()
+	u := base + "/registry"
+	if wallet != "" {
+		u += "?wallet=" + wallet
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s: %v", u, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != wantStatus {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("GET %s: status %d want %d (body %q)", u, resp.StatusCode, wantStatus, string(body))
+	}
+	if wantStatus != http.StatusOK {
+		return nil
+	}
+	var out []registryEntry
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode registry: %v", err)
+	}
+	return out
+}
+
+// registerAgentWithRegistry dials /agent/signal for owner|machine, waits for the
+// ready frame, then publishes a TypeRegistry blob as its first message — exactly
+// how a real agent rides its encrypted record on the live registration.
+func registerAgentWithRegistry(t *testing.T, base, owner, machine, blob string) *websocket.Conn {
+	t.Helper()
+	c := dialJSON(t, wsURL(base, "/agent/signal", map[string]string{"owner_id": owner, "machine_id": machine}))
+	if ready := readMsg(t, c); ready.Type != TypeReady {
+		t.Fatalf("expected ready, got %q", ready.Type)
+	}
+	writeMsg(t, c, SignalMsg{Type: TypeRegistry, Registry: blob})
+	return c
+}
+
+func sortEntries(e []registryEntry) {
+	sort.Slice(e, func(i, j int) bool { return e[i].MachineID < e[j].MachineID })
+}
+
+func TestRegistryListsLiveAgents(t *testing.T) {
+	srv := httptest.NewServer(New().Handler())
+	defer srv.Close()
+
+	const W = "wallet-W"
+	const W2 = "wallet-W2"
+
+	// Two live agents under W, each publishing its own opaque blob.
+	a1 := registerAgentWithRegistry(t, srv.URL, W, "m1", "blob1")
+	defer a1.CloseNow()
+	a2 := registerAgentWithRegistry(t, srv.URL, W, "m2", "blob2")
+	defer a2.CloseNow()
+	// An agent under a different wallet must never be listed for W.
+	other := registerAgentWithRegistry(t, srv.URL, W2, "m3", "blob3")
+	defer other.CloseNow()
+
+	// The blob publish rides the live connection asynchronously; poll briefly so
+	// the read loop has stored both before we assert.
+	var got []registryEntry
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		got = getRegistry(t, srv.URL, W, http.StatusOK)
+		if len(got) == 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	sortEntries(got)
+	want := []registryEntry{{MachineID: "m1", Blob: "blob1"}, {MachineID: "m2", Blob: "blob2"}}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("registry for W = %+v, want %+v", got, want)
+	}
+
+	// W2's agent is isolated to W2 — never leaks into W's list.
+	w2 := getRegistry(t, srv.URL, W2, http.StatusOK)
+	if len(w2) != 1 || w2[0].MachineID != "m3" || w2[0].Blob != "blob3" {
+		t.Fatalf("registry for W2 = %+v, want one m3/blob3 entry", w2)
+	}
+
+	// Disconnect m1 — it must drop from the list (in-memory soft-state, no
+	// persistence). The blob lives only on the live agentConn.
+	a1.Close(websocket.StatusNormalClosure, "")
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		got = getRegistry(t, srv.URL, W, http.StatusOK)
+		if len(got) == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(got) != 1 || got[0].MachineID != "m2" || got[0].Blob != "blob2" {
+		t.Fatalf("after m1 disconnect, registry for W = %+v, want only m2/blob2", got)
+	}
+}
+
+func TestRegistryUnknownWalletIsEmptyArray(t *testing.T) {
+	srv := httptest.NewServer(New().Handler())
+	defer srv.Close()
+
+	// A fresh Server holds no registry state: an unknown wallet returns [] (200),
+	// never an error.
+	u := srv.URL + "/registry?wallet=Unknown"
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d want 200", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(body)); got != "[]" {
+		t.Fatalf("unknown wallet body = %q, want []", got)
+	}
+}
+
+func TestRegistryMissingWalletIsBadRequest(t *testing.T) {
+	srv := httptest.NewServer(New().Handler())
+	defer srv.Close()
+
+	getRegistry(t, srv.URL, "", http.StatusBadRequest)
 }
