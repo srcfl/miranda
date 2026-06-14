@@ -78,6 +78,15 @@ mir attach laptop macmini linux
 Everything defaults to the hosted relay + STUN, so no flags are needed. Point at your
 own infrastructure with `--signal` / `MIR_SIGNAL` and `--stun` / `MIR_STUN`.
 
+**Your machines appear automatically.** Once they share your wallet (passkey-sync, or
+`mir wallet import-phrase` on a new machine), `mir up` publishes an **encrypted** record to
+the relay and your machines show up by name in `mir list` and the browser — no
+`mir add-machine`, no pairing between your own devices. The relay only ever holds opaque
+blobs it can't read; only your wallet decrypts them, and a forged record simply fails to
+open. A new machine prints a one-line "new device joined" notice. It's online-discovery:
+a powered-off machine reappears when it comes back; to retire one, turn it off (or, if a
+device is compromised, rotate with `mir keygen --wallet`).
+
 **LAN-direct (no relay on the same network).** When the client and the machine are on
 the same LAN, `mir attach` finds it over mDNS and connects straight over QUIC — no relay
 round-trip. It's automatic and falls back to the relay within ~0.6 s if there's no local

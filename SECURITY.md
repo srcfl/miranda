@@ -107,6 +107,18 @@ the network is hostile — provided the trust roots below are intact.
   (b) the mDNS advertisement reveals that a Miranda node with a given `machine_id`
   exists on the LAN. Disable both with `mir up --no-lan`; skip LAN discovery on a
   client with `mir attach --relay-only`.
+- **Device registry (auto-discovery).** `mir up` publishes a device record so your other
+  devices find this machine by name with no manual pairing. The record (`name`, `host_pub`,
+  `signal_url`) is **encrypted** with a key derived from your wallet (ChaCha20-Poly1305,
+  HKDF of the wallet secret) before it leaves the machine, and the relay holds it **only
+  in-memory**, tied to the live registration — **no persistence, no database**. The relay
+  sees an opaque blob and which `machine_id`s are live under a wallet (the same linkability
+  it already has at attach); it **cannot read the record, and cannot forge one** — a record
+  sealed by anyone without your wallet fails to decrypt and is dropped by your devices, so
+  the AEAD is the authenticity check (no relay verification needed). The blob is bound to
+  its `machine_id` (AEAD associated data), so the relay can't even shuffle records between
+  slots. Discovery is online-only; "revocation" is powering a device off (it stops
+  registering) or, for a leaked phrase, rotating the wallet.
 - **Compromised endpoints / Keychain.** Out of scope — the same trust you already
   place in your own devices.
 
