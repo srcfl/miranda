@@ -30,6 +30,7 @@ const SHELL = [
   '/src/identity/auth.js',
   '/src/identity/binding.js',
   '/src/identity/owner.js',
+  '/src/identity/registry.js',
   '/src/identity/wallet.js',
   '/src/net/backoff.js',
   '/src/net/reconnect.js',
