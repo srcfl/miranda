@@ -66,7 +66,7 @@ const SHELL = [
 // Live conversations with the relay — never cached, never intercepted.
 // (WebSocket upgrades bypass the fetch handler anyway; this covers the plain
 // HTTP ones like /turn-credentials and keeps the list in one place.)
-const SIGNALING = ['/agent/signal', '/attach', '/pair', '/turn-credentials', '/healthz'];
+const SIGNALING = ['/agent/signal', '/attach', '/pair', '/turn-credentials', '/healthz', '/registry'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(

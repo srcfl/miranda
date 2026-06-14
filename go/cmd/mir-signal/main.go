@@ -144,7 +144,12 @@ func newHTTPServer(addr string, handler http.Handler) *http.Server {
 func withStatic(sig http.Handler, dir string) http.Handler {
 	fs := http.FileServer(http.Dir(dir))
 	indexPath := filepath.Join(dir, "index.html")
-	signalPaths := map[string]bool{"/agent/signal": true, "/attach": true, "/pair": true, "/turn-credentials": true, "/healthz": true}
+	// Every path the signal server owns must be forwarded here, or --webroot mode
+	// 404s it into the static file server. This list MUST stay in sync with the
+	// routes registered in signal.Server.Handler(); main_test.go's
+	// TestWithStaticForwardsSignalingPaths guards against drift (it caught /registry
+	// going missing in production).
+	signalPaths := map[string]bool{"/agent/signal": true, "/attach": true, "/pair": true, "/turn-credentials": true, "/healthz": true, "/registry": true}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if signalPaths[r.URL.Path] {
 			sig.ServeHTTP(w, r)
