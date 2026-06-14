@@ -79,6 +79,12 @@ func (a *app) cmdUp(args []string) error {
 
 	rt := agent.NewRuntime(cfg, launch, ice())
 	rt.DisableLAN = *noLAN
+	// Wallet-rooted machines auto-serve their own wallet (no pairing for your own
+	// devices) and publish an encrypted registry record. Legacy (wallet-less) mir
+	// up is unchanged: it serves PairedOwners and publishes nothing.
+	if err := a.applyWalletToUp(*dir, rt); err != nil {
+		return err
+	}
 	// Structured, timestamped agent log. RFC3339-ish date+time in UTC plus the
 	// binary prefix turns a bare "owner … disconnected" line into something you
 	// can correlate against relay logs and tell a flap (low uptime) from a normal
@@ -94,6 +100,28 @@ func (a *app) cmdUp(args []string) error {
 	if err := rt.Up(ctx); err != nil && ctx.Err() == nil {
 		return err
 	}
+	return nil
+}
+
+// applyWalletToUp wires this machine's wallet into the serving Runtime. On a
+// wallet-rooted identity it auto-pins the machine's OWN wallet as a served owner
+// (so your own devices attach with no SAS/pairing — B1.4 bindings) and hands the
+// wallet secret + address to the Runtime so it can seal + publish its encrypted
+// registry record on the live registration. A wallet-less (legacy) identity is a
+// no-op: `mir up` keeps today's behavior (serve PairedOwners, publish nothing).
+// PinOwner writes config.json's PairedOwners (the agent hot-reloads owners; pinning
+// before Up() puts it in the initial set). Any pin failure aborts so we never serve
+// in a half-configured state.
+func (a *app) applyWalletToUp(dir string, rt *agent.Runtime) error {
+	idn, err := a.identity(dir)
+	if err != nil || !idn.HasWallet() {
+		return nil // legacy / no wallet: unchanged behavior
+	}
+	if err := agent.PinOwner(dir, idn.WalletAddress); err != nil {
+		return err
+	}
+	rt.WalletSecret = idn.Secret()
+	rt.WalletAddress = idn.WalletAddress
 	return nil
 }
 

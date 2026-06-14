@@ -3,6 +3,8 @@ package agent
 
 import (
 	"context"
+	cryptorand "crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -76,6 +78,15 @@ type Runtime struct {
 	Logf           func(string, ...any) // optional reconnect/status log (set by the CLI)
 
 	DisableLAN bool // when set, mir up serves the relay only (no QUIC listener / mDNS advertise)
+
+	// WalletSecret is the 32-byte prf secret of THIS machine's wallet (nil =
+	// legacy/no wallet). It derives K_reg, the key under which the agent seals its
+	// encrypted device registry record. Never sent to the relay.
+	WalletSecret []byte
+	// WalletAddress is this machine's base58 wallet. The agent publishes a registry
+	// record on the live registration for this owner so your other devices discover
+	// it; it publishes only for this self-wallet (it has no other wallet's K_reg).
+	WalletAddress string
 }
 
 // admit reserves a slot for a new attach handshake, returning false immediately
@@ -223,6 +234,43 @@ func (rt *Runtime) serveOwner(ctx context.Context, owner string) {
 	}
 }
 
+// registryBlob builds and AEAD-seals this machine's device registry record under
+// K_reg (derived from the wallet secret), returning base64(nonce||ciphertext||tag).
+// The record — {v, name, host_pub, signal_url, ts} — lets your other devices
+// discover this machine by name with no pairing. The relay never parses it (it's
+// encrypted and opaque); only a wallet-holder can open it, so plain json.Marshal
+// of the map is fine. A fresh random nonce per call keeps reconnect re-publishes
+// safe. Errors when there is no wallet (legacy mir up publishes nothing).
+func (rt *Runtime) registryBlob() (string, error) {
+	if len(rt.WalletSecret) == 0 {
+		return "", fmt.Errorf("registry: no wallet secret")
+	}
+	rec := map[string]any{
+		"v":          1,
+		"name":       rt.cfg.MachineName,
+		"host_pub":   rt.cfg.HostPubHex,
+		"signal_url": rt.cfg.SignalURL,
+		"ts":         time.Now().Unix(),
+	}
+	pt, err := json.Marshal(rec)
+	if err != nil {
+		return "", err
+	}
+	key, err := identity.RegistryKey(rt.WalletSecret)
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, 12)
+	if _, err := cryptorand.Read(nonce); err != nil {
+		return "", err
+	}
+	blob, err := identity.SealRecord(key, nonce, pt, rt.cfg.MachineID)
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(blob), nil
+}
+
 // serveOnce dials the signaling channel for one owner and serves offers until
 // the connection drops. It returns:
 //   - dialed: whether the dial itself succeeded (vs. relay down).
@@ -244,6 +292,18 @@ func (rt *Runtime) serveOnce(ctx context.Context, owner string) (dialed bool, up
 	start := time.Now()
 	if rt.Logf != nil {
 		rt.Logf("event=connected owner=%s", short(owner))
+	}
+
+	// Publish our encrypted device registry record as the first message, but ONLY
+	// for our own wallet (we hold no other wallet's K_reg). It rides this live
+	// registration; the relay holds it opaquely and serves it to your other
+	// devices. Re-publishing on every reconnect is correct (fresh nonce + ts).
+	if owner == rt.WalletAddress && len(rt.WalletSecret) > 0 {
+		if blob, err := rt.registryBlob(); err == nil {
+			if msg, err := json.Marshal(signal.SignalMsg{Type: signal.TypeRegistry, Registry: blob}); err == nil {
+				_ = c.Write(ctx, websocket.MessageText, msg)
+			}
+		}
 	}
 
 	for {
