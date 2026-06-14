@@ -42,6 +42,7 @@ const SHELL = [
   '/src/pairing/confirm.js',
   '/src/pairing/nnpsk0.js',
   '/src/pairing/sas.js',
+  '/src/registry.js',
   '/src/rp.js',
   '/src/store.js',
   '/src/ui/keybar.js',
