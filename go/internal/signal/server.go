@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
@@ -106,6 +107,24 @@ type agentConn struct {
 
 	mu       sync.Mutex
 	sessions map[string]*browserConn // session id -> bound browser
+	registry string                  // opaque encrypted device blob, published by the agent on this live registration
+}
+
+// setRegistry records the agent's opaque device blob on this live connection.
+// The blob is in-memory soft-state: it rides the registration and is dropped
+// when the agentConn is torn down (no persistence). The relay never reads it.
+func (ac *agentConn) setRegistry(blob string) {
+	ac.mu.Lock()
+	ac.registry = blob
+	ac.mu.Unlock()
+}
+
+// registryBlob returns the published device blob (or "" if none yet), copied out
+// under the lock so callers never read ac.registry without synchronization.
+func (ac *agentConn) registryBlob() string {
+	ac.mu.Lock()
+	defer ac.mu.Unlock()
+	return ac.registry
 }
 
 func newAgentConn() *agentConn {
@@ -263,8 +282,43 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/attach", s.handleAttach)
 	mux.HandleFunc("/pair", s.handlePair)
 	mux.HandleFunc("/turn-credentials", s.handleTURN)
+	mux.HandleFunc("/registry", s.handleRegistry)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	return mux
+}
+
+// handleRegistry serves GET /registry?wallet=W -> [{machine_id, blob}] for the
+// agents currently registered under wallet W. It is a blind, stateless,
+// unauthenticated pass-through: it lists the opaque blobs published on the live
+// agentConns and never decrypts, verifies, or persists them. A fresh Server has
+// nothing to serve; a relay restart loses every blob and agents re-publish on
+// reconnect. The blobs self-authenticate via their wallet-derived AEAD, so the
+// relay needs no auth here — only a wallet-holder can produce a blob that opens.
+func (s *Server) handleRegistry(w http.ResponseWriter, r *http.Request) {
+	wallet := r.URL.Query().Get("wallet")
+	if wallet == "" {
+		http.Error(w, "missing wallet", http.StatusBadRequest)
+		return
+	}
+	prefix := wallet + "|"
+	type entry struct {
+		MachineID string `json:"machine_id"`
+		Blob      string `json:"blob"`
+	}
+	out := []entry{} // [] (not null) when there are no live agents under W
+	s.mu.Lock()
+	for k, ac := range s.agents {
+		if !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		// Copy the blob string out; do not hold ac's mutex across the s.mu loop.
+		if blob := ac.registryBlob(); blob != "" {
+			out = append(out, entry{MachineID: strings.TrimPrefix(k, prefix), Blob: blob})
+		}
+	}
+	s.mu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(out) // [] when none; encode never fails the relay
 }
 
 func key(owner, machine string) string { return owner + "|" + machine }
@@ -387,6 +441,13 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 			}
 			m, err := decodeInboundSignal(data)
 			if err != nil {
+				continue
+			}
+			if m.Type == TypeRegistry {
+				// The agent publishes its opaque encrypted device blob on the
+				// live registration. The relay holds it in-memory (no persist,
+				// no decrypt) and serves it via GET /registry.
+				ac.setRegistry(m.Registry)
 				continue
 			}
 			if m.Type == TypeAnswer {

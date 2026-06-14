@@ -9,6 +9,7 @@ import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { listMachines, addMachine } from './store.js';
+import { fetchMachines, mergeMachines, freshDevices } from './registry.js';
 import { pairWithCode } from './pair.js';
 import { confirmPairingSafety, machineAfterConfirmedPairing, pendingPairingConfirmation } from './pairing/confirm.js';
 import { registerPasskey, signInPasskey, devOwnerKey, passkeySupported, isLocalhost } from './identity.js';
@@ -281,19 +282,51 @@ const el = (tag, props = {}, ...kids) => {
 
 function mount(root, node) { root.replaceChildren(node); }
 
-function viewMachines(root) {
+// newDevices returns the discovered machines not seen before (for a notice) and
+// persists the seen set in localStorage, so the notice fires once per device.
+function newDevices(discovered) {
+  let seen = [];
+  try { seen = JSON.parse(localStorage.getItem('tr_seen') || '[]'); } catch {}
+  const fresh = freshDevices(seen, discovered);
+  if (fresh.length) {
+    localStorage.setItem('tr_seen', JSON.stringify([...new Set([...seen, ...fresh.map((m) => m.machine_id)])]));
+  }
+  return fresh;
+}
+
+function renderMachines(root, machines, fresh) {
   const grid = el('div', { className: 'grid' });
-  for (const m of listMachines()) {
+  for (const m of machines) {
     grid.append(el('button', { className: 'card machine', onclick: () => viewTerminal(root, m) },
       el('div', { className: 'name' }, m.name || m.machine_id),
       el('div', { className: 'sub' }, m.machine_id.slice(0, 12) + '…')));
   }
   grid.append(el('button', { className: 'card add', onclick: () => viewPair(root) },
     el('div', { className: 'plus' }, '＋'), el('div', { className: 'sub' }, 'Pair a machine')));
-  mount(root, el('div', { className: 'view' },
+  const kids = [
     el('h1', {}, 'your machines'),
     el('p', { className: 'muted' }, 'Reach a shell on any of them — peer-to-peer, end-to-end encrypted.'),
-    grid));
+  ];
+  if (fresh && fresh.length) {
+    kids.push(el('p', { className: 'muted' }, '📣 new device joined: ' + fresh.map((m) => m.name || m.machine_id).join(', ')));
+  }
+  kids.push(grid);
+  mount(root, el('div', { className: 'view' }, ...kids));
+}
+
+// viewMachines renders the locally-stored machines immediately, then enriches the
+// list from the wallet's encrypted registry (B2) — your machines appear by name with
+// no manual pairing. The fetch is same-origin (the relay that served this app) and
+// best-effort: a failure just leaves the local list. Discovery only.
+function viewMachines(root) {
+  renderMachines(root, listMachines(), []);
+  (async () => {
+    try {
+      const discovered = await fetchMachines(location.origin, walletKey(), _id.secret);
+      if (!discovered.length) return;
+      renderMachines(root, mergeMachines(listMachines(), discovered), newDevices(discovered));
+    } catch { /* not signed in / relay unreachable — keep the local list */ }
+  })();
 }
 
 // codeFromScan extracts the pairing code from a scanned QR, which encodes

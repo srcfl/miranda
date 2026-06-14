@@ -171,16 +171,44 @@ func (a *app) cmdList(args []string) error {
 	_ = fs.Parse(args)
 	// Cheap, non-blocking update notice (cache-only display; refresh in background).
 	selfupdate.New(repoSlug, a.binary).MaybeNotify(a.errOut, updateCachePath(*dir), version.Version, 24*time.Hour)
-	list, err := client.ListMachines(*dir)
+	local, err := client.ListMachines(*dir)
 	if err != nil {
 		return err
 	}
-	if len(list) == 0 {
+
+	// Discover your own machines from the relay's encrypted registry. Best-effort:
+	// a wallet-less identity or a relay hiccup just falls back to the local list.
+	// The registry is keyed by wallet on the default relay (the one agents register
+	// with), so fetch there regardless of any per-machine SignalURL.
+	idn, err := a.identity(*dir)
+	if err != nil {
+		return err
+	}
+	var discovered []client.Machine
+	discoveredID := map[string]bool{}
+	if idn.HasWallet() {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		disc, _ := client.FetchRegistry(ctx, nil, defaults.SignalURL(), idn)
+		cancel()
+		discovered = disc
+		for _, m := range disc {
+			discoveredID[m.MachineID] = true
+		}
+		// One-line "new device joined" notice on stderr, so stdout stays script-clean.
+		_ = client.NotifyNewDevices(a.errOut, *dir, disc)
+	}
+
+	merged := client.MergeMachines(local, discovered)
+	if len(merged) == 0 {
 		fmt.Fprintln(a.out, "no machines yet — add one with `mir add-machine`")
 		return nil
 	}
-	for _, m := range list {
-		fmt.Fprintf(a.out, "%-16s %s  %s\n", m.Name, m.MachineID, m.SignalURL)
+	for _, m := range merged {
+		tag := ""
+		if discoveredID[m.MachineID] {
+			tag = "  (online)"
+		}
+		fmt.Fprintf(a.out, "%-16s %s  %s%s\n", m.Name, m.MachineID, m.SignalURL, tag)
 	}
 	return nil
 }
@@ -192,6 +220,26 @@ func (a *app) cmdList(args []string) error {
 // exiting 1 on an ordinary detach.
 func isCleanDetach(err error) bool {
 	return errors.Is(err, peer.ErrDataChannelClosed) || errors.Is(err, io.EOF)
+}
+
+// resolveFromRegistry looks up a machine by name in the wallet's encrypted relay
+// registry when it isn't pinned locally. The returned Machine is trusted: its
+// host_pub was sealed under your wallet, so attaching needs no add-machine. If the
+// machine isn't in the registry either, it returns an "unknown machine" error that
+// hints it may simply be offline (the registry only lists live agents).
+func (a *app) resolveFromRegistry(ctx context.Context, dir, name string, idn *client.Identity) (*client.Machine, error) {
+	if idn.HasWallet() {
+		fctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+		disc, _ := client.FetchRegistry(fctx, nil, defaults.SignalURL(), idn)
+		cancel()
+		_ = client.NotifyNewDevices(a.errOut, dir, disc)
+		for i := range disc {
+			if disc[i].Name == name {
+				return &disc[i], nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("unknown machine %q — not paired locally and no live device by that name on your wallet (it may be offline)", name)
 }
 
 func (a *app) cmdAttach(args []string) error {
@@ -227,7 +275,14 @@ func (a *app) cmdAttach(args []string) error {
 	if len(names) == 1 {
 		m, err := client.GetMachine(*dir, names[0])
 		if err != nil {
-			return err
+			// Not pinned locally — fall back to the wallet registry. A registry hit
+			// is wallet-authenticated (its host_pub came sealed under your wallet),
+			// so it's trusted: no add-machine needed for your own devices.
+			rm, rerr := a.resolveFromRegistry(ctx, *dir, names[0], idn)
+			if rerr != nil {
+				return rerr
+			}
+			m = rm
 		}
 		mc, sess, cleanup, err := client.Attach(ctx, *m, idn, servers, *relayOnly)
 		if err != nil {

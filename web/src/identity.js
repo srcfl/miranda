@@ -11,11 +11,13 @@ import { resolveRPID } from './rp.js';
 import { randomBytes } from '@noble/hashes/utils';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 
-// identityFromPRF derives the full identity ({ owner, wallet }) rooted in one
-// 32-byte secret — the passkey prf output, or the dev secret. Mirrors how the Go
-// owner.json roots both keys in a single seed.
+// identityFromPRF derives the full identity ({ owner, wallet, secret }) rooted in
+// one 32-byte secret — the passkey prf output, or the dev secret. Mirrors how the
+// Go owner.json roots both keys in a single seed. `secret` is kept IN MEMORY only
+// (never persisted) so the session can derive the registry key (B2); it is the same
+// secret deriveWallet/deriveOwnerKey consume.
 function identityFromPRF(secret) {
-  return { owner: deriveOwnerKey(secret), wallet: deriveWallet(secret) };
+  return { owner: deriveOwnerKey(secret), wallet: deriveWallet(secret), secret };
 }
 
 const enc = new TextEncoder();
