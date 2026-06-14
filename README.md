@@ -1,20 +1,30 @@
 # Miranda
 
-> **A peer-to-peer, end-to-end-encrypted remote terminal.** Reach the shell on any
-> machine you own — from your laptop, another box, or your phone's browser —
-> authenticated by a passkey. No SSH keys to juggle, no ports to forward, and a
-> relay you don't have to trust.
+[![Release](https://img.shields.io/github/v/release/srcfl/miranda?sort=semver&color=000000&label=release)](https://github.com/srcfl/miranda/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-black.svg)](LICENSE)
+[![Platforms](https://img.shields.io/badge/macOS%20%C2%B7%20Linux-black)](#install)
+[![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](go/go.mod)
+[![Data plane](https://img.shields.io/badge/data%20plane-P2P%20%2B%20Noise%20KK-9cf)](#how-it-works)
 
-**Miranda** is a cross-machine terminal multiplexer: one workspace that spans every
-machine you own. Terminal traffic flows **directly peer-to-peer** over a WebRTC
-DataChannel, end-to-end encrypted with the Noise `KK` handshake. A small relay only
-introduces the two ends and then steps aside — it sees ciphertext and routing
-metadata, never your keystrokes or output. The relay, in other words, has **the
-right to remain silent**.
+**SSH-less, peer-to-peer, end-to-end-encrypted shells on every machine you own** — reach a
+real terminal from your laptop or your phone's browser, authenticated by a passkey, brokered
+by a relay you **never have to trust**.
 
-It's `tmux` for terminals that live on different machines: tmux owns the
-windows/panes and persistence on each host; Miranda owns *which machine you're
-looking at*.
+<p align="center">
+  <img src="assets/miranda-demo.gif" width="900"
+    alt="mir up serves a machine; from a laptop, mir list auto-discovers it by name and mir attach drops into its real shell — peer-to-peer, Noise-encrypted end-to-end, no SSH">
+</p>
+
+<p align="center"><sub>Serve a machine, then reach its real shell from anywhere — P2P + Noise, the relay never sees a keystroke.</sub></p>
+
+Terminal traffic flows **directly peer-to-peer** over a WebRTC DataChannel, end-to-end
+encrypted with the Noise `KK` handshake. A small relay only introduces the two ends and then
+steps aside — it sees ciphertext and routing metadata, never your keystrokes or output. The
+relay, in other words, has **the right to remain silent**.
+
+It's `tmux` for terminals that live on different machines: tmux owns the windows/panes and
+persistence on each host; Miranda owns *which machine you're looking at* — and your machines
+**find each other by wallet**, so a new one shows up everywhere the moment it comes online.
 
 ## Features
 
@@ -28,6 +38,11 @@ looking at*.
   survive the browser sleeping or the network dropping.
 - **Cross-machine multiplexer** — attach several machines at once and switch focus
   with a hotkey.
+- **Zero-config discovery** — your machines self-publish a wallet-signed, *encrypted*
+  record; every device of yours lists them by name automatically — no `add-machine`, no
+  pairing between your own machines. The relay holds only opaque blobs it can't read.
+- **LAN-direct** — on the same network, `mir attach` finds the machine over mDNS and
+  connects straight over QUIC: no relay round-trip at all, automatic fallback if it's remote.
 - **Browser or CLI** — the `mir` CLI in your terminal, or any browser including
   iPhone Safari.
 - **Self-hostable, blind relay** — run your own, or use the hosted one; either way it
@@ -48,7 +63,7 @@ curl -fsSL https://raw.githubusercontent.com/srcfl/miranda/main/install.sh | sh 
 ```
 
 The installer verifies each download against the release `checksums.txt` before
-installing to `~/.local/bin`. Pin a version with `MIR_VERSION=v0.1.0`, or change the
+installing to `~/.local/bin`. Pin a version with `MIR_VERSION=v0.6.0`, or change the
 target with `INSTALL_DIR=/usr/local/bin`. Prefer building from source? See the
 [Quickstart](#quickstart) below.
 
