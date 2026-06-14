@@ -106,6 +106,10 @@ func TestKeygenPrintsOwnerKey(t *testing.T) {
 
 func TestListEmptyThenAddMachine(t *testing.T) {
 	t.Setenv("MIR_NO_UPDATE_CHECK", "1")
+	// list now fetches the wallet registry on the default relay; point it at a dead
+	// local address so the unit test stays hermetic (FetchRegistry fails fast and is
+	// best-effort, so list still falls back to the local machines.json).
+	t.Setenv("MIR_SIGNAL", "http://127.0.0.1:1")
 	dir := t.TempDir()
 	var out, errb bytes.Buffer
 	if code := Run([]string{"list", "--dir", dir}, &out, &errb); code != 0 {
