@@ -42,7 +42,7 @@ verify_sha256() {
 	[ "$_want" = "$_got" ]
 }
 
-# verify_checksums_sig <base-url> <tmp-dir> -> 0 if verified OR cosign unavailable.
+# verify_checksums_sig <base-url> <tmp-dir> -> 0 only after verification.
 #
 # TRUST MODEL. The per-archive SHA256 in checksums.txt is only as trustworthy as
 # checksums.txt itself. Without a signature, anyone who can publish a GitHub
@@ -56,16 +56,13 @@ verify_sha256() {
 # repo's release pipeline. It does NOT vouch for the source code that was built —
 # only for the provenance of the checksum file.
 #
-# Graceful degradation: cosign is optional tooling. If it is not installed we
-# print one warning and fall back to checksum-only verification (still protects
-# against corrupted downloads / CDN tampering, just not a malicious publisher).
-# If cosign IS present and verification FAILS, that is an active attack signal —
-# abort loudly.
+# Fail closed: a checksum downloaded beside a binary is not a trust anchor.
+# Cosign and both signing assets are therefore mandatory.
 verify_checksums_sig() {
 	_base="$1"; _tmp="$2"
 	if ! command -v cosign >/dev/null 2>&1; then
-		echo "warning: cosign not found; skipping signature check of checksums.txt (install cosign for supply-chain verification) — falling back to checksum-only" >&2
-		return 0
+		echo "cosign is required to verify Miranda releases; install cosign and retry" >&2
+		return 1
 	fi
 	# Both signing artifacts must be present to verify; treat a missing one as a
 	# hard failure (an attacker stripping the .sig must not silently downgrade us).
@@ -129,6 +126,13 @@ for bin in $bins; do
 	install -m 0755 "$tmp/$bin" "$dir/$bin"
 	echo "installed $bin -> $dir/$bin"
 done
+
+if [ "$os" = linux ] && [ "$WHICH" != agent ] && ! command -v secret-tool >/dev/null 2>&1; then
+	echo
+	echo "note: owner-client commands require Linux Secret Service's secret-tool"
+	echo "      (Debian/Ubuntu: sudo apt install libsecret-tools)."
+	echo "      Miranda has no plaintext owner-secret fallback; target-only agent use is unaffected."
+fi
 
 case ":$PATH:" in
 	*":$dir:"*) : ;;

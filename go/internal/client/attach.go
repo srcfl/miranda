@@ -28,8 +28,8 @@ const relayHeadStart = 200 * time.Millisecond
 // relay; the LAN attempt is bounded (see lanLocator.Dial) so a remote attach
 // drops to the relay fast. relayOnly skips LAN entirely.
 func Attach(ctx context.Context, m Machine, id *Identity, ice []peer.ICEServer, relayOnly bool) (mc peer.MsgConn, sess *noise.Session, cleanup func(), err error) {
-	if !id.HasWallet() {
-		return nil, nil, nil, fmt.Errorf("this identity has no wallet; run `mir keygen --wallet`")
+	if !id.HasRootedIdentity() {
+		return nil, nil, nil, fmt.Errorf("this identity predates Miranda identity v2; run `mir identity rotate --yes` and re-pair")
 	}
 
 	mc, cleanup, err = dialStaggered(ctx, attachLocators(relayOnly), relayHeadStart, m, id, ice)

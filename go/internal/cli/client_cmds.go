@@ -21,7 +21,7 @@ import (
 )
 
 // identity loads the client owner identity (creating it on first use), printing a
-// one-time intro when it was just created so a new user learns they have a wallet
+// one-time intro when it was just created so a new user learns they have an owner
 // identity and how to back it up. The intro goes to stderr, keeping command stdout
 // clean for scripts.
 func (a *app) identity(dir string) (*client.Identity, error) {
@@ -30,29 +30,29 @@ func (a *app) identity(dir string) (*client.Identity, error) {
 	if err != nil {
 		return nil, err
 	}
-	if fresh && id.HasWallet() {
-		fmt.Fprintf(a.errOut, "✓ created your %s identity — wallet %s\n", a.binary, id.WalletAddress)
-		fmt.Fprintf(a.errOut, "  back it up anytime: %s wallet export-phrase  (24 words restore your whole identity)\n\n", a.binary)
+	if fresh && id.HasRootedIdentity() {
+		fmt.Fprintf(a.errOut, "✓ created your %s identity — %s\n", a.binary, id.OwnerID)
+		fmt.Fprintf(a.errOut, "  recovery: %s identity export-recovery\n\n", a.binary)
 	}
 	return id, nil
 }
 
-// requireWallet returns a guided error when a legacy (pre-wallet) identity tries to
-// attach, spelling out the one-time keygen + re-pair migration so the user isn't
+// requireRootedIdentity returns a guided error when a legacy identity tries to
+// attach, spelling out the one-time identity + re-pair migration so the user isn't
 // surprised when re-pairing turns out to be necessary.
-func (a *app) requireWallet(id *client.Identity) error {
-	if id.HasWallet() {
+func (a *app) requireRootedIdentity(id *client.Identity) error {
+	if id.HasRootedIdentity() {
 		return nil
 	}
 	b := a.binary
-	fmt.Fprintln(a.errOut, "This identity predates wallets, so it can't attach on this version of "+b+".")
+	fmt.Fprintln(a.errOut, "This identity predates Miranda identity v2.")
 	fmt.Fprintln(a.errOut)
 	fmt.Fprintln(a.errOut, "Upgrade it (one-time):")
-	fmt.Fprintln(a.errOut, "    "+b+" keygen --wallet")
+	fmt.Fprintln(a.errOut, "    "+b+" identity rotate --yes")
 	fmt.Fprintln(a.errOut)
-	fmt.Fprintln(a.errOut, "That mints a NEW identity (new owner id + wallet), so each machine you paired")
+	fmt.Fprintln(a.errOut, "That creates a NEW owner id, so each machine you paired")
 	fmt.Fprintln(a.errOut, "before must be re-paired: run `"+b+" pair` on the machine and `"+b+" pair <code>` here.")
-	return fmt.Errorf("no wallet identity — run `%s keygen --wallet`", b)
+	return fmt.Errorf("legacy identity — run `%s identity rotate --yes`", b)
 }
 
 // cmdSelfUpdate replaces the running binary with the latest GitHub Release
@@ -87,7 +87,7 @@ func (a *app) cmdSelfUpdate(args []string) error {
 // short window. Useful for scripts and the NAT-sim smoke test (no TTY needed).
 func (a *app) cmdRun(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
-	dir := fs.String("dir", defaultDir(), "config directory")
+	dir := fs.String("dir", defaultClientDir(), "client state directory")
 	ice := iceFlags(fs)
 	window := fs.Duration("window", 3*time.Second, "how long to stream output before exiting")
 	_ = fs.Parse(args)
@@ -102,13 +102,14 @@ func (a *app) cmdRun(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := a.requireWallet(idn); err != nil {
+	if err := a.requireRootedIdentity(idn); err != nil {
 		return err
 	}
-	m, err := client.GetMachine(*dir, name)
+	machines, err := a.resolveMachines(context.Background(), *dir, []string{name}, idn)
 	if err != nil {
 		return err
 	}
+	m := &machines[0]
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -126,29 +127,29 @@ func (a *app) cmdRun(args []string) error {
 
 func (a *app) cmdKeygen(args []string) error {
 	fs := flag.NewFlagSet("keygen", flag.ExitOnError)
-	dir := fs.String("dir", defaultDir(), "config directory")
-	wallet := fs.Bool("wallet", false, "re-key a legacy identity into a prf-rooted wallet identity (changes owner_id; re-pair needed)")
+	dir := fs.String("dir", defaultClientDir(), "client state directory")
+	legacyRotate := fs.Bool("wallet", false, "deprecated alias for identity rotation")
 	_ = fs.Parse(args)
 	id, err := a.identity(*dir)
 	if err != nil {
 		return err
 	}
-	if *wallet && !id.HasWallet() {
+	if *legacyRotate && !id.HasRootedIdentity() {
 		if id, err = client.Rekey(*dir); err != nil {
 			return err
 		}
-		fmt.Fprintln(a.errOut, "re-keyed to a prf-rooted wallet identity — owner_id changed, re-pair your machines")
+		fmt.Fprintln(a.errOut, "identity rotated — owner_id changed; re-pair your machines")
 	}
 	fmt.Fprintf(a.out, "owner public key:\n  %s\n\nPin it on each machine:\n  mir pair-dev --owner-pub %s\n", id.OwnerPubHex, id.OwnerPubHex)
-	if id.HasWallet() {
-		fmt.Fprintf(a.out, "\nwallet address:\n  %s\n", id.WalletAddress)
+	if id.HasRootedIdentity() {
+		fmt.Fprintf(a.out, "\nMiranda owner id:\n  %s\n", id.OwnerID)
 	}
 	return nil
 }
 
 func (a *app) cmdAddMachine(args []string) error {
 	fs := flag.NewFlagSet("add-machine", flag.ExitOnError)
-	dir := fs.String("dir", defaultDir(), "config directory")
+	dir := fs.String("dir", defaultClientDir(), "client state directory")
 	name := fs.String("name", "", "machine name")
 	id := fs.String("id", "", "machine id (from `mir enroll`)")
 	hostPub := fs.String("host-pub", "", "machine host public key (hex, from `mir enroll`)")
@@ -167,7 +168,7 @@ func (a *app) cmdAddMachine(args []string) error {
 
 func (a *app) cmdList(args []string) error {
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
-	dir := fs.String("dir", defaultDir(), "config directory")
+	dir := fs.String("dir", defaultClientDir(), "client state directory")
 	_ = fs.Parse(args)
 	// Cheap, non-blocking update notice (cache-only display; refresh in background).
 	selfupdate.New(repoSlug, a.binary).MaybeNotify(a.errOut, updateCachePath(*dir), version.Version, 24*time.Hour)
@@ -177,8 +178,8 @@ func (a *app) cmdList(args []string) error {
 	}
 
 	// Discover your own machines from the relay's encrypted registry. Best-effort:
-	// a wallet-less identity or a relay hiccup just falls back to the local list.
-	// The registry is keyed by wallet on the default relay (the one agents register
+	// a legacy identity or a relay hiccup just falls back to the local list.
+	// The registry is keyed by owner id on the default relay (the one agents register
 	// with), so fetch there regardless of any per-machine SignalURL.
 	idn, err := a.identity(*dir)
 	if err != nil {
@@ -186,8 +187,9 @@ func (a *app) cmdList(args []string) error {
 	}
 	var discovered []client.Machine
 	discoveredID := map[string]bool{}
-	if idn.HasWallet() {
+	if idn.HasRootedIdentity() {
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		a.syncRevocations(ctx, *dir, idn, []string{defaults.SignalURL()})
 		disc, _ := client.FetchRegistry(ctx, nil, defaults.SignalURL(), idn)
 		cancel()
 		discovered = disc
@@ -198,9 +200,13 @@ func (a *app) cmdList(args []string) error {
 		_ = client.NotifyNewDevices(a.errOut, *dir, disc)
 	}
 
-	merged := client.MergeMachines(local, discovered)
+	revocations, err := client.ListRevocations(*dir)
+	if err != nil {
+		return err
+	}
+	merged := client.FilterRevoked(client.MergeMachines(local, discovered), idn.OwnerID, revocations)
 	if len(merged) == 0 {
-		fmt.Fprintln(a.out, "no machines yet — add one with `mir add-machine`")
+		fmt.Fprintln(a.out, "no machines yet — run `mir pair` on a target, then scan its QR or pair with its code")
 		return nil
 	}
 	for _, m := range merged {
@@ -222,29 +228,157 @@ func isCleanDetach(err error) bool {
 	return errors.Is(err, peer.ErrDataChannelClosed) || errors.Is(err, io.EOF)
 }
 
-// resolveFromRegistry looks up a machine by name in the wallet's encrypted relay
-// registry when it isn't pinned locally. The returned Machine is trusted: its
-// host_pub was sealed under your wallet, so attaching needs no add-machine. If the
-// machine isn't in the registry either, it returns an "unknown machine" error that
-// hints it may simply be offline (the registry only lists live agents).
-func (a *app) resolveFromRegistry(ctx context.Context, dir, name string, idn *client.Identity) (*client.Machine, error) {
-	if idn.HasWallet() {
+// resolveMachines resolves every name against the local pin set and the owner's
+// encrypted live registry in one fetch. This gives single attach, multi-attach,
+// and non-interactive run identical zero-config discovery behavior.
+func (a *app) resolveMachines(ctx context.Context, dir string, names []string, idn *client.Identity) ([]client.Machine, error) {
+	local, err := client.ListMachines(dir)
+	if err != nil {
+		return nil, err
+	}
+	var discovered []client.Machine
+	if idn.HasRootedIdentity() {
 		fctx, cancel := context.WithTimeout(ctx, 8*time.Second)
-		disc, _ := client.FetchRegistry(fctx, nil, defaults.SignalURL(), idn)
+		a.syncRevocations(fctx, dir, idn, []string{defaults.SignalURL()})
+		discovered, _ = client.FetchRegistry(fctx, nil, defaults.SignalURL(), idn)
 		cancel()
-		_ = client.NotifyNewDevices(a.errOut, dir, disc)
-		for i := range disc {
-			if disc[i].Name == name {
-				return &disc[i], nil
+		_ = client.NotifyNewDevices(a.errOut, dir, discovered)
+	}
+	revocations, err := client.ListRevocations(dir)
+	if err != nil {
+		return nil, err
+	}
+	local = client.FilterRevoked(local, idn.OwnerID, revocations)
+	discovered = client.FilterRevoked(discovered, idn.OwnerID, revocations)
+	resolved := make([]client.Machine, 0, len(names))
+	for _, name := range names {
+		m, ok, _ := client.ResolveMachine(local, discovered, name)
+		if !ok {
+			return nil, fmt.Errorf("unknown machine %q — it is neither paired locally nor online in your encrypted registry", name)
+		}
+		resolved = append(resolved, m)
+	}
+	return resolved, nil
+}
+
+// syncRevocations best-effort gossips signed tombstones from each relay into the
+// fail-closed local store. Relay availability is not authority: already-cached
+// records are always enforced, and every newly fetched record is owner-verified.
+func (a *app) syncRevocations(ctx context.Context, dir string, idn *client.Identity, relays []string) {
+	seen := map[string]bool{}
+	for _, relay := range relays {
+		relay = strings.TrimRight(strings.TrimSpace(relay), "/")
+		if relay == "" || seen[relay] {
+			continue
+		}
+		seen[relay] = true
+		records, err := client.FetchRevocations(ctx, nil, relay, idn.OwnerID)
+		if err != nil {
+			continue
+		}
+		for _, record := range records {
+			if err := client.RecordRevocation(dir, record); err != nil {
+				fmt.Fprintf(a.errOut, "warning: could not cache signed revocation: %v\n", err)
+				return
 			}
 		}
 	}
-	return nil, fmt.Errorf("unknown machine %q — not paired locally and no live device by that name on your wallet (it may be offline)", name)
+}
+
+func (a *app) cmdMachine(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: mir machine revoke <name> --yes")
+	}
+	switch args[0] {
+	case "revoke":
+		return a.cmdMachineRevoke(args[1:])
+	default:
+		return fmt.Errorf("unknown machine subcommand %q", args[0])
+	}
+}
+
+func (a *app) cmdMachineRevoke(args []string) error {
+	fs := flag.NewFlagSet("machine revoke", flag.ExitOnError)
+	dir := fs.String("dir", defaultClientDir(), "client state directory")
+	yes := fs.Bool("yes", false, "confirm permanent machine revocation")
+	// Accept the human-friendly documented form `revoke box --yes` as well as
+	// Go flag's native `revoke --yes box` ordering.
+	name := ""
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		name, args = args[0], args[1:]
+	}
+	_ = fs.Parse(args)
+	if name == "" {
+		if len(fs.Args()) == 1 {
+			name = fs.Args()[0]
+		}
+	} else if len(fs.Args()) != 0 {
+		return fmt.Errorf("usage: mir machine revoke <name> --yes")
+	}
+	if name == "" || len(fs.Args()) > 1 {
+		return fmt.Errorf("usage: mir machine revoke <name> --yes")
+	}
+	if !*yes {
+		return fmt.Errorf("machine revocation is permanent for this owner id; re-run with --yes")
+	}
+	idn, err := a.identity(*dir)
+	if err != nil {
+		return err
+	}
+	if err := a.requireRootedIdentity(idn); err != nil {
+		return err
+	}
+	local, err := client.ListMachines(*dir)
+	if err != nil {
+		return err
+	}
+	var discovered []client.Machine
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	discovered, _ = client.FetchRegistry(ctx, nil, defaults.SignalURL(), idn)
+	machine, ok, _ := client.ResolveMachine(local, discovered, name)
+	if !ok {
+		return fmt.Errorf("unknown machine %q", name)
+	}
+	signer, err := idn.Signer()
+	if err != nil {
+		return err
+	}
+	record, err := signer.SignRevocation(machine.MachineID, time.Now())
+	if err != nil {
+		return err
+	}
+	// Local-first is intentional: even when every relay is unavailable, this
+	// client must stop trusting the target immediately.
+	if err := client.RecordRevocation(*dir, *record); err != nil {
+		return err
+	}
+	fmt.Fprintf(a.out, "revoked %q locally (%s)\n", machine.Name, machine.MachineID)
+
+	relays := []string{machine.SignalURL, defaults.SignalURL()}
+	seen := map[string]bool{}
+	var publishErrors []string
+	for _, relay := range relays {
+		relay = strings.TrimRight(strings.TrimSpace(relay), "/")
+		if relay == "" || seen[relay] {
+			continue
+		}
+		seen[relay] = true
+		if err := client.PostRevocation(ctx, nil, relay, *record); err != nil {
+			publishErrors = append(publishErrors, relay+": "+err.Error())
+			continue
+		}
+		fmt.Fprintf(a.out, "published signed revocation to %s\n", relay)
+	}
+	if len(publishErrors) > 0 {
+		return fmt.Errorf("machine is blocked locally, but relay publication failed (%s); retry the command when online", strings.Join(publishErrors, "; "))
+	}
+	return nil
 }
 
 func (a *app) cmdAttach(args []string) error {
 	fs := flag.NewFlagSet("attach", flag.ExitOnError)
-	dir := fs.String("dir", defaultDir(), "config directory")
+	dir := fs.String("dir", defaultClientDir(), "client state directory")
 	prefixFlag := fs.String("prefix", "ctrl-o", "multiplexer switch key (e.g. ctrl-o, ctrl-a, ctrl-space)")
 	relayOnly := fs.Bool("relay-only", false, "skip LAN-direct discovery; use the relay")
 	ice := iceFlags(fs)
@@ -262,7 +396,7 @@ func (a *app) cmdAttach(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := a.requireWallet(idn); err != nil {
+	if err := a.requireRootedIdentity(idn); err != nil {
 		return err
 	}
 	// attach is long-lived, so the backgrounded refresh has time to land for the
@@ -272,19 +406,13 @@ func (a *app) cmdAttach(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if len(names) == 1 {
-		m, err := client.GetMachine(*dir, names[0])
-		if err != nil {
-			// Not pinned locally — fall back to the wallet registry. A registry hit
-			// is wallet-authenticated (its host_pub came sealed under your wallet),
-			// so it's trusted: no add-machine needed for your own devices.
-			rm, rerr := a.resolveFromRegistry(ctx, *dir, names[0], idn)
-			if rerr != nil {
-				return rerr
-			}
-			m = rm
-		}
-		mc, sess, cleanup, err := client.Attach(ctx, *m, idn, servers, *relayOnly)
+	resolved, err := a.resolveMachines(ctx, *dir, names, idn)
+	if err != nil {
+		return err
+	}
+	if len(resolved) == 1 {
+		m := resolved[0]
+		mc, sess, cleanup, err := client.Attach(ctx, m, idn, servers, *relayOnly)
 		if err != nil {
 			return err
 		}
@@ -295,7 +423,7 @@ func (a *app) cmdAttach(args []string) error {
 		return nil
 	}
 
-	sessions, cleanup, err := client.AttachAll(ctx, *dir, names, idn, servers, *relayOnly)
+	sessions, cleanup, err := client.AttachAll(ctx, resolved, idn, servers, *relayOnly)
 	if err != nil {
 		return err
 	}

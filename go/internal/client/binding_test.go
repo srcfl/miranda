@@ -37,8 +37,8 @@ func TestSetFromSecretCachesBinding(t *testing.T) {
 	if err := identity.VerifyBinding(sb); err != nil {
 		t.Fatalf("verify binding: %v", err)
 	}
-	if sb.Wallet != id.WalletAddress {
-		t.Fatalf("binding wallet %q != identity wallet %q", sb.Wallet, id.WalletAddress)
+	if sb.Wallet != id.OwnerID {
+		t.Fatalf("binding wallet %q != identity wallet %q", sb.Wallet, id.OwnerID)
 	}
 	if sb.X25519 != id.OwnerPubHex {
 		t.Fatalf("binding x25519 %q != owner pub %q", sb.X25519, id.OwnerPubHex)
@@ -84,7 +84,7 @@ func TestRekeyRotatesDeviceAndBinding(t *testing.T) {
 	if err := identity.VerifyBinding(sb); err != nil {
 		t.Fatalf("verify rekeyed binding: %v", err)
 	}
-	if sb.Wallet != rekeyed.WalletAddress || sb.X25519 != rekeyed.OwnerPubHex || sb.Device != rekeyed.DeviceID {
+	if sb.Wallet != rekeyed.OwnerID || sb.X25519 != rekeyed.OwnerPubHex || sb.Device != rekeyed.DeviceID {
 		t.Fatalf("rekeyed binding fields mismatch: %+v", sb)
 	}
 }

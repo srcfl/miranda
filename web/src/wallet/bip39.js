@@ -1,12 +1,8 @@
 // web/src/wallet/bip39.js
-// Mirrors go/internal/bip39/bip39.go: BIP39 entropy<->mnemonic + mnemonic->seed.
+// Mirrors go/internal/bip39/bip39.go: BIP39 entropy<->mnemonic recovery rendering.
 // Byte-identical to the Go side.
 import { sha256 } from '@noble/hashes/sha2';
-import { sha512 } from '@noble/hashes/sha2';
-import { pbkdf2 } from '@noble/hashes/pbkdf2';
 import { wordlist } from './wordlist.js';
-
-const enc = new TextEncoder();
 
 // entropyToMnemonic renders entropy (16..32 bytes, multiple of 4) as a BIP39
 // English mnemonic. 32 bytes -> 24 words (Miranda's prf case).
@@ -30,14 +26,6 @@ export function entropyToMnemonic(entropy) {
     words.push(wordlist[idx]);
   }
   return words.join(' ');
-}
-
-// mnemonicToSeed derives the 64-byte BIP39 seed (PBKDF2-HMAC-SHA512, 2048,
-// salt "mnemonic"+passphrase). NFKD-normalizes per spec; ASCII inputs match Go.
-export function mnemonicToSeed(mnemonic, passphrase = '') {
-  const m = enc.encode(mnemonic.normalize('NFKD'));
-  const salt = enc.encode(('mnemonic' + passphrase).normalize('NFKD'));
-  return pbkdf2(sha512, m, salt, { c: 2048, dkLen: 64 });
 }
 
 const wordIndexMap = (() => {

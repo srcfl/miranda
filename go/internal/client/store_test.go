@@ -2,7 +2,12 @@
 package client
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -19,8 +24,85 @@ func TestIdentityIsCreatedOnceAndStable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if id2.OwnerPrivHex != id.OwnerPrivHex {
-		t.Fatal("owner identity not stable across loads")
+	if id2.OwnerPrivHex != "" {
+		t.Fatalf("derived owner private key was persisted: %q", id2.OwnerPrivHex)
+	}
+	if id2.SecretHex != "" || id2.SecretRef == "" {
+		t.Fatalf("root was not migrated to keychain metadata: secret=%q ref=%q", id2.SecretHex, id2.SecretRef)
+	}
+	backend, err := id2.CheckSecretStorage()
+	if err != nil || backend != "test keychain" {
+		t.Fatalf("CheckSecretStorage = %q, %v", backend, err)
+	}
+	data, err := os.ReadFile(identityPath(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := raw["secret"]; ok {
+		t.Fatal("owner.json contains the root secret")
+	}
+	if _, ok := raw["owner_priv"]; ok {
+		t.Fatal("owner.json contains a derived private key")
+	}
+	if !bytes.Equal(id2.OwnerPriv(), id.OwnerPriv()) {
+		t.Fatal("owner identity not stable across re-derivation")
+	}
+}
+
+func TestLegacyPlaintextRootMigratesAtomicallyToKeychain(t *testing.T) {
+	dir := t.TempDir()
+	root := bytes.Repeat([]byte{0x31}, 32)
+	legacy := map[string]string{"secret": fmt.Sprintf("%x", root), "owner_priv": strings.Repeat("aa", 32)}
+	data, _ := json.Marshal(legacy)
+	if err := os.WriteFile(identityPath(dir), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	id, err := LoadOrCreateIdentity(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(id.Secret(), root) || id.SecretRef == "" {
+		t.Fatal("migrated identity lost its root")
+	}
+	after, err := os.ReadFile(identityPath(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(after, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := raw["secret"]; ok {
+		t.Fatal("plaintext secret survived migration")
+	}
+	if _, ok := raw["owner_priv"]; ok {
+		t.Fatal("derived private key survived migration")
+	}
+}
+
+func TestMissingKeychainEntryFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	id, err := LoadOrCreateIdentity(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := platformSecretStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete(id.SecretRef); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadOrCreateIdentity(dir); err == nil {
+		t.Fatal("missing keychain entry unexpectedly created a new identity")
+	}
+	// The metadata remains present; fail-closed must not rewrite it.
+	if _, err := os.Stat(filepath.Join(dir, "owner.json")); err != nil {
+		t.Fatal(err)
 	}
 }
 

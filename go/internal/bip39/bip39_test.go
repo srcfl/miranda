@@ -29,11 +29,9 @@ func TestEntropyToMnemonicZero(t *testing.T) {
 	}
 }
 
-func TestPrfToMnemonicAndSeed(t *testing.T) {
-	// External anchor (bip-utils) for the B1 fixed prf.
+func TestPrfToMnemonic(t *testing.T) {
 	prf, _ := hex.DecodeString("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff")
 	wantMnemonic := "abandon math mimic master filter design carbon crystal rookie group knife wrap absurd much snack melt grid rough chapter fever rubber humble room trophy"
-	wantSeed := "559da5e7655dd1fbe657c100870512afb2b654b0acfd32f2c549344407e555bc16c2e71219eefc24acc7ed2cfaeac8a1808d543a5de4890bb2d95a7bb58af5b7"
 
 	m, err := EntropyToMnemonic(prf)
 	if err != nil {
@@ -41,9 +39,6 @@ func TestPrfToMnemonicAndSeed(t *testing.T) {
 	}
 	if m != wantMnemonic {
 		t.Fatalf("mnemonic = %q", m)
-	}
-	if got := hex.EncodeToString(MnemonicToSeed(m, "")); got != wantSeed {
-		t.Fatalf("seed = %s", got)
 	}
 }
 

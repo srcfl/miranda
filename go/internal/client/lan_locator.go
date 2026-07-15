@@ -23,14 +23,14 @@ type resolver interface {
 
 // lanLocator reaches an agent on the local network: it resolves the machine_id
 // to a host:port (mDNS in prod, injectable in tests), QUIC-dials it, and sends
-// the wallet binding as the first application frame before Noise-KK runs inside
-// the MsgConn. It returns ErrUnreachable on any miss (no wallet, resolve miss,
+// the owner binding as the first application frame before Noise-KK runs inside
+// the MsgConn. It returns ErrUnreachable on any miss (legacy identity, resolve miss,
 // dial/send failure) so Attach falls through to the relay path.
 type lanLocator struct{ res resolver }
 
 func (l lanLocator) Dial(ctx context.Context, m Machine, id *Identity, _ []peer.ICEServer) (peer.MsgConn, func(), error) {
-	if !id.HasWallet() {
-		return nil, nil, ErrUnreachable // LAN attach requires a wallet binding
+	if !id.HasRootedIdentity() {
+		return nil, nil, ErrUnreachable // LAN attach requires an owner binding
 	}
 	// Bound the whole LAN attempt (resolve + dial) so a remote attach — where no
 	// LAN peer answers — falls through to the relay fast instead of waiting out
@@ -45,7 +45,7 @@ func (l lanLocator) Dial(ctx context.Context, m Machine, id *Identity, _ []peer.
 	if err != nil {
 		return nil, nil, ErrUnreachable
 	}
-	if err := conn.Send([]byte(id.BindingJSON)); err != nil { // frame 0: the wallet binding
+	if err := conn.Send([]byte(id.BindingJSON)); err != nil { // frame 0: the owner binding
 		_ = conn.Close()
 		return nil, nil, ErrUnreachable
 	}

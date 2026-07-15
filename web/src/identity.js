@@ -1,29 +1,31 @@
 // web/src/identity.js — owner identity from a passkey (WebAuthn prf), with a
 // degraded dev fallback. The prf output (deterministic per credential+salt, and
 // the same on every device the synced passkey reaches) is fed UNCHANGED into
-// BOTH deriveOwnerKey() (X25519 transport key) and deriveWallet() (the Ed25519
-// Solana wallet that anchors ownership). They share only the prf root, so the
-// owner_id (wallet address) and transport key follow you across devices and are
+// BOTH deriveOwnerKey() (X25519 transport key) and deriveSigner() (the neutral
+// Ed25519 identity that anchors ownership). They share only the PRF root, so the
+// owner_id and transport key follow you across devices and are
 // gated by Face ID / Touch ID. The relay never sees any of this.
 import { deriveOwnerKey } from './identity/owner.js';
-import { deriveWallet } from './identity/wallet.js';
+import { deriveSigner } from './identity/signer.js';
 import { resolveRPID } from './rp.js';
 import { randomBytes } from '@noble/hashes/utils';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 
-// identityFromPRF derives the full identity ({ owner, wallet, secret }) rooted in
+// identityFromPRF derives the full identity ({ owner, signer, secret }) rooted in
 // one 32-byte secret — the passkey prf output, or the dev secret. Mirrors how the
 // Go owner.json roots both keys in a single seed. `secret` is kept IN MEMORY only
 // (never persisted) so the session can derive the registry key (B2); it is the same
-// secret deriveWallet/deriveOwnerKey consume.
+// secret deriveSigner/deriveOwnerKey consume.
 function identityFromPRF(secret) {
-  return { owner: deriveOwnerKey(secret), wallet: deriveWallet(secret), secret };
+  return { owner: deriveOwnerKey(secret), signer: deriveSigner(secret), secret };
 }
 
 const enc = new TextEncoder();
 // rp.id is scoped to the exact production app host. Localhost remains separate
 // for dev. Do not use the parent domain as the RP trust root.
 const RP_ID = resolveRPID(location.hostname);
+// Protocol identifiers stay fixed for credential compatibility even though the
+// product is now named Miranda.
 const SALT = enc.encode('terminal-relay/owner/v1'); // prf eval salt — FIXED forever
 const USER_ID = enc.encode('terminal-relay/owner'); // fixed, no PII; re-enroll overwrites
 
@@ -48,7 +50,7 @@ function unb64url(s) {
 export async function registerPasskey() {
   const cred = await navigator.credentials.create({ publicKey: {
     rp: { id: RP_ID, name: 'Terminal Relay' },
-    user: { id: USER_ID, name: 'terminal-relay', displayName: 'Terminal Relay owner' },
+    user: { id: USER_ID, name: 'miranda', displayName: 'Miranda owner' },
     challenge: crypto.getRandomValues(new Uint8Array(32)),
     pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
     authenticatorSelection: { residentKey: 'required', requireResidentKey: true, userVerification: 'required' },
@@ -89,21 +91,21 @@ export async function signInPasskey() {
 
 // devOwnerKey is the DEGRADED localhost-only fallback: a plaintext 32-byte secret
 // in localStorage (not biometric-gated, not synced) that roots BOTH the X25519
-// transport key and the Ed25519 wallet — exactly as the prf output does on the
+// transport key and the Ed25519 signer — exactly as the prf output does on the
 // real path, mirroring Go's owner.json single-seed model. It is hard-guarded to
 // localhost so a real owner identity can NEVER be minted/persisted in the clear
 // on a production origin (where any same-origin script could read it) — not even
 // when the browser lacks WebAuthn. On a public host the passkey path is the only
-// way in. Returns { owner, wallet }.
+// way in. Returns { owner, signer, secret }.
 export function devOwnerKey() {
   if (!isLocalhost()) throw new Error('dev key is localhost-only; use a passkey on a public origin');
   let h = localStorage.getItem('tr_owner');
   if (!h) {
-    // 32-byte secret seed: the BIP39/wallet derivation needs 16..32 bytes.
+    // 32-byte secret seed: the recovery rendering accepts 16..32 bytes.
     h = bytesToHex(randomBytes(32));
     localStorage.setItem('tr_owner', h);
   }
   // Migration: a pre-B1.5 tr_owner held a raw 32-byte x25519 priv. Reuse it as the
-  // secret seed so an existing dev install keeps a stable (if re-rooted) identity.
+// secret seed. The v0.7 identity migration intentionally requires re-pairing.
   return identityFromPRF(hexToBytes(h));
 }

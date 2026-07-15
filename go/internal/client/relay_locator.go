@@ -3,6 +3,7 @@ package client
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/srcful/terminal-relay/go/internal/identity"
 	"github.com/srcful/terminal-relay/go/internal/peer"
 	"github.com/srcful/terminal-relay/go/internal/signal"
 )
@@ -21,7 +23,7 @@ import (
 type relayLocator struct{}
 
 func (relayLocator) Dial(ctx context.Context, m Machine, id *Identity, ice []peer.ICEServer) (peer.MsgConn, func(), error) {
-	ownerID := id.WalletAddress
+	ownerID := id.OwnerID
 	wsURL := "ws" + strings.TrimPrefix(m.SignalURL, "http") +
 		"/attach?owner_id=" + url.QueryEscape(ownerID) +
 		"&machine_id=" + url.QueryEscape(m.MachineID)
@@ -31,6 +33,16 @@ func (relayLocator) Dial(ctx context.Context, m Machine, id *Identity, ice []pee
 		return nil, nil, fmt.Errorf("dial signaling: %w", err)
 	}
 	closeWS := func() { _ = c.CloseNow() }
+	_, readyData, err := c.Read(ctx)
+	if err != nil {
+		closeWS()
+		return nil, nil, fmt.Errorf("signaling session: %w", err)
+	}
+	var ready signal.SignalMsg
+	if json.Unmarshal(readyData, &ready) != nil || ready.Type != signal.TypeReady || ready.Session == "" {
+		closeWS()
+		return nil, nil, fmt.Errorf("signaling: missing attach session")
+	}
 
 	off, opened, err := peer.NewOfferer(ice)
 	if err != nil {
@@ -44,7 +56,13 @@ func (relayLocator) Dial(ctx context.Context, m Machine, id *Identity, ice []pee
 		cleanup()
 		return nil, nil, err
 	}
-	offerMsg, _ := json.Marshal(signal.SignalMsg{Type: signal.TypeOffer, SDP: offerSDP, Binding: id.BindingJSON})
+	signer, err := id.Signer()
+	if err != nil {
+		cleanup()
+		return nil, nil, err
+	}
+	auth := signer.SignAuth(identity.AttachChallenge(ready.Session, m.MachineID, offerSDP))
+	offerMsg, _ := json.Marshal(signal.SignalMsg{Type: signal.TypeOffer, SDP: offerSDP, Binding: id.BindingJSON, Auth: base64.StdEncoding.EncodeToString(auth)})
 	if err := c.Write(ctx, websocket.MessageText, offerMsg); err != nil {
 		cleanup()
 		return nil, nil, err

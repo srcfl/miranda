@@ -7,6 +7,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"os"
 
 	"github.com/srcful/terminal-relay/go/internal/version"
 )
@@ -15,6 +16,7 @@ import (
 // handler. binary is "mir" normally and "mir-agent" via the shim; it selects the
 // self-update release asset and labels update notices.
 type app struct {
+	in     io.Reader
 	out    io.Writer // user-facing stdout
 	errOut io.Writer // diagnostics, usage, update/deprecation notices
 	binary string
@@ -23,17 +25,23 @@ type app struct {
 // Run dispatches a `mir` invocation. argv is os.Args[1:] (no program name).
 // Returns a process exit code.
 func Run(argv []string, stdout, stderr io.Writer) int {
-	return (&app{out: stdout, errOut: stderr, binary: "mir"}).run(argv)
+	return (&app{in: os.Stdin, out: stdout, errOut: stderr, binary: "mir"}).run(argv)
 }
 
-const agentDeprecationNotice = "note: `mir-agent` is deprecated and now an alias for `mir` — use `mir up` / `mir pair` / `mir enroll`. This shim will be removed in a future release."
+// runWithInput is the testable form used by secret-input commands. Production
+// callers use Run, which wires stdin to os.Stdin.
+func runWithInput(argv []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	return (&app{in: stdin, out: stdout, errOut: stderr, binary: "mir"}).run(argv)
+}
+
+const agentDeprecationNotice = "note: `mir-agent` is deprecated and now an alias for `mir` — use `mir up` / `mir pair`. This shim will be removed in a future release."
 
 // RunAgentCompat is the deprecated mir-agent entry point: it prints a one-line
 // deprecation notice to stderr, then dispatches exactly like Run but labelled
 // "mir-agent" (so self-update fetches the mir-agent asset and notices read right).
 func RunAgentCompat(argv []string, stdout, stderr io.Writer) int {
 	fmt.Fprintln(stderr, agentDeprecationNotice)
-	return (&app{out: stdout, errOut: stderr, binary: "mir-agent"}).run(argv)
+	return (&app{in: os.Stdin, out: stdout, errOut: stderr, binary: "mir-agent"}).run(argv)
 }
 
 func (a *app) run(argv []string) int {
@@ -65,8 +73,14 @@ func (a *app) run(argv []string) int {
 		return a.exit(a.cmdUp(argv[1:]))
 	case "pair":
 		return a.exit(a.cmdPair(argv[1:]))
+	case "identity":
+		return a.exit(a.cmdIdentity(argv[1:]))
+	case "machine":
+		return a.exit(a.cmdMachine(argv[1:]))
+	case "doctor":
+		return a.exit(a.cmdDoctor(argv[1:]))
 	case "wallet":
-		return a.exit(a.cmdWallet(argv[1:]))
+		return a.exit(a.cmdLegacyWallet(argv[1:]))
 	default:
 		a.usage()
 		return 2
@@ -83,7 +97,7 @@ func (a *app) exit(err error) int {
 }
 
 func (a *app) usage() {
-	fmt.Fprintln(a.errOut, "usage: "+a.binary+" <up|attach|list|pair|enroll|pair-dev|keygen|wallet|add-machine|run|self-update|--version> [flags]")
+	fmt.Fprintln(a.errOut, "usage: "+a.binary+" <up|attach|list|pair|machine|identity|doctor|run|self-update|--version> [flags]")
 }
 
 // guide is the no-argument landing: a friendly walkthrough of the core flow, with a
@@ -95,17 +109,16 @@ func (a *app) guide() {
 	if freshSetup() {
 		p("👋  Welcome to " + b + ". Looks like a fresh setup.")
 		p("")
-		p(b + " opens a real shell on your own machines from anywhere — no SSH, fully")
-		p("end-to-end encrypted. Your identity is a wallet created locally the first time")
-		p("you run a command; keep its 24-word phrase safe and you can restore it anywhere.")
+		p(b + " keeps your live terminal and AI sessions available on every device.")
+		p("No inbound ports or SSH keys. Your passkey identity and terminal data stay")
+		p("end-to-end encrypted; targets hold only their own machine keys.")
 		p("")
 	}
-	p(b + " — a real shell on your machines, from anywhere. Every node is symmetric: it")
-	p("can serve and it can attach.")
+	p(b + " — terminal continuity for long-running development and AI sessions.")
 	p("")
 	p("  Serve a machine (on the box you want to reach):")
-	p("    " + b + " up                keep it reachable (persistent tmux sessions)")
-	p("    " + b + " pair              make it pairable — prints a code + QR, then waits")
+	p("    " + b + " pair              authorize your passkey — prints a QR + safety number")
+	p("    " + b + " up                keep its tmux sessions reachable")
 	p("")
 	p("  Reach your machines (where you are):")
 	p("    " + b + " pair <code>       pair to a machine (compare the safety numbers)")
@@ -113,9 +126,11 @@ func (a *app) guide() {
 	p("    " + b + " attach a b c      several at once — Ctrl-O then 1–9 to switch")
 	p("")
 	p("  Identity & machines:")
-	p("    " + b + " wallet address    your wallet — this is your owner id")
-	p("    " + b + " wallet export-phrase   back it up (24 words; restores everything)")
+	p("    " + b + " identity show     your Miranda owner id")
+	p("    " + b + " identity export-recovery   emergency recovery phrase")
 	p("    " + b + " list              machines you've paired")
+	p("    " + b + " machine revoke <name> --yes   permanently block a lost target")
+	p("    " + b + " doctor            verify local state, keychain, tmux and relay")
 	p("")
 	p("On the same network, " + b + " attach connects directly over the LAN (no relay) and")
 	p("falls back to the relay automatically. Full help for any command: " + b + " <command> -h")

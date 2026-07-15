@@ -1,8 +1,8 @@
-# terminal-relay — local dev
+# Miranda — local development
 
 PREFIX ?= $(HOME)/.local/bin
 
-.PHONY: build test race install dev
+.PHONY: build test race reproduce install dev
 
 build:
 	cd go && go build -o ../bin/mir-signal ./cmd/mir-signal
@@ -14,6 +14,9 @@ test:
 
 race:
 	cd go && go test -race -count=1 ./...
+
+reproduce:
+	./scripts/verify-reproducible.sh
 
 # install the CLIs onto your PATH (default ~/.local/bin; override with PREFIX=...)
 install: build

@@ -43,6 +43,11 @@ func main() {
 	tlsKey := flag.String("tls-key", "", "TLS private key file (PEM)")
 	webroot := flag.String("webroot", "", "if set, serve the static SPA from this directory on non-signaling paths")
 	turnURL := flag.String("turn-url", "", "TURN url to hand out (e.g. turn:relay.example:3478); secret via MIR_TURN_SECRET env")
+	trustProxyHeaders := flag.Bool("trust-proxy-headers", false, "trust CF-Connecting-IP/X-Forwarded-For for rate limits (only behind a trusted proxy)")
+	var trustedProxyCIDRs stringSlice
+	flag.Var(&trustedProxyCIDRs, "trusted-proxy-cidr", "CIDR allowed to set client-IP headers (repeatable; required with --trust-proxy-headers)")
+	revocationsFile := flag.String("revocations-file", "", "durable signed machine-revocation store (recommended in production)")
+	requireTLS := flag.Bool("require-tls", false, "fail startup unless --tls-addr, certificate, and key are present")
 	var cspConnect stringSlice
 	flag.Var(&cspConnect, "csp-connect-src", "CSP connect-src token (repeatable); systemd-safe alternative to MIR_CSP_CONNECT_SRC. e.g. --csp-connect-src 'self' --csp-connect-src https://relay.example.net")
 	flag.Parse()
@@ -55,9 +60,26 @@ func main() {
 	s := signal.New()
 	s.Logf = log.Printf // structured per-event relay lines (register/replace/reject/gone/attach/flap/stats)
 	s.TURNURL = *turnURL
+	s.TrustProxyHeaders = *trustProxyHeaders
+	if *trustProxyHeaders {
+		if err := s.SetTrustedProxyCIDRs(trustedProxyCIDRs); err != nil {
+			log.Fatalf("mir-signal: trusted proxy configuration: %v", err)
+		}
+	}
 	s.TURNSecret = os.Getenv("MIR_TURN_SECRET") // shared with coturn; never logged/shipped
+	if *revocationsFile != "" {
+		if err := s.LoadRevocations(*revocationsFile); err != nil {
+			log.Fatalf("mir-signal: load revocations: %v", err)
+		}
+		log.Printf("mir-signal: durable revocations enabled at %s", *revocationsFile)
+	} else {
+		log.Printf("mir-signal WARNING: revocations are memory-only; set --revocations-file in production")
+	}
 	if s.TURNSecret != "" && s.TURNURL != "" {
 		log.Printf("mir-signal: issuing ephemeral TURN credentials for %s", s.TURNURL)
+	}
+	if err := validateTLSConfig(*requireTLS, *tlsAddr, *tlsCert, *tlsKey); err != nil {
+		log.Fatalf("mir-signal: %v", err)
 	}
 
 	// Stash any --csp-connect-src flag tokens so the static handler's per-request
@@ -83,13 +105,13 @@ func main() {
 	go s.RunStats(context.Background())
 
 	// Serve HTTPS directly when a cert is provided (Cloudflare "Full (strict)":
-	// the CF->origin leg is then encrypted). Runs alongside the plain listener so
-	// the cutover from "Flexible" (CF->origin :80) has no downtime.
+	// the CF->origin leg is then encrypted). The plain listener remains useful for
+	// localhost health checks and local development; production firewalls keep it
+	// unreachable from the public Internet.
 	//
-	// Only enter the TLS branch when the cert AND key files actually exist:
-	// ListenAndServeTLS log.Fatals the whole process if they are missing, which on
-	// a Cloudflare-Flexible (HTTP-only) box turns a stray --tls-* into a crash
-	// loop. If they are absent we warn and serve HTTP-only instead.
+	// Only enter the TLS branch when the cert AND key files actually exist. A
+	// production unit uses --require-tls and has already failed above if they are
+	// absent; optional mode warns and serves HTTP-only for local development.
 	if *tlsAddr != "" && *tlsCert != "" && *tlsKey != "" {
 		if fileExists(*tlsCert) && fileExists(*tlsKey) {
 			go func() {
@@ -122,6 +144,19 @@ func fileExists(path string) bool {
 	return err == nil && !info.IsDir()
 }
 
+func validateTLSConfig(required bool, addr, cert, key string) error {
+	if !required {
+		return nil
+	}
+	if addr == "" || cert == "" || key == "" {
+		return fmt.Errorf("TLS is required but --tls-addr/--tls-cert/--tls-key are incomplete")
+	}
+	if !fileExists(cert) || !fileExists(key) {
+		return fmt.Errorf("TLS is required but certificate or key is unavailable")
+	}
+	return nil
+}
+
 func newHTTPServer(addr string, handler http.Handler) *http.Server {
 	return &http.Server{
 		Addr:    addr,
@@ -149,7 +184,7 @@ func withStatic(sig http.Handler, dir string) http.Handler {
 	// routes registered in signal.Server.Handler(); main_test.go's
 	// TestWithStaticForwardsSignalingPaths guards against drift (it caught /registry
 	// going missing in production).
-	signalPaths := map[string]bool{"/agent/signal": true, "/attach": true, "/pair": true, "/turn-credentials": true, "/healthz": true, "/registry": true}
+	signalPaths := map[string]bool{"/agent/signal": true, "/attach": true, "/pair": true, "/turn-credentials": true, "/healthz": true, "/registry": true, "/revocations": true}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if signalPaths[r.URL.Path] {
 			sig.ServeHTTP(w, r)
@@ -177,7 +212,10 @@ func serveIndex(w http.ResponseWriter, path string) {
 		return
 	}
 	b := make([]byte, 16)
-	_, _ = rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		http.Error(w, "server entropy unavailable", http.StatusInternalServerError)
+		return
+	}
 	nonce := base64.StdEncoding.EncodeToString(b)
 	setStaticSecurityHeaders(w, nonce)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

@@ -4,9 +4,12 @@ package signal
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"strings"
@@ -14,6 +17,9 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+
+	"github.com/srcful/terminal-relay/go/internal/base58"
+	"github.com/srcful/terminal-relay/go/internal/identity"
 )
 
 // sendTimeout bounds how long the broker will wait to hand a SignalMsg to a
@@ -27,10 +33,20 @@ const sendTimeout = 2 * time.Second
 // TypeError "machine offline") before the socket is closed.
 const flushTimeout = 2 * time.Second
 
+// An attach socket only reserves agent capacity while its client constructs the
+// first signed SDP offer. Idle sockets are closed promptly.
+const firstOfferTimeout = 10 * time.Second
+
+// Once an offer is forwarded, the agent has a bounded window to answer. A
+// malformed or unauthorized offer must not reserve a browser slot forever.
+const offerAnswerTimeout = 30 * time.Second
+
 const (
 	maxSignalMessageBytes   = 256 << 10
 	defaultMaxAgentSessions = 128
 	defaultMaxPairRooms     = 1024
+	defaultMaxRateEntries   = 8192
+	defaultMaxRevocations   = 100000
 	capacityReason          = "server capacity reached"
 )
 
@@ -68,17 +84,26 @@ var acceptOpts = &websocket.AcceptOptions{OriginPatterns: []string{"*"}}
 // It authenticates only relay registration replacement for one owner|machine
 // slot; terminal data and peer authentication remain end-to-end on the data
 // plane.
-const AgentRegistrationSecretHeader = "X-TR-Agent-Registration-Secret"
+const AgentRegistrationSecretHeader = "X-Miranda-Agent-Registration-Secret"
+
+// AgentRegistrationAuthHeader carries an owner signature over the machine id
+// and SHA-256 commitment of AgentRegistrationSecretHeader. It closes the
+// trust-on-first-registration gap without giving the agent an owner secret.
+const AgentRegistrationAuthHeader = "X-Miranda-Agent-Registration-Authorization"
 
 // Server brokers SDP between agents and browsers. It never carries terminal
 // data — only SignalMsg (SDP + routing). Once a DataChannel is up P2P, the two
 // signaling sockets for that session are no longer needed.
 type Server struct {
-	mu     sync.Mutex
-	agents map[string]*agentConn // owner|machine -> live agent
-	proofs *proofStore           // owner|machine -> learned registration proof (bounded)
-	pair   *pairRooms            // roomID -> waiting pairing party (blind bridge)
-	flaps  *flapCounter          // owner|machine -> recent replacement timestamps (bounded)
+	mu      sync.Mutex
+	agents  map[string]*agentConn          // owner|machine -> live agent
+	proofs  *proofStore                    // owner|machine -> learned registration proof (bounded)
+	pair    *pairRooms                     // roomID -> waiting pairing party (blind bridge)
+	flaps   *flapCounter                   // owner|machine -> recent replacement timestamps (bounded)
+	revoked map[string]identity.Revocation // owner|machine -> permanent owner-signed tombstone
+
+	revocationsFile string
+	maxRevocations  int
 
 	// Logf records one structured line per relay event (register, replace,
 	// reject, gone, attach, flap, stats). It is never nil at runtime: New()
@@ -94,6 +119,13 @@ type Server struct {
 
 	maxAgentSessions int
 	maxPairRooms     int
+	limiter          *requestLimiter
+
+	// TrustProxyHeaders enables CF-Connecting-IP/X-Forwarded-For parsing. Keep it
+	// false unless the origin is reachable only through a trusted reverse proxy;
+	// otherwise clients can spoof those headers to evade per-IP limits.
+	TrustProxyHeaders bool
+	trustedProxyNets  []*net.IPNet
 }
 
 // agentConn is one agent control socket. It owns the set of browser sessions
@@ -227,9 +259,12 @@ func New() *Server {
 		proofs:           newProofStore(defaultMaxAgentProofs),
 		pair:             newPairRooms(),
 		flaps:            newFlapCounter(flapThreshold, flapWindow, defaultMaxAgentProofs),
+		revoked:          map[string]identity.Revocation{},
 		Logf:             func(string, ...any) {}, // no-op until the binary wires a real logger
 		maxAgentSessions: defaultMaxAgentSessions,
 		maxPairRooms:     defaultMaxPairRooms,
+		limiter:          newRequestLimiter(defaultMaxRateEntries),
+		maxRevocations:   defaultMaxRevocations,
 	}
 }
 
@@ -256,18 +291,24 @@ func shortID(id string) string {
 // Cloudflare, so the real client address is in CF-Connecting-IP (preferred) or
 // the first hop of X-Forwarded-For; r.RemoteAddr would otherwise just be the
 // Cloudflare edge. Falls back to the host part of RemoteAddr.
-func remoteIP(r *http.Request) string {
-	if cf := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cf != "" {
-		return cf
-	}
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		// X-Forwarded-For is "client, proxy1, proxy2"; the left-most entry is the
-		// original client.
-		if i := strings.IndexByte(xff, ','); i >= 0 {
-			xff = xff[:i]
+func (s *Server) remoteIP(r *http.Request) string {
+	if s.TrustProxyHeaders && s.isTrustedProxy(r.RemoteAddr) {
+		if cf := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cf != "" {
+			if ip := net.ParseIP(cf); ip != nil {
+				return ip.String()
+			}
 		}
-		if xff = strings.TrimSpace(xff); xff != "" {
-			return xff
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			// X-Forwarded-For is "client, proxy1, proxy2"; the left-most entry is the
+			// original client.
+			if i := strings.IndexByte(xff, ','); i >= 0 {
+				xff = xff[:i]
+			}
+			if xff = strings.TrimSpace(xff); xff != "" {
+				if ip := net.ParseIP(xff); ip != nil {
+					return ip.String()
+				}
+			}
 		}
 	}
 	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
@@ -276,31 +317,71 @@ func remoteIP(r *http.Request) string {
 	return r.RemoteAddr
 }
 
+// SetTrustedProxyCIDRs constrains which immediate peers may supply client-IP
+// headers. Without this allow-list, a direct origin request could spoof
+// CF-Connecting-IP and bypass the per-IP limiter.
+func (s *Server) SetTrustedProxyCIDRs(cidrs []string) error {
+	nets := make([]*net.IPNet, 0, len(cidrs))
+	for _, raw := range cidrs {
+		_, network, err := net.ParseCIDR(strings.TrimSpace(raw))
+		if err != nil {
+			return fmt.Errorf("invalid trusted proxy CIDR %q: %w", raw, err)
+		}
+		nets = append(nets, network)
+	}
+	if len(nets) == 0 {
+		return fmt.Errorf("at least one trusted proxy CIDR is required")
+	}
+	s.trustedProxyNets = nets
+	return nil
+}
+
+func (s *Server) isTrustedProxy(remoteAddr string) bool {
+	host := remoteAddr
+	if parsed, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		host = parsed
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	for _, network := range s.trustedProxyNets {
+		if network.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/agent/signal", s.handleAgent)
-	mux.HandleFunc("/attach", s.handleAttach)
-	mux.HandleFunc("/pair", s.handlePair)
-	mux.HandleFunc("/turn-credentials", s.handleTURN)
-	mux.HandleFunc("/registry", s.handleRegistry)
+	mux.HandleFunc("/agent/signal", s.rateLimited("/agent/signal", s.handleAgent))
+	mux.HandleFunc("/attach", s.rateLimited("/attach", s.handleAttach))
+	mux.HandleFunc("/pair", s.rateLimited("/pair", s.handlePair))
+	mux.HandleFunc("/turn-credentials", s.rateLimited("/turn-credentials", s.handleTURN))
+	mux.HandleFunc("/registry", s.rateLimited("/registry", s.handleRegistry))
+	mux.HandleFunc("/revocations", s.rateLimited("/revocations", s.handleRevocations))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	return mux
 }
 
-// handleRegistry serves GET /registry?wallet=W -> [{machine_id, blob}] for the
-// agents currently registered under wallet W. It is a blind, stateless,
+// handleRegistry serves GET /registry?owner_id=O -> [{machine_id, blob}] for the
+// agents currently registered under owner O. It is a blind, stateless,
 // unauthenticated pass-through: it lists the opaque blobs published on the live
 // agentConns and never decrypts, verifies, or persists them. A fresh Server has
 // nothing to serve; a relay restart loses every blob and agents re-publish on
-// reconnect. The blobs self-authenticate via their wallet-derived AEAD, so the
-// relay needs no auth here — only a wallet-holder can produce a blob that opens.
+// reconnect. The blobs self-authenticate via their owner-root-derived AEAD, so
+// the relay needs no auth here — only an owner client can produce a blob that opens.
 func (s *Server) handleRegistry(w http.ResponseWriter, r *http.Request) {
-	wallet := r.URL.Query().Get("wallet")
-	if wallet == "" {
-		http.Error(w, "missing wallet", http.StatusBadRequest)
+	owner := r.URL.Query().Get("owner_id")
+	if owner == "" {
+		owner = r.URL.Query().Get("wallet") // v0.6 migration compatibility
+	}
+	if owner == "" {
+		http.Error(w, "missing owner_id", http.StatusBadRequest)
 		return
 	}
-	prefix := wallet + "|"
+	prefix := owner + "|"
 	type entry struct {
 		MachineID string `json:"machine_id"`
 		Blob      string `json:"blob"`
@@ -309,6 +390,9 @@ func (s *Server) handleRegistry(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	for k, ac := range s.agents {
 		if !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		if _, isRevoked := s.revoked[k]; isRevoked {
 			continue
 		}
 		// Copy the blob string out; do not hold ac's mutex across the s.mu loop.
@@ -323,10 +407,12 @@ func (s *Server) handleRegistry(w http.ResponseWriter, r *http.Request) {
 
 func key(owner, machine string) string { return owner + "|" + machine }
 
-func newSessionID() string {
+func newSessionID() (string, error) {
 	b := make([]byte, 16)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
 
 func acceptSignal(w http.ResponseWriter, r *http.Request) (*websocket.Conn, error) {
@@ -353,9 +439,23 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	proof := r.Header.Get(AgentRegistrationSecretHeader)
-	ip := remoteIP(r)
+	authorization := r.Header.Get(AgentRegistrationAuthHeader)
+	ip := s.remoteIP(r)
 	ownerS, machineS := shortID(owner), shortID(machine)
 	k := key(owner, machine)
+	s.mu.Lock()
+	_, isRevoked := s.revoked[k]
+	s.mu.Unlock()
+	if isRevoked {
+		s.logf("event=agent_reject reason=revoked owner=%s machine=%s ip=%s", ownerS, machineS, ip)
+		http.Error(w, "machine revoked", http.StatusGone)
+		return
+	}
+	if !agentRegistrationAuthorized(owner, machine, proof, authorization) {
+		s.logf("event=agent_reject reason=owner_auth owner=%s machine=%s ip=%s", ownerS, machineS, ip)
+		http.Error(w, "agent registration authorization required", http.StatusUnauthorized)
+		return
+	}
 	s.mu.Lock()
 	if !s.agentProofOKLocked(k, proof) {
 		s.mu.Unlock()
@@ -377,6 +477,12 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 	// bound to it — must be torn down so nothing keeps routing offers to the
 	// dead one.
 	s.mu.Lock()
+	if _, isRevoked := s.revoked[k]; isRevoked {
+		s.mu.Unlock()
+		s.logf("event=agent_reject reason=revoked owner=%s machine=%s ip=%s", ownerS, machineS, ip)
+		c.Close(websocket.StatusPolicyViolation, "machine revoked")
+		return
+	}
 	if !s.agentProofOKLocked(k, proof) {
 		s.mu.Unlock()
 		s.logf("event=agent_reject reason=proof owner=%s machine=%s ip=%s", ownerS, machineS, ip)
@@ -455,6 +561,7 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 				// so an answer can only ever reach a session the agent owns.
 				if bc := ac.session(m.Session); bc != nil {
 					bc.notify(SignalMsg{Type: TypeAnswer, SDP: m.SDP})
+					bc.close() // signaling is one-shot; writer flushes the queued answer
 				}
 			}
 		}
@@ -462,6 +569,27 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 
 	// Writer: drain ac.out to the agent until ac.done (or r.Context()) fires.
 	writeUntil(r.Context(), ac.done, c, ac.out, SignalMsg{Type: TypeReady})
+}
+
+// agentRegistrationAuthorized protects real Miranda owner ids from first-use
+// slot squatting. Old development/test identities that are not 32-byte base58
+// public keys retain the bounded legacy proof policy; production identities are
+// always valid Ed25519 public keys and must present an owner authorization.
+func agentRegistrationAuthorized(owner, machine, proof, authorization string) bool {
+	ownerPub, err := base58.Decode(owner)
+	if err != nil || len(ownerPub) != 32 {
+		return true
+	}
+	secret, err := hex.DecodeString(proof)
+	if err != nil || len(secret) != 32 {
+		return false
+	}
+	sig, err := base64.StdEncoding.DecodeString(authorization)
+	if err != nil {
+		return false
+	}
+	commitment := sha256.Sum256(secret)
+	return identity.VerifyAuth(owner, identity.RegistrationChallenge(machine, hex.EncodeToString(commitment[:])), sig) == nil
 }
 
 // agentProofOKLocked reports whether proof may (re)register slot k. Callers must
@@ -485,8 +613,9 @@ func (s *Server) RunStats(ctx context.Context) {
 			s.mu.Lock()
 			agents := len(s.agents)
 			proofs := s.proofs.len()
+			revocations := len(s.revoked)
 			s.mu.Unlock()
-			s.logf("event=stats agents=%d proofs=%d", agents, proofs)
+			s.logf("event=stats agents=%d proofs=%d revocations=%d", agents, proofs, revocations)
 		}
 	}
 }
@@ -498,7 +627,7 @@ func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing owner_id/machine_id", http.StatusBadRequest)
 		return
 	}
-	ip := remoteIP(r)
+	ip := s.remoteIP(r)
 	ownerS, machineS := shortID(owner), shortID(machine)
 	c, err := acceptSignal(w, r)
 	if err != nil {
@@ -510,15 +639,25 @@ func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
 
 	k := key(owner, machine)
 	s.mu.Lock()
+	_, isRevoked := s.revoked[k]
 	ac := s.agents[k]
 	s.mu.Unlock()
+	if isRevoked {
+		s.logf("event=attach_revoked owner=%s machine=%s ip=%s", ownerS, machineS, ip)
+		writeSignalErrorAndClose(readCtx, c, "machine revoked", websocket.StatusPolicyViolation)
+		return
+	}
 	if ac == nil {
 		s.logf("event=attach_offline owner=%s machine=%s ip=%s", ownerS, machineS, ip)
 		writeSignalErrorAndClose(readCtx, c, "machine offline", websocket.StatusGoingAway)
 		return
 	}
 
-	sess := newSessionID()
+	sess, err := newSessionID()
+	if err != nil {
+		writeSignalErrorAndClose(readCtx, c, "server entropy unavailable", websocket.StatusInternalError)
+		return
+	}
 	bc := newBrowserConn()
 
 	// Bind this session to the agent so the agent's teardown (death or
@@ -542,6 +681,9 @@ func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
 		ac.unbind(sess)
 		bc.close()
 	}()
+	signalDeadline := time.AfterFunc(firstOfferTimeout, func() { bc.fail("offer timeout") })
+	defer signalDeadline.Stop()
+	var offered sync.Once
 
 	// Notify the agent that a browser wants it. Never a bare blocking send: bound
 	// to the agent's done and a timeout so a wedged agent can't hang this attach.
@@ -564,6 +706,18 @@ func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			if m.Type == TypeOffer {
+				// Each signaling socket is one-shot; later offers are ignored. The
+				// relay deliberately does not interpret auth/binding fields — the
+				// agent is the authorization boundary — but the answer deadline
+				// still prevents an invalid offer from reserving this slot forever.
+				accepted := false
+				offered.Do(func() {
+					accepted = true
+					signalDeadline.Reset(offerAnswerTimeout)
+				})
+				if !accepted {
+					continue
+				}
 				// Re-look-up the live agent for this key on every offer rather
 				// than trusting the pointer captured at attach time. On agent
 				// re-registration the captured ac is stale; routing the offer to
@@ -575,7 +729,7 @@ func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
 					bc.fail("machine offline")
 					return
 				}
-				if !agentSend(live, bc.done, SignalMsg{Type: TypeOffer, Session: sess, SDP: m.SDP, Binding: m.Binding}) {
+				if !agentSend(live, bc.done, SignalMsg{Type: TypeOffer, Session: sess, SDP: m.SDP, Binding: m.Binding, Auth: m.Auth}) {
 					bc.fail("machine offline")
 					return
 				}
@@ -584,7 +738,7 @@ func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	// Writer: drain bc.out to the browser until bc.done (or r.Context()) fires.
-	writeUntil(r.Context(), bc.done, c, bc.out, SignalMsg{})
+	writeUntil(r.Context(), bc.done, c, bc.out, SignalMsg{Type: TypeReady, Session: sess})
 }
 
 func writeSignalErrorAndClose(ctx context.Context, c *websocket.Conn, reason string, code websocket.StatusCode) {

@@ -13,7 +13,7 @@
 // relay serves sw.js no-store — so a new deploy replaces this worker on the
 // next online load.
 
-const CACHE = 'mir-shell-v1';
+const CACHE = 'mir-shell-v2';
 
 // Everything the app needs to boot. test/sw.test.js fails if this list drifts
 // from the files on disk — add new modules here when you add them to src/.
@@ -31,7 +31,7 @@ const SHELL = [
   '/src/identity/binding.js',
   '/src/identity/owner.js',
   '/src/identity/registry.js',
-  '/src/identity/wallet.js',
+  '/src/identity/signer.js',
   '/src/net/backoff.js',
   '/src/net/reconnect.js',
   '/src/net/ws-open.js',
@@ -43,19 +43,18 @@ const SHELL = [
   '/src/pairing/nnpsk0.js',
   '/src/pairing/sas.js',
   '/src/registry.js',
+  '/src/revocations.js',
   '/src/rp.js',
   '/src/store.js',
   '/src/ui/keybar.js',
   '/src/wallet/base58.js',
   '/src/wallet/bip39.js',
-  '/src/wallet/slip10.js',
   '/src/wallet/wordlist.js',
   '/vendor/jsqr.js',
   '/vendor/noble-ciphers-chacha.js',
   '/vendor/noble-curves-ed25519.js',
   '/vendor/noble-hashes-hkdf.js',
   '/vendor/noble-hashes-hmac.js',
-  '/vendor/noble-hashes-pbkdf2.js',
   '/vendor/noble-hashes-sha2.js',
   '/vendor/noble-hashes-utils.js',
   '/vendor/xterm-addon-fit.js',
@@ -66,7 +65,7 @@ const SHELL = [
 // Live conversations with the relay — never cached, never intercepted.
 // (WebSocket upgrades bypass the fetch handler anyway; this covers the plain
 // HTTP ones like /turn-credentials and keeps the list in one place.)
-const SIGNALING = ['/agent/signal', '/attach', '/pair', '/turn-credentials', '/healthz', '/registry'];
+const SIGNALING = ['/agent/signal', '/attach', '/pair', '/turn-credentials', '/healthz', '/registry', '/revocations'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(

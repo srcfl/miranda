@@ -4,6 +4,7 @@
 import { runInitiator } from './pairing/nnpsk0.js';
 import { decodeCode, roomID } from './pairing/code.js';
 import { safetyNumber } from './pairing/sas.js';
+import { registryKey, sealRecord } from './identity/registry.js';
 
 const wsBase = (signalURL) => 'ws' + signalURL.slice(4); // http->ws, https->wss
 
@@ -12,10 +13,10 @@ const wsBase = (signalURL) => 'ws' + signalURL.slice(4); // http->ws, https->wss
 // "pairing…" forever. 30s is generous for a human-paced QR scan + two round trips.
 const PAIR_TIMEOUT_MS = 30000;
 
-// pairWithCode runs the pairing handshake using `wallet` ({ address, priv }) as our
-// identity: it sends the base58 wallet as a PairClaim and proves control with an auth
+// pairWithCode runs the pairing handshake using `signer` ({ address, priv }) as our
+// identity: it sends the legacy-wire owner field and proves control with an auth
 // signature over the channel binding. Returns { machine, safetyNumber }.
-export async function pairWithCode(code, wallet) {
+export async function pairWithCode(code, signer, secret = null) {
   const { signalURL, token } = decodeCode(code);
 
   const ws = new WebSocket(wsBase(signalURL) + '/pair?room=' + roomID(token));
@@ -63,7 +64,20 @@ export async function pairWithCode(code, wallet) {
       }),
     };
 
-    const { info, binding } = await runInitiator(mc, token, wallet);
+    const provisioner = secret ? (info) => {
+      const record = new TextEncoder().encode(JSON.stringify({
+        v: 1,
+        name: info.name,
+        host_pub: info.host_pub,
+        signal_url: signalURL,
+        ts: Math.floor(Date.now() / 1000),
+      }));
+      const blob = sealRecord(registryKey(secret), crypto.getRandomValues(new Uint8Array(12)), record, info.machine_id);
+      let binary = '';
+      for (const b of blob) binary += String.fromCharCode(b);
+      return btoa(binary);
+    } : null;
+    const { info, binding } = await runInitiator(mc, token, signer, null, provisioner);
     return {
       machine: { machine_id: info.machine_id, host_pub: info.host_pub, name: info.name, signal: signalURL },
       safetyNumber: safetyNumber(binding),

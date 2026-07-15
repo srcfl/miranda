@@ -24,13 +24,14 @@ func TestEndToEndRealShellOverP2P(t *testing.T) {
 	// Owner (browser) identity + agent keystore with that owner pinned. The owner
 	// is a real wallet: owner_id is the base58 wallet address, and the Noise pin is
 	// recovered from a wallet-signed binding carried on the offer (B1.4.1).
-	ownerPriv, _, ownerID, bindingJSON := ownerBinding(t, bytes.Repeat([]byte{0x11}, 32), "owner-device-e2e")
+	ownerSecret := bytes.Repeat([]byte{0x11}, 32)
+	ownerPriv, _, ownerID, bindingJSON := ownerBinding(t, ownerSecret, "owner-device-e2e")
 	dir := t.TempDir()
 	cfg, err := LoadOrInit(dir, "e2e-machine", srv.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := PinOwner(dir, ownerID); err != nil {
+	if err := ProvisionOwner(dir, ownerID, "", ownerRegistrationAuth(t, ownerSecret, cfg)); err != nil {
 		t.Fatal(err)
 	}
 	cfg, _ = LoadOrInit(dir, "e2e-machine", srv.URL) // reload with the pinned owner
@@ -50,6 +51,14 @@ func TestEndToEndRealShellOverP2P(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	_, readyData, err := bc.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ready signal.SignalMsg
+	if json.Unmarshal(readyData, &ready) != nil || ready.Type != signal.TypeReady || ready.Session == "" {
+		t.Fatalf("expected attach ready, got %s", readyData)
+	}
 	off, opened, err := peer.NewOfferer(nil)
 	if err != nil {
 		t.Fatal(err)
@@ -60,7 +69,7 @@ func TestEndToEndRealShellOverP2P(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	offerMsg, _ := json.Marshal(signal.SignalMsg{Type: signal.TypeOffer, SDP: offerSDP, Binding: bindingJSON})
+	offerMsg, _ := json.Marshal(signal.SignalMsg{Type: signal.TypeOffer, SDP: offerSDP, Binding: bindingJSON, Auth: ownerAttachAuth(t, ownerSecret, ready.Session, cfg.MachineID, offerSDP)})
 	if err := bc.Write(ctx, websocket.MessageText, offerMsg); err != nil {
 		t.Fatal(err)
 	}

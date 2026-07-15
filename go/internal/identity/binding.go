@@ -12,7 +12,7 @@ import (
 	"github.com/srcful/terminal-relay/go/internal/base58"
 )
 
-// bindingDomain separates binding signatures from any other use of the wallet
+// bindingDomain separates binding signatures from any other use of the owner
 // key (auth, future schemes). Signed bytes = bindingDomain || canonical(binding).
 const bindingDomain = "miranda/binding/v1"
 
@@ -21,18 +21,18 @@ var (
 	hex64Re  = regexp.MustCompile(`^[0-9a-f]{64}$`)
 )
 
-// Binding authorizes a device's X25519 transport key under the wallet identity.
-// A wallet-addressed peer presents this so others can accept its Noise-KK static
-// key. Mirrors web/src/identity/binding.js exactly.
+// Binding authorizes a device's X25519 transport key under the Miranda owner
+// identity. The Wallet field name is retained only for wire compatibility.
+// Mirrors web/src/identity/binding.js exactly.
 type Binding struct {
 	V      int    // version, always 1
-	Wallet string // base58 Ed25519 wallet address (the signer)
+	Wallet string // base58 Ed25519 Miranda owner id (legacy wire field name)
 	Device string // machine_id
 	X25519 string // hex of the 32-byte transport public key it authorizes
 	Ts     int64  // unix seconds
 }
 
-// SignedBinding is a Binding plus the wallet's base58 signature.
+// SignedBinding is a Binding plus the owner's base58 signature.
 type SignedBinding struct {
 	Binding
 	Sig string
@@ -43,7 +43,7 @@ func (b Binding) validate() error {
 		return fmt.Errorf("binding: unsupported version %d", b.V)
 	}
 	if pk, err := base58.Decode(b.Wallet); err != nil || len(pk) != ed25519.PublicKeySize {
-		return fmt.Errorf("binding: wallet is not a 32-byte base58 key")
+		return fmt.Errorf("binding: owner is not a 32-byte base58 key")
 	}
 	if !deviceRe.MatchString(b.Device) {
 		return fmt.Errorf("binding: device has unsafe characters")
@@ -85,8 +85,8 @@ func bindingMessage(canonical string) []byte {
 }
 
 // SignBinding builds and signs a binding authorizing device + x25519 (the 32-byte
-// transport pub, hex) under this wallet.
-func (w *Wallet) SignBinding(device, x25519 string, ts int64) (*SignedBinding, error) {
+// transport pub, hex) under this owner identity.
+func (w *Signer) SignBinding(device, x25519 string, ts int64) (*SignedBinding, error) {
 	b := Binding{V: 1, Wallet: w.Address, Device: device, X25519: x25519, Ts: ts}
 	canon, err := b.Canonical()
 	if err != nil {
@@ -96,7 +96,7 @@ func (w *Wallet) SignBinding(device, x25519 string, ts int64) (*SignedBinding, e
 	return &SignedBinding{Binding: b, Sig: base58.Encode(sig)}, nil
 }
 
-// VerifyBinding checks the signature against the wallet public key embedded in
+// VerifyBinding checks the signature against the owner public key embedded in
 // the binding. Returns nil iff valid.
 func VerifyBinding(sb *SignedBinding) error {
 	canon, err := sb.Binding.Canonical()
@@ -105,7 +105,7 @@ func VerifyBinding(sb *SignedBinding) error {
 	}
 	pub, err := base58.Decode(sb.Wallet)
 	if err != nil || len(pub) != ed25519.PublicKeySize {
-		return fmt.Errorf("binding: bad wallet key")
+		return fmt.Errorf("binding: bad owner key")
 	}
 	sig, err := base58.Decode(sb.Sig)
 	if err != nil || len(sig) != ed25519.SignatureSize {

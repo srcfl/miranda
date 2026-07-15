@@ -1,12 +1,9 @@
-// Package bip39 implements the BIP39 entropy<->mnemonic and mnemonic->seed
-// steps used to render the passkey prf as a 24-word phrase and a wallet seed.
+// Package bip39 implements BIP39 entropy<->mnemonic for recovery rendering.
 // Tiny and dependency-free for byte-identical parity with web/src/wallet/bip39.js.
 package bip39
 
 import (
-	"crypto/pbkdf2"
 	"crypto/sha256"
-	"crypto/sha512"
 	"fmt"
 	"strings"
 )
@@ -39,19 +36,6 @@ func EntropyToMnemonic(entropy []byte) (string, error) {
 		words[w] = wordlist[idx]
 	}
 	return strings.Join(words, " "), nil
-}
-
-// MnemonicToSeed derives the 64-byte BIP39 seed via PBKDF2-HMAC-SHA512 with 2048
-// iterations and salt "mnemonic"+passphrase. Inputs must already be NFKD-
-// normalized; the English wordlist and Miranda's empty passphrase are ASCII, so
-// this matches the JS side (which applies NFKD) byte-for-byte.
-func MnemonicToSeed(mnemonic, passphrase string) []byte {
-	seed, err := pbkdf2.Key(sha512.New, mnemonic, []byte("mnemonic"+passphrase), 2048, 64)
-	if err != nil {
-		// pbkdf2.Key only errors on absurd key lengths; 64 is always valid.
-		panic(err)
-	}
-	return seed
 }
 
 var wordIndexMap = func() map[string]int {

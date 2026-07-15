@@ -3,6 +3,7 @@ package agent
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/hex"
 	"strings"
 	"testing"
@@ -17,7 +18,7 @@ import (
 // machine_id, so it is not checked.
 func TestOwnerPubFromBinding(t *testing.T) {
 	secret := bytes.Repeat([]byte{0x42}, 32)
-	w, err := identity.DeriveWallet(secret)
+	w, err := identity.DeriveSigner(secret)
 	if err != nil {
 		t.Fatalf("DeriveWallet: %v", err)
 	}
@@ -40,9 +41,9 @@ func TestOwnerPubFromBinding(t *testing.T) {
 
 	// A second, unrelated wallet — its address is a valid base58 owner_id that
 	// does not match the binding's wallet.
-	other, err := identity.DeriveWallet(bytes.Repeat([]byte{0x07}, 32))
+	other, err := identity.DeriveSigner(bytes.Repeat([]byte{0x07}, 32))
 	if err != nil {
-		t.Fatalf("DeriveWallet(other): %v", err)
+		t.Fatalf("DeriveSigner(other): %v", err)
 	}
 
 	// Tamper one character of the base58 signature inside the rendered JSON.
@@ -81,6 +82,28 @@ func TestOwnerPubFromBinding(t *testing.T) {
 	}
 }
 
+func ownerAttachAuth(t *testing.T, secret []byte, session, machineID, sdp string) string {
+	t.Helper()
+	signer, err := identity.DeriveSigner(secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return base64.StdEncoding.EncodeToString(signer.SignAuth(identity.AttachChallenge(session, machineID, sdp)))
+}
+
+func ownerRegistrationAuth(t *testing.T, secret []byte, cfg *Config) string {
+	t.Helper()
+	signer, err := identity.DeriveSigner(secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitment, err := cfg.RegistrationCommitment()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return base64.StdEncoding.EncodeToString(signer.SignAuth(identity.RegistrationChallenge(cfg.MachineID, commitment)))
+}
+
 // ownerBinding mints a wallet-rooted owner identity for handleOffer tests: it
 // derives the wallet (owner_id) and the X25519 transport keypair from a shared
 // secret, then signs a binding authorizing that x25519 under the wallet for the
@@ -88,7 +111,7 @@ func TestOwnerPubFromBinding(t *testing.T) {
 // to register/pin, and the signed-binding JSON to attach to the offer.
 func ownerBinding(t *testing.T, secret []byte, device string) (priv, pub []byte, ownerID, bindingJSON string) {
 	t.Helper()
-	w, err := identity.DeriveWallet(secret)
+	w, err := identity.DeriveSigner(secret)
 	if err != nil {
 		t.Fatalf("DeriveWallet: %v", err)
 	}

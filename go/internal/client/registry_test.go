@@ -84,8 +84,8 @@ func TestFetchRegistryDecryptsAndDropsForgeries(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
-		if got := r.URL.Query().Get("wallet"); got != id.WalletAddress {
-			t.Errorf("wallet query = %q, want %q", got, id.WalletAddress)
+		if got := r.URL.Query().Get("owner_id"); got != id.OwnerID {
+			t.Errorf("owner_id query = %q, want %q", got, id.OwnerID)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode([]any{good, forged})
@@ -215,7 +215,7 @@ func TestNotifyNewDevices(t *testing.T) {
 	if !strings.Contains(first, `"box"`) || !strings.Contains(first, `"kitchen"`) {
 		t.Fatalf("first notify should name both new devices, got:\n%s", first)
 	}
-	if !strings.Contains(first, "new device") || !strings.Contains(first, "joined your wallet") {
+	if !strings.Contains(first, "new machine") || !strings.Contains(first, "joined your Miranda identity") {
 		t.Fatalf("first notify wording = %q", first)
 	}
 

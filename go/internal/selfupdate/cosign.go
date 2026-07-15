@@ -36,16 +36,8 @@ func cosignIdentityRegexp(repo string) string {
 // genuinely came from THIS repo's release pipeline. It does NOT attest to the
 // source that was built — only to the checksum file's origin.
 //
-// Degradation policy:
-//   - cosign not on PATH       -> stay SILENT and return nil (checksum-only
-//     fallback). Most users don't have cosign installed, and the per-file SHA256
-//     already guards against a corrupted download, so a successful update must not
-//     look like a failure. Set MIR_REQUIRE_COSIGN to turn this into a hard error.
-//   - signing assets absent    -> if the release predates signing (no .sig/.pem
-//     URLs at all), fall back silently (or hard-fail under MIR_REQUIRE_COSIGN). If
-//     cosign is present AND the assets are expected but unfetchable, hard failure.
-//   - verification fails        -> return error; the caller MUST abort the update.
-//   - verification passes       -> emit a positive one-line confirmation via note.
+// Verification fails closed: missing cosign, missing signing assets, failed
+// downloads, and invalid signatures all abort the update.
 //
 // note receives a single human-readable line (no trailing newline) for the success
 // confirmation; pass a stderr writer in production, nil to silence.
@@ -55,17 +47,8 @@ func (c *Client) verifyChecksumsSignature(rel *Release, sums []byte, note func(s
 			note(msg)
 		}
 	}
-	// soft degrades a missing-provenance case: silent by default (don't nag the
-	// majority without cosign), a hard error when the operator demands verification.
-	soft := func(reason string) error {
-		if os.Getenv("MIR_REQUIRE_COSIGN") != "" {
-			return fmt.Errorf("%s, and MIR_REQUIRE_COSIGN is set", reason)
-		}
-		return nil
-	}
-
 	if _, err := exec.LookPath("cosign"); err != nil {
-		return soft("cosign is not installed, so the release signature was not verified")
+		return fmt.Errorf("cosign is required to verify Miranda releases")
 	}
 
 	// A release cut before signing was introduced carries no .sig/.pem. cosign
@@ -73,7 +56,7 @@ func (c *Client) verifyChecksumsSignature(rel *Release, sums []byte, note func(s
 	// upgrading FROM an old release still works. (The next signed tag is the
 	// first one that will actually exercise verification.)
 	if rel.ChecksumsSigURL == "" || rel.ChecksumsCertURL == "" {
-		return soft("this release has no cosign signature")
+		return fmt.Errorf("release has no cosign signature; refusing update")
 	}
 
 	sig, err := c.fetch(rel.ChecksumsSigURL)

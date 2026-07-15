@@ -60,7 +60,7 @@ func TestLANLocatorDialSendsBinding(t *testing.T) {
 	if err := id.SetFromSecret(secret); err != nil {
 		t.Fatalf("set from secret: %v", err)
 	}
-	if !id.HasWallet() {
+	if !id.HasRootedIdentity() {
 		t.Fatal("expected identity to have a wallet")
 	}
 
@@ -123,8 +123,8 @@ func TestLANLocatorUnreachableOnResolveMiss(t *testing.T) {
 // LAN attach (which requires a binding), so Dial returns ErrUnreachable before
 // even touching the resolver.
 func TestLANLocatorUnreachableWithoutWallet(t *testing.T) {
-	id := &Identity{} // no SecretHex/BindingJSON => HasWallet()==false
-	if id.HasWallet() {
+	id := &Identity{} // no SecretHex/BindingJSON => HasRootedIdentity()==false
+	if id.HasRootedIdentity() {
 		t.Fatal("expected identity to have no wallet")
 	}
 

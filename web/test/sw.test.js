@@ -102,7 +102,7 @@ test('network-first: serves the fresh response and rewrites the cache', async ()
     request: getRequest('/src/app.js'),
   });
   assert.equal(await response.text(), 'shell:/src/app.js');
-  assert.equal(await stores.get('mir-shell-v1').get('/src/app.js').clone().text(), 'shell:/src/app.js');
+  assert.equal(await stores.get('mir-shell-v2').get('/src/app.js').clone().text(), 'shell:/src/app.js');
 });
 
 test('relay unreachable: falls back to the cached shell', async () => {
@@ -140,6 +140,8 @@ test('never intercepts signaling, non-GET, or cross-origin requests', async () =
     getRequest('/pair'),
     getRequest('/turn-credentials'),
     getRequest('/healthz'),
+	getRequest('/registry'),
+	getRequest('/revocations'),
     { method: 'POST', url: ORIGIN + '/anything', mode: 'no-cors' },
     { method: 'GET', url: 'https://evil.example/x', mode: 'no-cors' },
   ]) {

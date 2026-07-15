@@ -23,7 +23,9 @@ else
 fi
 
 echo "== build mir-signal (linux/amd64, static) =="
-( cd "$REPO/go" && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/mir-signal-linux ./cmd/mir-signal )
+( cd "$REPO/go" && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build \
+  -trimpath -buildvcs=false -ldflags "-buildid=" \
+  -o /tmp/mir-signal-linux ./cmd/mir-signal )
 
 # Pin the exact bytes we just built. /tmp on the relay is world-writable, so
 # without an integrity check a local user on the box (or a TOCTOU between scp and

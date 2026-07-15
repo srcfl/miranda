@@ -43,6 +43,11 @@ func TestWithStaticForwardsSignalingPaths(t *testing.T) {
 		t.Fatalf("/healthz via withStatic not forwarded (err=%v)", err)
 	}
 
+	// Signed machine tombstones must never fall through to the SPA either.
+	if r, err := http.Get(ts.URL + "/revocations?owner_id=test"); err != nil || r.StatusCode != http.StatusOK {
+		t.Fatalf("/revocations via withStatic not forwarded (err=%v)", err)
+	}
+
 	// A missing static asset still 404s via the FS — proves we aren't trivially
 	// forwarding everything to the signal server.
 	if r, err := http.Get(ts.URL + "/vendor/missing-asset.js"); err != nil || r.StatusCode != http.StatusNotFound {
@@ -73,6 +78,27 @@ func TestNewHTTPServerSetsTimeouts(t *testing.T) {
 	}
 	if srv.IdleTimeout != 2*time.Minute {
 		t.Fatalf("IdleTimeout: got %v", srv.IdleTimeout)
+	}
+}
+
+func TestValidateTLSConfigFailsClosedWhenRequired(t *testing.T) {
+	dir := t.TempDir()
+	cert := filepath.Join(dir, "cert.pem")
+	key := filepath.Join(dir, "key.pem")
+	if err := validateTLSConfig(true, ":443", cert, key); err == nil {
+		t.Fatal("missing required TLS files accepted")
+	}
+	if err := os.WriteFile(cert, []byte("test"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(key, []byte("test"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateTLSConfig(true, ":443", cert, key); err != nil {
+		t.Fatalf("present TLS config rejected: %v", err)
+	}
+	if err := validateTLSConfig(false, "", "", ""); err != nil {
+		t.Fatalf("optional TLS config rejected: %v", err)
 	}
 }
 

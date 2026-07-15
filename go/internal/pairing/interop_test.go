@@ -71,7 +71,7 @@ func nnpsk0(initiator bool) *noise.HandshakeState {
 
 func runFixed(t *testing.T) pairVectors {
 	t.Helper()
-	wallet, err := identity.DeriveWallet(fxWalletPRF)
+	wallet, err := identity.DeriveSigner(fxWalletPRF)
 	if err != nil {
 		t.Fatal(err)
 	}

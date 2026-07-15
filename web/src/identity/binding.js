@@ -1,6 +1,6 @@
 // web/src/identity/binding.js
-// Mirrors go/internal/identity/binding.go: a wallet-signed authorization of a
-// device's X25519 transport key. Byte-identical canonical message and signature.
+// Mirrors go/internal/identity/binding.go: an owner-signed authorization of a
+// device's X25519 key. `wallet` is retained only as the historical wire field.
 import { ed25519 } from '@noble/curves/ed25519';
 import { encode as b58encode, decode as b58decode } from '../wallet/base58.js';
 
@@ -15,9 +15,9 @@ function validate(b) {
   try {
     pk = b58decode(b.wallet);
   } catch {
-    throw new Error('binding: wallet is not base58');
+    throw new Error('binding: owner is not base58');
   }
-  if (pk.length !== 32) throw new Error('binding: wallet is not a 32-byte key');
+  if (pk.length !== 32) throw new Error('binding: owner is not a 32-byte key');
   if (typeof b.device !== 'string' || !DEVICE_RE.test(b.device)) throw new Error('binding: device has unsafe characters');
   if (typeof b.x25519 !== 'string' || !HEX64_RE.test(b.x25519)) throw new Error('binding: x25519 must be 64 lowercase hex chars');
   if (!Number.isInteger(b.ts) || b.ts <= 0) throw new Error('binding: ts must be a positive integer');
@@ -31,16 +31,16 @@ export function canonical(b) {
   return `{"v":${b.v},"wallet":"${b.wallet}","device":"${b.device}","x25519":"${b.x25519}","ts":${b.ts}}`;
 }
 
-// signBinding signs a binding authorizing device + x25519 under the given wallet
-// ({ address, priv }). Returns the wire record { v, wallet, device, x25519, ts, sig }.
-export function signBinding(wallet, device, x25519, ts) {
-  const b = { v: 1, wallet: wallet.address, device, x25519, ts };
+// signBinding signs a binding under the given owner signer. The record retains
+// the legacy `wallet` key for protocol compatibility.
+export function signBinding(signer, device, x25519, ts) {
+  const b = { v: 1, wallet: signer.address, device, x25519, ts };
   const canon = canonical(b);
-  const sig = ed25519.sign(enc.encode(DOMAIN + canon), wallet.priv);
+  const sig = ed25519.sign(enc.encode(DOMAIN + canon), signer.priv);
   return { ...b, sig: b58encode(sig) };
 }
 
-// verifyBinding checks the signature against the wallet pubkey embedded in the
+// verifyBinding checks the signature against the owner pubkey embedded in the
 // record. Returns true iff valid; never throws.
 export function verifyBinding(sb) {
   let canon;

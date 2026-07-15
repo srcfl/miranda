@@ -14,6 +14,8 @@ import { pairWithCode } from './pair.js';
 import { confirmPairingSafety, machineAfterConfirmedPairing, pendingPairingConfirmation } from './pairing/confirm.js';
 import { registerPasskey, signInPasskey, devOwnerKey, passkeySupported, isLocalhost } from './identity.js';
 import { signBinding, recordJSON } from './identity/binding.js';
+import { signAuth, attachChallenge } from './identity/auth.js';
+import { filterRevoked, isMachineRevoked, loadRevocations, revokeMachine, syncRevocations } from './revocations.js';
 import { makeKeybar, shouldShowKeybar } from './ui/keybar.js';
 import jsQR from '/vendor/jsqr.js';
 
@@ -40,19 +42,18 @@ async function iceServers(signalURL) {
 // Resolved once at the sign-in gate and cached; ownerKey() stays synchronous so
 // attach()/pairWithCode() are untouched (passkey get() is async + needs a user
 // gesture, so it can't run inside a sync call).
-// _id holds the full prf-rooted identity { owner, wallet }: `owner` is the X25519
-// transport keypair (Noise-KK static, unchanged) and `wallet` is the Ed25519 Solana
-// wallet ({ address, priv, ... }) that now serves as owner_id on the wire.
+// _id holds { owner, signer, secret }: an X25519 transport key, a neutral
+// Ed25519 owner signer, and the in-memory-only passkey PRF result.
 let _id = null;
 export function ownerKey() {
   if (!_id) throw new Error('not signed in');
   return _id.owner;
 }
-export function walletKey() {
+export function signerKey() {
   if (!_id) throw new Error('not signed in');
-  return _id.wallet;
+  return _id.signer;
 }
-function setOwner(id) { _id = id; window.__ownerPub = bytesToHex(id.owner.pub); window.__wallet = id.wallet.address; }
+function setOwner(id) { _id = id; window.__ownerPub = bytesToHex(id.owner.pub); window.__identity = id.signer.address; }
 
 // deviceID returns a stable per-browser device id (binding.device), generated once.
 function deviceID() {
@@ -74,11 +75,12 @@ const wsBase = (signalURL) => 'ws' + signalURL.slice(4); // http->ws, https->wss
 // tmux FrameWindows snapshot. The caller (makeTerminal) owns the terminal + teardown.
 export async function connectOnce(machine, term, current, onConnected, onWindows) {
   const owner = ownerKey();
-  const wallet = walletKey();
-  // owner_id is the base58 wallet address; the agent recovers the X25519 KK pin from
-  // the signed binding carried on the offer (it cannot hex-decode the wallet).
-  const ownerId = wallet.address;
-  const binding = recordJSON(signBinding(wallet, deviceID(), bytesToHex(owner.pub), Math.floor(Date.now() / 1000)));
+  const signer = signerKey();
+	if (isMachineRevoked(machine.machine_id, signer.address)) throw new Error('machine revoked');
+  // owner_id is the neutral Ed25519 address; the signed binding authorizes this
+  // browser's X25519 transport key for the Noise handshake.
+  const ownerId = signer.address;
+  const binding = recordJSON(signBinding(signer, deviceID(), bytesToHex(owner.pub), Math.floor(Date.now() / 1000)));
   const diag = { step: 'start', ws: 'init', gather: '', iceConn: '', conn: '', dc: 'init' };
   window.__diag = diag;
 
@@ -127,9 +129,13 @@ export async function connectOnce(machine, term, current, onConnected, onWindows
   let failSetup;
   const setupFail = new Promise((_, rej) => { failSetup = rej; });
   setupFail.catch(() => {});
+	let readySession;
+	let resolveReady;
+	const ready = new Promise((resolve) => { resolveReady = resolve; });
   ws.onmessage = async (ev) => {
     const m = JSON.parse(ev.data);
-    if (m.type === 'answer') { diag.step = 'got-answer'; await pc.setRemoteDescription({ type: 'answer', sdp: m.sdp }); }
+	if (m.type === 'ready' && m.session) { readySession = m.session; resolveReady(m.session); }
+	else if (m.type === 'answer') { diag.step = 'got-answer'; await pc.setRemoteDescription({ type: 'answer', sdp: m.sdp }); }
     else if (m.type === 'error') { diag.step = 'signal-error'; failSetup(new Error('relay: ' + (m.reason || 'agent unavailable'))); }
   };
   ws.onclose = () => { if (!connected) failSetup(new Error('signal socket closed')); };
@@ -138,6 +144,7 @@ export async function connectOnce(machine, term, current, onConnected, onWindows
   try {
     diag.step = 'ws-connecting';
     await Promise.race([wsOpen, setupFail]);
+	await Promise.race([ready, setupFail]);
     diag.step = 'creating-offer';
     await pc.setLocalDescription(await pc.createOffer());
     // non-trickle: send once gathering completes OR after a cap (a slow/unreachable STUN must not hang).
@@ -148,7 +155,10 @@ export async function connectOnce(machine, term, current, onConnected, onWindows
       pc.addEventListener('icegatheringstatechange', () => { diag.gather = pc.iceGatheringState; if (pc.iceGatheringState === 'complete') finish(); });
     });
     diag.step = 'offer-sent';
-    ws.send(JSON.stringify({ type: 'offer', sdp: pc.localDescription.sdp, binding }));
+	const authSig = signAuth(signer, attachChallenge(readySession, machine.machine_id, pc.localDescription.sdp));
+	let authBinary = '';
+	for (const b of authSig) authBinary += String.fromCharCode(b);
+	ws.send(JSON.stringify({ type: 'offer', sdp: pc.localDescription.sdp, binding, auth: btoa(authBinary) }));
 
     diag.step = 'awaiting-datachannel';
     const inbox = [];
@@ -294,7 +304,10 @@ function newDevices(discovered) {
   return fresh;
 }
 
+let visibleMachines = [];
+
 function renderMachines(root, machines, fresh) {
+	visibleMachines = machines;
   const grid = el('div', { className: 'grid' });
   for (const m of machines) {
     grid.append(el('button', { className: 'card machine', onclick: () => viewTerminal(root, m) },
@@ -305,7 +318,7 @@ function renderMachines(root, machines, fresh) {
     el('div', { className: 'plus' }, '＋'), el('div', { className: 'sub' }, 'Pair a machine')));
   const kids = [
     el('h1', {}, 'your machines'),
-    el('p', { className: 'muted' }, 'Reach a shell on any of them — peer-to-peer, end-to-end encrypted.'),
+    el('p', { className: 'muted' }, 'Your live terminals. Leave one device, continue on another.'),
   ];
   if (fresh && fresh.length) {
     kids.push(el('p', { className: 'muted' }, '📣 new device joined: ' + fresh.map((m) => m.name || m.machine_id).join(', ')));
@@ -315,16 +328,25 @@ function renderMachines(root, machines, fresh) {
 }
 
 // viewMachines renders the locally-stored machines immediately, then enriches the
-// list from the wallet's encrypted registry (B2) — your machines appear by name with
+// list from the owner's encrypted registry (B2) — your machines appear by name with
 // no manual pairing. The fetch is same-origin (the relay that served this app) and
 // best-effort: a failure just leaves the local list. Discovery only.
 function viewMachines(root) {
-  renderMachines(root, listMachines(), []);
+	let localRevocations;
+	try { localRevocations = loadRevocations(signerKey().address); }
+	catch (e) {
+		mount(root, el('div', { className: 'view' },
+			el('h1', {}, 'security check failed'),
+			el('p', { className: 'muted' }, e && e.message || String(e))));
+		return;
+	}
+	renderMachines(root, filterRevoked(listMachines(), localRevocations), []);
   (async () => {
     try {
-      const discovered = await fetchMachines(location.origin, walletKey(), _id.secret);
-      if (!discovered.length) return;
-      renderMachines(root, mergeMachines(listMachines(), discovered), newDevices(discovered));
+		const revocations = await syncRevocations(location.origin, signerKey().address);
+      const discovered = await fetchMachines(location.origin, signerKey(), _id.secret);
+		const visibleDiscovered = filterRevoked(discovered, revocations);
+		renderMachines(root, filterRevoked(mergeMachines(listMachines(), visibleDiscovered), revocations), newDevices(visibleDiscovered));
     } catch { /* not signed in / relay unreachable — keep the local list */ }
   })();
 }
@@ -392,14 +414,14 @@ function viewPair(root, prefill = '', auto = false) {
     mount(root, el('div', { className: 'view' }, el('h1', {}, 'pairing…'), status));
     status.textContent = 'pairing…';
     try {
-      const { machine, safetyNumber } = await pairWithCode(code, walletKey());
+      const { machine, safetyNumber } = await pairWithCode(code, signerKey(), _id.secret);
       const pending = pendingPairingConfirmation(machine, safetyNumber);
       window.__lastSafety = safetyNumber;
       status.innerHTML = '';
       status.append(
         el('div', { className: 'ok' }, 'Compare safety numbers before trusting ' + (machine.name || machine.machine_id)),
         el('div', { className: 'sas' }, pending.safetyNumber),
-        el('div', { className: 'muted' }, 'Find the safety number printed by `mir-agent pair` on the machine. Continue only if every group matches this number exactly.'),
+        el('div', { className: 'muted' }, 'Find the safety number printed by `mir pair` on the machine. Continue only if all six groups match exactly.'),
         el('div', { className: 'actions' },
           el('button', { className: 'btn', onclick: () => {
             const confirmed = confirmPairingSafety(pending);
@@ -427,7 +449,7 @@ function viewPair(root, prefill = '', auto = false) {
     const sStatus = el('div', { className: 'status' });
     mount(root, el('div', { className: 'view' },
       el('h1', {}, 'scan the QR'),
-      el('p', { className: 'muted' }, 'Point at the QR shown by `mir-agent pair`.'),
+      el('p', { className: 'muted' }, 'Point at the QR shown by `mir pair` on the machine.'),
       video, sStatus,
       el('button', { className: 'link', onclick: () => leaveScanner(() => viewPair(root)) }, '✕ cancel')));
     const stop = await scanQR(video, (text) => pairCode(codeFromScan(text)), (err) => { sStatus.textContent = err; });
@@ -442,7 +464,7 @@ function viewPair(root, prefill = '', auto = false) {
   const input = el('input', { className: 'code', placeholder: 'or paste the code', value: prefill });
   mount(root, el('div', { className: 'view' },
     el('h1', {}, 'pair a machine'),
-    el('p', { className: 'muted' }, 'Run `mir-agent pair` on the machine, then scan its QR.'),
+    el('p', { className: 'muted' }, 'Run `mir pair` on the machine, then scan its QR.'),
     el('button', { className: 'btn', onclick: startScan }, '📷 Scan QR'),
     input,
     el('button', { className: 'link', onclick: () => pairCode(input.value) }, 'pair with pasted code'),
@@ -457,6 +479,16 @@ function viewTerminal(root, machine) {
   let snap = null; // latest FrameWindows snapshot: v2 {v,sess:[...]}, or null (non-tmux)
   const close = () => { try { handle && handle.close(); } catch {} };
   const focus = () => { window.__term && window.__term.focus(); };
+	const revoke = async () => {
+		if (!window.confirm('Permanently revoke ' + (machine.name || machine.machine_id) + '? It must be paired again under a new owner identity to return.')) return;
+		close();
+		try {
+			await revokeMachine([machine.signal, location.origin], signerKey(), machine.machine_id);
+		} catch (e) {
+			window.alert(e && e.message || String(e));
+		}
+		viewMachines(root);
+	};
 
   // tmux control: the AGENT runs the command directly (robust — no prefix
   // dependence, no command-prompt/Enter fragility, no keystroke timing). Target
@@ -487,9 +519,10 @@ function viewTerminal(root, machine) {
   const termBox = el('div', { className: 'termbox' });
   const back = el('button', { className: 'tb-btn', onclick: () => { close(); viewMachines(root); } }, '‹ Machines');
   const sw = el('button', { className: 'tb-btn', title: 'switch machine', onclick: () => openSwitcher() }, '⇄');
+	const revokeBtn = el('button', { className: 'tb-btn', title: 'revoke machine', onclick: revoke }, '⊘');
   const strip = el('div', { className: 'winbar' });
   const view = el('div', { className: 'view term' },
-    el('div', { className: 'topbar' }, back, el('div', { className: 'tb-title' }, machine.name || machine.machine_id), sw),
+    el('div', { className: 'topbar' }, back, el('div', { className: 'tb-title' }, machine.name || machine.machine_id), sw, revokeBtn),
     strip, termBox);
   mount(root, view);
 
@@ -587,7 +620,7 @@ function viewTerminal(root, machine) {
   function openSwitcher() {
     const card = el('div', { className: 'sheet-card' }, el('div', { className: 'sheet-title' }, 'switch machine'));
     const sheet = el('div', { className: 'sheet', onclick: (e) => { if (e.target === sheet) sheet.remove(); } }, card);
-    for (const m of listMachines().filter((x) => x.machine_id !== machine.machine_id)) {
+    for (const m of visibleMachines.filter((x) => x.machine_id !== machine.machine_id)) {
       card.append(el('button', { className: 'sheet-item', onclick: () => { sheet.remove(); close(); viewTerminal(root, m); } }, m.name || m.machine_id));
     }
     card.append(el('button', { className: 'sheet-item add', onclick: () => { sheet.remove(); close(); viewPair(root); } }, '＋ Pair a machine'));
@@ -682,7 +715,7 @@ function viewIdentityGate(root, pendingFrag) {
 
   const kids = [
     el('h1', {}, 'Miranda'),
-    el('p', { className: 'muted' }, 'Your terminals, on every device — peer-to-peer, end-to-end encrypted. Log in on any device and your machines appear. The relay never sees your identity.'),
+    el('p', { className: 'muted' }, 'Leave your desk. Keep your terminal. Your passkey finds your machines; the relay never receives the private identity key or plaintext terminal data.'),
   ];
   if (passkeySupported && !isLocalhost()) {
     kids.push(el('button', { className: 'btn', onclick: login }, 'Log in with passkey'));
@@ -719,5 +752,5 @@ export function start(root) {
     window.__useDevKey = () => { setOwner(devOwnerKey()); localStorage.setItem('tr_identity_mode', 'dev'); viewMachines(root); };
   }
   window.trAttach = (m) => attach(m, root.querySelector('.termbox') || root);
-  window.trPair = (code) => pairWithCode(code, walletKey());
+  window.trPair = (code) => pairWithCode(code, signerKey(), _id.secret);
 }

@@ -29,15 +29,17 @@ func TestRuntimeReclaimsAttachOnDisconnect(t *testing.T) {
 
 	// Wallet-rooted owner: owner_id is the base58 wallet address and the Noise pin
 	// is recovered from a wallet-signed binding carried on the offer (B1.4.1).
-	ownerPriv, _, ownerID, bindingJSON := ownerBinding(t, bytes.Repeat([]byte{0x22}, 32), "owner-device-leak")
+	ownerSecret := bytes.Repeat([]byte{0x22}, 32)
+	ownerPriv, _, ownerID, bindingJSON := ownerBinding(t, ownerSecret, "owner-device-leak")
 	dir := t.TempDir()
-	if _, err := LoadOrInit(dir, "leak-machine", srv.URL); err != nil {
+	cfg, err := LoadOrInit(dir, "leak-machine", srv.URL)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := PinOwner(dir, ownerID); err != nil {
+	if err := ProvisionOwner(dir, ownerID, "", ownerRegistrationAuth(t, ownerSecret, cfg)); err != nil {
 		t.Fatal(err)
 	}
-	cfg, _ := LoadOrInit(dir, "leak-machine", srv.URL)
+	cfg, _ = LoadOrInit(dir, "leak-machine", srv.URL)
 
 	// Long-lived agent ctx — stays alive across the whole test (it must NOT be
 	// what frees the attach).
@@ -59,6 +61,14 @@ func TestRuntimeReclaimsAttachOnDisconnect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	_, readyData, err := bc.Read(dialCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ready signal.SignalMsg
+	if json.Unmarshal(readyData, &ready) != nil || ready.Type != signal.TypeReady || ready.Session == "" {
+		t.Fatalf("expected attach ready, got %s", readyData)
+	}
 	off, opened, err := peer.NewOfferer(nil)
 	if err != nil {
 		t.Fatal(err)
@@ -68,7 +78,7 @@ func TestRuntimeReclaimsAttachOnDisconnect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	offerMsg, _ := json.Marshal(signal.SignalMsg{Type: signal.TypeOffer, SDP: offerSDP, Binding: bindingJSON})
+	offerMsg, _ := json.Marshal(signal.SignalMsg{Type: signal.TypeOffer, SDP: offerSDP, Binding: bindingJSON, Auth: ownerAttachAuth(t, ownerSecret, ready.Session, cfg.MachineID, offerSDP)})
 	if err := bc.Write(dialCtx, websocket.MessageText, offerMsg); err != nil {
 		t.Fatal(err)
 	}

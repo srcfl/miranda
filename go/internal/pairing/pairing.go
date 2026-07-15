@@ -4,6 +4,7 @@ package pairing
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 
@@ -20,17 +21,36 @@ const prologue = "terminal-relay/pair/v1"
 
 // AgentInfo is what the agent reveals to the client during pairing.
 type AgentInfo struct {
-	HostPubHex string `json:"host_pub"`
-	MachineID  string `json:"machine_id"`
-	Name       string `json:"name"`
+	HostPubHex             string `json:"host_pub"`
+	MachineID              string `json:"machine_id"`
+	Name                   string `json:"name"`
+	RegistrationCommitment string `json:"registration_commitment,omitempty"`
 }
 
-// PairClaim is the initiator's msg1 payload: the base58 wallet it claims to own.
-// The claim is later proven by a wallet auth signature over the channel binding
-// (msg3), so the responder pins the wallet only after verifying control of it.
+// PairClaim is the initiator's msg1 payload. Wallet is the historical wire field
+// name; its value is the base58 Miranda owner id. The responder pins it only
+// after verifying an owner signature over the channel binding in msg3.
 type PairClaim struct {
 	Wallet string `json:"wallet"`
 }
+
+// PairProof is msg3 in the provisioned flow. Signature proves owner control
+// over the Noise transcript; Registry is an optional owner-encrypted discovery
+// record for this machine. The agent can publish it but cannot decrypt it.
+type PairProof struct {
+	Signature        string `json:"signature"`
+	Registry         string `json:"registry,omitempty"`
+	RegistrationAuth string `json:"registration_auth,omitempty"`
+}
+
+// Provision is owner-created state delivered to the agent only after the
+// pairing transcript signature verifies. Neither field is an owner secret.
+type Provision struct {
+	Registry         string
+	RegistrationAuth string
+}
+
+type Provisioner func(*AgentInfo) (string, error)
 
 func newHandshake(initiator bool, token []byte) (*noise.HandshakeState, error) {
 	return noise.NewHandshakeState(noise.Config{
@@ -44,17 +64,27 @@ func newHandshake(initiator bool, token []byte) (*noise.HandshakeState, error) {
 	})
 }
 
-// RunInitiator is the client side: it sends a PairClaim for its wallet (msg1),
-// reads the agent's info (msg2), then proves control of the wallet with an auth
+// RunInitiator is the client side: it sends its owner claim (msg1), reads the
+// agent's info (msg2), then proves control of the owner identity with an auth
 // signature over the channel binding (msg3). It returns the agent's info plus the
 // Noise channel binding (a transcript hash identical on both ends iff there was
 // no MITM — use sas.FromBinding to show a safety number).
-func RunInitiator(ctx context.Context, mc peer.MsgConn, token []byte, wallet *identity.Wallet) (*AgentInfo, []byte, error) {
+func RunInitiator(ctx context.Context, mc peer.MsgConn, token []byte, signer *identity.Signer) (*AgentInfo, []byte, error) {
+	return runInitiator(ctx, mc, token, signer, nil)
+}
+
+// RunInitiatorProvisioned performs owner-side discovery provisioning without
+// sending the owner secret or registry key to the agent.
+func RunInitiatorProvisioned(ctx context.Context, mc peer.MsgConn, token []byte, signer *identity.Signer, provision Provisioner) (*AgentInfo, []byte, error) {
+	return runInitiator(ctx, mc, token, signer, provision)
+}
+
+func runInitiator(ctx context.Context, mc peer.MsgConn, token []byte, signer *identity.Signer, provision Provisioner) (*AgentInfo, []byte, error) {
 	hs, err := newHandshake(true, token)
 	if err != nil {
 		return nil, nil, err
 	}
-	claim, _ := json.Marshal(PairClaim{Wallet: wallet.Address})
+	claim, _ := json.Marshal(PairClaim{Wallet: signer.Address})
 	msg1, _, _, err := hs.WriteMessage(nil, claim)
 	if err != nil {
 		return nil, nil, err
@@ -74,56 +104,108 @@ func RunInitiator(ctx context.Context, mc peer.MsgConn, token []byte, wallet *id
 	if err := json.Unmarshal(payload, &info); err != nil {
 		return nil, nil, err
 	}
-	// msg3: prove control of the wallet by signing the channel binding. The
-	// signature is public (it binds to the transcript hash), so it travels as a
-	// plain frame outside the Noise payload.
+	// msg3: prove owner control and optionally provision an opaque record.
 	binding := hs.ChannelBinding()
-	if err := mc.Send(wallet.SignAuth(binding)); err != nil {
+	sig := signer.SignAuth(binding)
+	if provision == nil {
+		// Compatibility with v0.6 responders.
+		if err := mc.Send(sig); err != nil {
+			return nil, nil, err
+		}
+		return &info, binding, nil
+	}
+	registry, err := provision(&info)
+	if err != nil {
+		return nil, nil, err
+	}
+	registrationAuth := ""
+	if info.RegistrationCommitment != "" {
+		registrationAuth = base64.StdEncoding.EncodeToString(signer.SignAuth(identity.RegistrationChallenge(info.MachineID, info.RegistrationCommitment)))
+	}
+	proof, err := json.Marshal(PairProof{
+		Signature:        base64.StdEncoding.EncodeToString(sig),
+		Registry:         registry,
+		RegistrationAuth: registrationAuth,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := mc.Send(proof); err != nil {
 		return nil, nil, err
 	}
 	return &info, binding, nil
 }
 
 // RunResponder is the agent side: it reads the client's PairClaim (msg1), sends
-// its info (msg2), then verifies the client's wallet auth signature over the
-// channel binding (msg3). It returns the proven base58 wallet plus the Noise
-// channel binding (see RunInitiator). The wallet is returned only if auth
-// verifies — callers pin it directly.
+// its info (msg2), then verifies the client's owner signature over the channel
+// binding (msg3). It returns the proven base58 owner id plus the Noise channel
+// binding. The owner id is returned only if auth verifies.
 func RunResponder(ctx context.Context, mc peer.MsgConn, token []byte, info AgentInfo) (string, []byte, error) {
+	ownerID, _, binding, err := runResponder(ctx, mc, token, info)
+	return ownerID, binding, err
+}
+
+// RunResponderProvisioned returns the opaque record only after owner auth has
+// verified. Callers may persist it next to the owner pin.
+func RunResponderProvisioned(ctx context.Context, mc peer.MsgConn, token []byte, info AgentInfo) (string, Provision, []byte, error) {
+	return runResponder(ctx, mc, token, info)
+}
+
+func runResponder(ctx context.Context, mc peer.MsgConn, token []byte, info AgentInfo) (string, Provision, []byte, error) {
 	hs, err := newHandshake(false, token)
 	if err != nil {
-		return "", nil, err
+		return "", Provision{}, nil, err
 	}
 	msg1, err := mc.Recv(ctx)
 	if err != nil {
-		return "", nil, err
+		return "", Provision{}, nil, err
 	}
 	payload, _, _, err := hs.ReadMessage(nil, msg1)
 	if err != nil {
-		return "", nil, fmt.Errorf("pairing handshake failed (wrong code?): %w", err)
+		return "", Provision{}, nil, fmt.Errorf("pairing handshake failed (wrong code?): %w", err)
 	}
 	var claim PairClaim
 	if err := json.Unmarshal(payload, &claim); err != nil {
-		return "", nil, fmt.Errorf("pairing: bad claim: %w", err)
+		return "", Provision{}, nil, fmt.Errorf("pairing: bad claim: %w", err)
 	}
 	if pk, derr := base58.Decode(claim.Wallet); derr != nil || len(pk) != 32 {
-		return "", nil, fmt.Errorf("pairing: bad wallet")
+		return "", Provision{}, nil, fmt.Errorf("pairing: bad owner id")
 	}
 	infoJSON, _ := json.Marshal(info)
 	msg2, _, _, err := hs.WriteMessage(nil, infoJSON)
 	if err != nil {
-		return "", nil, err
+		return "", Provision{}, nil, err
 	}
 	if err := mc.Send(msg2); err != nil {
-		return "", nil, err
+		return "", Provision{}, nil, err
 	}
 	binding := hs.ChannelBinding()
-	sig, err := mc.Recv(ctx) // msg3: the wallet auth signature over the binding
+	proofBytes, err := mc.Recv(ctx)
 	if err != nil {
-		return "", nil, err
+		return "", Provision{}, nil, err
+	}
+	sig := proofBytes
+	provision := Provision{}
+	if len(proofBytes) != 64 {
+		var proof PairProof
+		if err := json.Unmarshal(proofBytes, &proof); err != nil {
+			return "", Provision{}, nil, fmt.Errorf("pairing: bad owner proof")
+		}
+		sig, err = base64.StdEncoding.DecodeString(proof.Signature)
+		if err != nil {
+			return "", Provision{}, nil, fmt.Errorf("pairing: bad owner signature encoding")
+		}
+		provision.Registry = proof.Registry
+		provision.RegistrationAuth = proof.RegistrationAuth
 	}
 	if err := identity.VerifyAuth(claim.Wallet, binding, sig); err != nil {
-		return "", nil, fmt.Errorf("pairing: wallet auth failed: %w", err)
+		return "", Provision{}, nil, fmt.Errorf("pairing: owner auth failed: %w", err)
 	}
-	return claim.Wallet, binding, nil
+	if info.RegistrationCommitment != "" {
+		registrationSig, err := base64.StdEncoding.DecodeString(provision.RegistrationAuth)
+		if err != nil || identity.VerifyAuth(claim.Wallet, identity.RegistrationChallenge(info.MachineID, info.RegistrationCommitment), registrationSig) != nil {
+			return "", Provision{}, nil, fmt.Errorf("pairing: invalid agent registration authorization")
+		}
+	}
+	return claim.Wallet, provision, binding, nil
 }

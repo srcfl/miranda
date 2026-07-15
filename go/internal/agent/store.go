@@ -3,8 +3,10 @@ package agent
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -19,8 +21,15 @@ type Config struct {
 	RegistrationSecret string   `json:"registration_secret,omitempty"` // relay-side registration proof
 	MachineName        string   `json:"machine_name"`                  // human label (travels E2E only)
 	SignalURL          string   `json:"signal_url"`                    // e.g. http://localhost:8443
-	PairedOwners       []string `json:"paired_owners"`                 // hex owner pubkeys
-	Dir                string   `json:"-"`                             // source directory (for hot-reloading owners)
+	PairedOwners       []string `json:"paired_owners"`                 // base58 Miranda owner ids
+	// OwnerRegistry contains opaque, owner-encrypted discovery records keyed by
+	// owner id. They are created by the passkey-holding client during pairing.
+	// The agent can republish them but cannot decrypt them.
+	OwnerRegistry map[string]string `json:"owner_registry,omitempty"`
+	// OwnerRegistrationAuth contains owner signatures authorizing this agent's
+	// registration-secret commitment. They are public proofs, not owner secrets.
+	OwnerRegistrationAuth map[string]string `json:"owner_registration_auth,omitempty"`
+	Dir                   string            `json:"-"` // source directory (for hot-reloading owners)
 }
 
 // ReloadOwners reads the current paired-owner set from dir's config.json. Used by
@@ -68,7 +77,9 @@ func LoadOrInit(dir, machineName, signalURL string) (*Config, error) {
 	}
 	if cfg.MachineID == "" {
 		b := make([]byte, 8)
-		_, _ = rand.Read(b)
+		if _, err := rand.Read(b); err != nil {
+			return nil, err
+		}
 		cfg.MachineID = hex.EncodeToString(b)
 	}
 	if cfg.RegistrationSecret == "" {
@@ -92,17 +103,37 @@ func save(dir string, cfg *Config) error {
 	if err != nil {
 		return err
 	}
-	path := configPath(dir)
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	// Atomic replacement avoids truncating the machine key or owner pin set if
+	// the process crashes during a write.
+	tmp, err := os.CreateTemp(dir, "config-*.json.tmp")
+	if err != nil {
 		return err
 	}
-	// WriteFile preserves the mode of a pre-existing file (it only truncates), so
-	// explicitly tighten to 0600 to protect the host private key.
-	return os.Chmod(path, 0o600)
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, configPath(dir))
 }
 
 // PinOwner adds an owner pubkey (hex) to the trusted set and persists it.
 func PinOwner(dir, ownerPubHex string) error {
+	return ProvisionOwner(dir, ownerPubHex, "", "")
+}
+
+// ProvisionOwner pins an owner and optionally stores the opaque registry record
+// that owner created during pairing. The record is safe for an untrusted agent
+// host to retain: only the owner can open or forge it.
+func ProvisionOwner(dir, ownerID, registryBlob, registrationAuth string) error {
 	cfg := &Config{}
 	data, err := os.ReadFile(configPath(dir))
 	if err != nil {
@@ -111,10 +142,61 @@ func PinOwner(dir, ownerPubHex string) error {
 	if err := json.Unmarshal(data, cfg); err != nil {
 		return err
 	}
-	if !cfg.IsOwnerPinned(ownerPubHex) {
-		cfg.PairedOwners = append(cfg.PairedOwners, ownerPubHex)
+	if !cfg.IsOwnerPinned(ownerID) {
+		cfg.PairedOwners = append(cfg.PairedOwners, ownerID)
+	}
+	if registryBlob != "" {
+		if cfg.OwnerRegistry == nil {
+			cfg.OwnerRegistry = make(map[string]string)
+		}
+		cfg.OwnerRegistry[ownerID] = registryBlob
+	}
+	if registrationAuth != "" {
+		if cfg.OwnerRegistrationAuth == nil {
+			cfg.OwnerRegistrationAuth = make(map[string]string)
+		}
+		cfg.OwnerRegistrationAuth[ownerID] = registrationAuth
 	}
 	return save(dir, cfg)
+}
+
+// RegistryForOwner reloads an owner's opaque discovery record so a running
+// agent sees newly completed pairings without receiving any owner secret.
+func RegistryForOwner(dir, ownerID string) string {
+	data, err := os.ReadFile(configPath(dir))
+	if err != nil {
+		return ""
+	}
+	var cfg Config
+	if json.Unmarshal(data, &cfg) != nil || cfg.OwnerRegistry == nil {
+		return ""
+	}
+	return cfg.OwnerRegistry[ownerID]
+}
+
+// RegistrationAuthForOwner reloads the public owner authorization used when
+// this agent registers its owner|machine slot with the relay.
+func RegistrationAuthForOwner(dir, ownerID string) string {
+	data, err := os.ReadFile(configPath(dir))
+	if err != nil {
+		return ""
+	}
+	var cfg Config
+	if json.Unmarshal(data, &cfg) != nil || cfg.OwnerRegistrationAuth == nil {
+		return ""
+	}
+	return cfg.OwnerRegistrationAuth[ownerID]
+}
+
+// RegistrationCommitment is the value an owner signs during pairing. It is
+// safe to reveal and does not permit recovery of the 256-bit random secret.
+func (c *Config) RegistrationCommitment() (string, error) {
+	secret, err := hex.DecodeString(c.RegistrationSecret)
+	if err != nil || len(secret) != 32 {
+		return "", fmt.Errorf("invalid agent registration secret")
+	}
+	h := sha256.Sum256(secret)
+	return hex.EncodeToString(h[:]), nil
 }
 
 func (c *Config) IsOwnerPinned(ownerPubHex string) bool {

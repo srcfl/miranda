@@ -1,97 +1,60 @@
-// go/internal/agent/registry_publish_test.go
 package agent
 
 import (
-	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/srcful/terminal-relay/go/internal/identity"
 	"github.com/srcful/terminal-relay/go/internal/signal"
 )
 
-// TestRegistryBlobOpens proves the agent seals a device record under K_reg that a
-// wallet-holder can open: registryBlob() returns base64(nonce||ct) which, decoded
-// and run through OpenRecord with the wallet's K_reg and the machine_id AAD, yields
-// the {name,host_pub,...} JSON. A wrong machine_id (AAD) must fail to open.
-func TestRegistryBlobOpens(t *testing.T) {
-	secret := bytes.Repeat([]byte{0x42}, 32)
-	cfg := &Config{
-		MachineID:   "machine-xyz",
-		MachineName: "fredde-laptop",
-		HostPubHex:  "deadbeefcafef00d",
-		SignalURL:   "https://relay.example",
+func TestProvisionOwnerStoresOpaqueRegistryRecord(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := LoadOrInit(dir, "workstation", "https://relay.example"); err != nil {
+		t.Fatal(err)
 	}
-	rt := NewRuntime(cfg, []string{"sh"}, nil)
-	rt.WalletSecret = secret
-	rt.WalletAddress = "WalletAddrBase58"
-
-	b64, err := rt.registryBlob()
+	const owner = "owner-id"
+	const blob = "opaque-owner-encrypted-record"
+	const registrationAuth = "public-owner-authorization"
+	if err := ProvisionOwner(dir, owner, blob, registrationAuth); err != nil {
+		t.Fatal(err)
+	}
+	owners, err := ReloadOwners(dir)
 	if err != nil {
-		t.Fatalf("registryBlob: %v", err)
+		t.Fatal(err)
 	}
-	blob, err := base64.StdEncoding.DecodeString(b64)
+	if len(owners) != 1 || owners[0] != owner {
+		t.Fatalf("owners = %v", owners)
+	}
+	if got := RegistryForOwner(dir, owner); got != blob {
+		t.Fatalf("registry = %q, want %q", got, blob)
+	}
+	if got := RegistrationAuthForOwner(dir, owner); got != registrationAuth {
+		t.Fatalf("registration auth = %q, want %q", got, registrationAuth)
+	}
+	data, err := os.ReadFile(configPath(dir))
 	if err != nil {
-		t.Fatalf("base64 decode: %v", err)
+		t.Fatal(err)
 	}
-
-	key, err := identity.RegistryKey(secret)
-	if err != nil {
-		t.Fatalf("RegistryKey: %v", err)
-	}
-	pt, err := identity.OpenRecord(key, blob, cfg.MachineID)
-	if err != nil {
-		t.Fatalf("OpenRecord (right machine_id): %v", err)
-	}
-	var rec map[string]any
-	if err := json.Unmarshal(pt, &rec); err != nil {
-		t.Fatalf("record JSON: %v", err)
-	}
-	if rec["name"] != cfg.MachineName {
-		t.Fatalf("record name = %v, want %q", rec["name"], cfg.MachineName)
-	}
-	if rec["host_pub"] != cfg.HostPubHex {
-		t.Fatalf("record host_pub = %v, want %q", rec["host_pub"], cfg.HostPubHex)
-	}
-	if rec["signal_url"] != cfg.SignalURL {
-		t.Fatalf("record signal_url = %v, want %q", rec["signal_url"], cfg.SignalURL)
-	}
-
-	// AAD is machine_id: opening under a different machine_id must fail.
-	if _, err := identity.OpenRecord(key, blob, "other-machine"); err == nil {
-		t.Fatal("OpenRecord with wrong machine_id (AAD) should fail, but succeeded")
+	if strings.Contains(string(data), "owner_priv") || strings.Contains(string(data), "wallet_address") {
+		t.Fatal("agent config unexpectedly contains owner identity material")
 	}
 }
 
-// TestRegistryBlobLegacyNoWallet proves a wallet-less Runtime never produces a
-// blob (legacy mir up publishes nothing).
-func TestRegistryBlobLegacyNoWallet(t *testing.T) {
-	cfg := &Config{MachineID: "m1", MachineName: "legacy"}
-	rt := NewRuntime(cfg, []string{"sh"}, nil)
-	if _, err := rt.registryBlob(); err == nil {
-		t.Fatal("registryBlob with no WalletSecret should error, but succeeded")
-	}
-}
-
-// TestServeOncePublishesRegistry proves that when serving the self-wallet owner,
-// the agent's FIRST message on the live registration is a TypeRegistry whose blob
-// opens to the device record. A fake relay captures the first frame.
-func TestServeOncePublishesRegistry(t *testing.T) {
-	secret := bytes.Repeat([]byte{0x55}, 32)
-	wallet := "SelfWalletBase58"
-
+func TestServeOncePublishesProvisionedOpaqueRecord(t *testing.T) {
 	first := make(chan signal.SignalMsg, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		c, err := websocket.Accept(w, r, nil)
 		if err != nil {
 			return
 		}
+		defer c.CloseNow()
 		_, data, err := c.Read(r.Context())
 		if err != nil {
 			return
@@ -100,101 +63,63 @@ func TestServeOncePublishesRegistry(t *testing.T) {
 		if json.Unmarshal(data, &m) == nil {
 			first <- m
 		}
-		// hold the registration open until the test ends
-		_, _, _ = c.Read(r.Context())
+		<-r.Context().Done()
 	}))
 	defer srv.Close()
 
-	cfg := &Config{
-		SignalURL:    srv.URL,
-		MachineID:    "machine-pub-1",
-		MachineName:  "publisher",
-		HostPubHex:   "0011223344556677",
-		PairedOwners: []string{wallet},
+	dir := t.TempDir()
+	cfg, err := LoadOrInit(dir, "publisher", srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const owner = "owner-id"
+	const blob = "opaque-owner-encrypted-record"
+	if err := ProvisionOwner(dir, owner, blob, ""); err != nil {
+		t.Fatal(err)
 	}
 	rt := NewRuntime(cfg, []string{"sh"}, nil)
-	rt.WalletSecret = secret
-	rt.WalletAddress = wallet
-
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	go func() { _, _, _ = rt.serveOnce(ctx, wallet) }()
+	go func() { _, _, _ = rt.serveOnce(ctx, owner) }()
 
 	select {
 	case m := <-first:
-		if m.Type != signal.TypeRegistry {
-			t.Fatalf("first message type = %q, want %q", m.Type, signal.TypeRegistry)
-		}
-		blob, err := base64.StdEncoding.DecodeString(m.Registry)
-		if err != nil {
-			t.Fatalf("registry base64: %v", err)
-		}
-		key, err := identity.RegistryKey(secret)
-		if err != nil {
-			t.Fatalf("RegistryKey: %v", err)
-		}
-		pt, err := identity.OpenRecord(key, blob, cfg.MachineID)
-		if err != nil {
-			t.Fatalf("OpenRecord: %v", err)
-		}
-		var rec map[string]any
-		if err := json.Unmarshal(pt, &rec); err != nil {
-			t.Fatalf("record JSON: %v", err)
-		}
-		if rec["name"] != cfg.MachineName || rec["host_pub"] != cfg.HostPubHex {
-			t.Fatalf("record = %v, want name=%q host_pub=%q", rec, cfg.MachineName, cfg.HostPubHex)
+		if m.Type != signal.TypeRegistry || m.Registry != blob {
+			t.Fatalf("first message = %+v", m)
 		}
 	case <-ctx.Done():
-		t.Fatal("relay never received the first registry message")
+		t.Fatal("relay never received provisioned registry record")
 	}
 }
 
-// TestServeOnceNoPublishForOtherOwner proves the agent does NOT publish a registry
-// blob when serving an owner that is not its own wallet (it lacks that wallet's
-// K_reg). For a non-self owner the first frame must not be a registry message.
-func TestServeOnceNoPublishForOtherOwner(t *testing.T) {
-	secret := bytes.Repeat([]byte{0x55}, 32)
-
-	got := make(chan string, 1) // first message type, or "" if the conn closed without one
+func TestServeOnceWithoutProvisionDoesNotPublishRegistry(t *testing.T) {
+	got := make(chan struct{}, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		c, err := websocket.Accept(w, r, nil)
 		if err != nil {
 			return
 		}
-		typ := ""
-		_, data, err := c.Read(r.Context())
-		if err == nil {
-			var m signal.SignalMsg
-			if json.Unmarshal(data, &m) == nil {
-				typ = m.Type
-			}
+		defer c.CloseNow()
+		readCtx, cancel := context.WithTimeout(r.Context(), 150*time.Millisecond)
+		defer cancel()
+		if _, _, err := c.Read(readCtx); err == nil {
+			got <- struct{}{}
 		}
-		got <- typ
-		_, _, _ = c.Read(r.Context())
 	}))
 	defer srv.Close()
 
-	cfg := &Config{
-		SignalURL:    srv.URL,
-		MachineID:    "machine-pub-1",
-		MachineName:  "publisher",
-		HostPubHex:   "0011223344556677",
-		PairedOwners: []string{"OtherOwner", "SelfWallet"},
+	dir := t.TempDir()
+	cfg, err := LoadOrInit(dir, "publisher", srv.URL)
+	if err != nil {
+		t.Fatal(err)
 	}
 	rt := NewRuntime(cfg, []string{"sh"}, nil)
-	rt.WalletSecret = secret
-	rt.WalletAddress = "SelfWallet"
-
-	ctx, cancel := context.WithTimeout(context.Background(), 700*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 350*time.Millisecond)
 	defer cancel()
-	go func() { _, _, _ = rt.serveOnce(ctx, "OtherOwner") }()
-
+	go func() { _, _, _ = rt.serveOnce(ctx, "owner-without-record") }()
 	select {
-	case typ := <-got:
-		if typ == signal.TypeRegistry {
-			t.Fatal("agent published a registry blob for a non-self owner")
-		}
+	case <-got:
+		t.Fatal("agent published an unprovisioned registry record")
 	case <-ctx.Done():
-		// no message at all is also correct (the agent only sends on offers).
 	}
 }

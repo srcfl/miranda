@@ -11,11 +11,11 @@ jobs:
   go:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           # Match release.yml: exact floor pinned for the stdlib CVE fixes.
-          go-version: "1.26.4"
+          go-version: "1.26.5"
           cache-dependency-path: go/go.sum # module lives in go/, not repo root
       - name: gofmt
         run: |
@@ -24,15 +24,29 @@ jobs:
       - name: vet
         working-directory: go
         run: go vet ./...
+      - name: vulnerability scan
+        working-directory: go
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
       - name: test
         working-directory: go
         run: go test ./...
+      - name: race
+        working-directory: go
+        run: go test -race -count=1 ./...
+      - name: parser fuzz smoke
+        working-directory: go
+        run: |
+          go test ./internal/pairing -run=^$ -fuzz=FuzzDecodeCode -fuzztime=5s
+          go test ./internal/signal -run=^$ -fuzz=FuzzDecodeInboundSignal -fuzztime=5s
+          go test ./internal/identity -run=^$ -fuzz=FuzzRevocationJSON -fuzztime=5s
+      - name: reproducible binaries
+        run: ./scripts/verify-reproducible.sh
 
   web:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "24"
           cache: npm
@@ -41,6 +55,8 @@ jobs:
         run: npm ci
       - working-directory: web
         run: npm test
+      - working-directory: web
+        run: npm audit --omit=dev
 
   # The Go and web jobs together are the byte-identical crypto gate: go test
   # writes/asserts testdata/ vectors and npm test asserts the JS side matches the

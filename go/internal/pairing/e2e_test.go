@@ -18,14 +18,17 @@ func TestPairThroughSignalingServer(t *testing.T) {
 	srv := httptest.NewServer(signal.New().Handler())
 	defer srv.Close()
 
-	token := pairing.NewToken()
+	token, err := pairing.NewToken()
+	if err != nil {
+		t.Fatal(err)
+	}
 	code := pairing.EncodeCode(srv.URL, token)
 
 	prf := make([]byte, 32)
 	for i := range prf {
 		prf[i] = byte(i + 1)
 	}
-	wallet, err := identity.DeriveWallet(prf)
+	wallet, err := identity.DeriveSigner(prf)
 	if err != nil {
 		t.Fatal(err)
 	}

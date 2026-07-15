@@ -1,4 +1,4 @@
-// web/test/binding.test.js — asserts the Go-written wallet-binding.json vector.
+// Cross-language owner-binding vector.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -6,15 +6,15 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { hexToBytes } from '@noble/hashes/utils';
 import { canonical, signBinding, verifyBinding, recordJSON } from '../src/identity/binding.js';
-import { walletFromMnemonic } from '../src/identity/wallet.js';
+import { signerFromMnemonic } from '../src/identity/signer.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const td = (f) => JSON.parse(readFileSync(join(here, '..', '..', 'testdata', f), 'utf8'));
-const v = td('wallet-binding.json');
-const wv = td('wallet-derivation.json');
+const v = td('identity-binding.json');
+const wv = td('identity-derivation.json');
 
 // Reconstruct the signing wallet from the committed mnemonic.
-const wallet = walletFromMnemonic(wv.mnemonic);
+const signer = signerFromMnemonic(wv.mnemonic);
 
 test('canonical message matches the Go vector', () => {
   const c = canonical({ v: 1, wallet: v.wallet, device: v.device, x25519: v.x25519, ts: v.ts });
@@ -22,7 +22,7 @@ test('canonical message matches the Go vector', () => {
 });
 
 test('signature is byte-identical to the Go vector (deterministic ed25519)', () => {
-  const sb = signBinding(wallet, v.device, v.x25519, v.ts);
+  const sb = signBinding(signer, v.device, v.x25519, v.ts);
   assert.equal(sb.sig, v.sig);
   assert.equal(recordJSON(sb), v.record);
 });
@@ -41,7 +41,7 @@ test('verify rejects tampered fields', () => {
 
 test('signing rejects unsafe device / x25519', () => {
   for (const dev of ['a"b', 'a\\b', 'a b', 'a,b', '']) {
-    assert.throws(() => signBinding(wallet, dev, v.x25519, v.ts));
+    assert.throws(() => signBinding(signer, dev, v.x25519, v.ts));
   }
-  assert.throws(() => signBinding(wallet, v.device, 'ZZZ', v.ts));
+  assert.throws(() => signBinding(signer, v.device, 'ZZZ', v.ts));
 });

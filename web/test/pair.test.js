@@ -8,7 +8,7 @@ import { hexToBytes } from '@noble/hashes/utils';
 import { encodeCode } from '../src/pairing/code.js';
 import { runResponder } from '../src/pairing/nnpsk0.js';
 import { safetyNumber } from '../src/pairing/sas.js';
-import { deriveWallet } from '../src/identity/wallet.js';
+import { deriveSigner } from '../src/identity/signer.js';
 
 // pairWithCode is the browser pairing entry point. These tests pin its FAILURE
 // handling — the bug being fixed: with no recv timeout and close/error wired only
@@ -20,7 +20,7 @@ import { deriveWallet } from '../src/identity/wallet.js';
 // used to build msg1 (runInitiator's first await is a recv()), so any valid wallet
 // is fine; the happy path derives the wallet from the Go vector's prf root.
 
-const wallet = deriveWallet(new Uint8Array(32));
+const wallet = deriveSigner(new Uint8Array(32));
 // A well-formed code: 16-byte (32-hex) token + an https relay URL passes decodeCode.
 const CODE = encodeCode('https://relay.example.test', new Uint8Array(16).fill(7));
 
@@ -152,7 +152,7 @@ test('completes the handshake and returns the machine + safety number', async ()
   const ws = installFakeWS();
   try {
     const token = hexToBytes(vec.token);
-    const vecWallet = deriveWallet(hexToBytes(vec.wallet_prf));
+    const vecWallet = deriveSigner(hexToBytes(vec.wallet_prf));
     const goodCode = encodeCode('https://relay.example.test', token);
     const info = JSON.parse(vec.info_json);
 
@@ -184,7 +184,7 @@ test('completes the handshake and returns the machine + safety number', async ()
     assert.equal(result.machine.name, 'box');
     assert.equal(result.machine.host_pub, info.host_pub);
     assert.equal(result.machine.signal, 'https://relay.example.test');
-    assert.match(result.safetyNumber, /^[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}$/, 'well-formed SAS');
+    assert.match(result.safetyNumber, /^[0-9a-f]{4}(-[0-9a-f]{4}){5}$/, 'well-formed SAS');
     assert.equal(result.safetyNumber, safetyNumber(resp.binding), 'both peers derive the SAME safety number');
     assert.ok(sock[0].closed, 'socket closed after a successful pairing');
   } finally {

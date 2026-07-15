@@ -3,20 +3,32 @@ package identity
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 )
 
-func mustWallet(t *testing.T) *Wallet {
+func mustWallet(t *testing.T) *Signer {
 	t.Helper()
 	prf := make([]byte, 32)
 	for i := range prf {
 		prf[i] = byte(i)
 	}
-	w, err := DeriveWallet(prf)
+	w, err := DeriveSigner(prf)
 	if err != nil {
 		t.Fatalf("DeriveWallet: %v", err)
 	}
 	return w
+}
+
+func TestRegistrationChallengeIsUnambiguous(t *testing.T) {
+	got := string(RegistrationChallenge("machine-1", strings.Repeat("ab", 32)))
+	want := "miranda/agent-registration/v1\nmachine-1\n" + strings.Repeat("ab", 32)
+	if got != want {
+		t.Fatalf("RegistrationChallenge = %q, want %q", got, want)
+	}
+	if bytes.Equal(RegistrationChallenge("machine-1", "a"), RegistrationChallenge("machine-2", "a")) {
+		t.Fatal("registration challenge must bind the machine id")
+	}
 }
 
 func TestSignAuthVerifies(t *testing.T) {
@@ -61,7 +73,7 @@ func TestVerifyAuthRejectsWrongWallet(t *testing.T) {
 	for i := range prf2 {
 		prf2[i] = byte(255 - i)
 	}
-	other, err := DeriveWallet(prf2)
+	other, err := DeriveSigner(prf2)
 	if err != nil {
 		t.Fatalf("DeriveWallet: %v", err)
 	}

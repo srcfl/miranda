@@ -11,21 +11,33 @@ jobs:
   goreleaser:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           fetch-depth: 0 # full history for changelog
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           # Pin an exact floor, not "1.26.x": go.mod's toolchain directive pins
-          # go1.26.4 for the stdlib CVE fixes, and the wildcard guarantees no
+          # go1.26.5 for the stdlib CVE fixes, and the wildcard guarantees no
           # minimum version (setup-go could resolve an older patch).
-          go-version: "1.26.4"
+          go-version: "1.26.5"
           cache-dependency-path: go/go.sum # module lives in go/, not repo root
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: release gate
+        run: |
+          cd go && go test ./...
+          go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+          cd ../web && npm ci && npm test
+          npm audit --omit=dev
+          cd .. && ./scripts/verify-reproducible.sh
       # cosign must be on PATH before goreleaser: the `signs:` block shells out to
       # it to keyless-sign checksums.txt. No key material is configured — signing
       # uses the job's OIDC identity (hence id-token: write above).
-      - uses: sigstore/cosign-installer@v3
-      - uses: goreleaser/goreleaser-action@v7
+      - uses: sigstore/cosign-installer@f713795cb21599bc4e5c4b58cbad1da852d7eeb9 # v3
+      - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
         with:
           version: "~> v2"
           args: release --clean

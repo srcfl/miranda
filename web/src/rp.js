@@ -1,9 +1,9 @@
 // web/src/rp.js — WebAuthn RP ID scoping.
 //
-// Production passkeys are bound to the exact terminal app host. Do not widen
-// this to the parent domain; sibling subdomains must not share this trust root.
-export const PRODUCTION_RP_ID = 'term.sourceful-labs.net';
-
+// Bind passkeys to the exact host serving this build. This keeps sibling origins
+// isolated and makes a self-hosted Miranda deployment work on its own domain.
 export function resolveRPID(hostname) {
-  return hostname === 'localhost' ? 'localhost' : PRODUCTION_RP_ID;
+  const host = String(hostname || '').trim().toLowerCase();
+  if (!host || host.includes('/') || host.includes(':')) throw new Error('invalid WebAuthn RP host');
+  return host;
 }

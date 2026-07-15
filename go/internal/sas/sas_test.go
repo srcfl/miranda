@@ -11,10 +11,10 @@ func TestFromBindingIsStableAndFormatted(t *testing.T) {
 	if a != FromBinding(b) {
 		t.Fatal("not deterministic")
 	}
-	// 4 groups of 4 hex, dash-separated.
+	// 6 groups of 4 hex, dash-separated.
 	parts := strings.Split(a, "-")
-	if len(parts) != 4 {
-		t.Fatalf("expected 4 groups, got %q", a)
+	if len(parts) != 6 {
+		t.Fatalf("expected 6 groups, got %q", a)
 	}
 	for _, p := range parts {
 		if len(p) != 4 {

@@ -13,7 +13,7 @@ import { chacha20poly1305 } from '@noble/ciphers/chacha';
 import { sha256 } from '@noble/hashes/sha2';
 import { hmac } from '@noble/hashes/hmac';
 import { pskFromToken } from './code.js';
-import { signAuth, verifyAuth } from '../identity/auth.js';
+import { registrationChallenge, signAuth, verifyAuth } from '../identity/auth.js';
 
 const PROTOCOL_NAME = 'Noise_NNpsk0_25519_ChaChaPoly_SHA256';
 const PROLOGUE = new TextEncoder().encode('terminal-relay/pair/v1');
@@ -226,24 +226,39 @@ export class HandshakeNNpsk0 {
   }
 }
 
-// runInitiator (client): sends PairClaim{wallet} in msg1, reads agent info from
-// msg2, then proves wallet control with msg3 = signAuth(channelBinding).
+// runInitiator (client): sends the owner id in the historical `wallet` wire
+// field, then proves owner control with msg3 = signAuth(channelBinding).
 // Returns { info, binding }. `ephemeralPriv` is optional (deterministic tests).
-export async function runInitiator(mc, token, wallet, ephemeralPriv = null) {
+export async function runInitiator(mc, token, signer, ephemeralPriv = null, provisioner = null) {
   const hs = new HandshakeNNpsk0({ initiator: true, psk: pskFromToken(token), ephemeralPriv });
-  const msg1 = hs.writeMessage(new TextEncoder().encode(JSON.stringify({ wallet: wallet.address })));
+  const msg1 = hs.writeMessage(new TextEncoder().encode(JSON.stringify({ wallet: signer.address })));
   await mc.send(msg1);
   const msg2 = await mc.recv();
   const payload = hs.readMessage(msg2);
   const info = JSON.parse(new TextDecoder().decode(payload));
   const binding = hs.binding();
-  await mc.send(signAuth(wallet, binding)); // msg3, raw 64-byte sig
+  const sig = signAuth(signer, binding);
+  if (!provisioner) {
+    await mc.send(sig); // compatibility with v0.6 responders
+  } else {
+    const registry = await provisioner(info);
+    let binary = '';
+    for (const b of sig) binary += String.fromCharCode(b);
+    let registration_auth = '';
+    if (info.registration_commitment) {
+      const registrationSig = signAuth(signer, registrationChallenge(info.machine_id, info.registration_commitment));
+      let registrationBinary = '';
+      for (const b of registrationSig) registrationBinary += String.fromCharCode(b);
+      registration_auth = btoa(registrationBinary);
+    }
+    await mc.send(new TextEncoder().encode(JSON.stringify({ signature: btoa(binary), registry, registration_auth })));
+  }
   return { info, binding };
 }
 
-// runResponder (agent): reads PairClaim{wallet} from msg1, sends info in msg2,
-// then verifies msg3 (wallet auth over the channel binding). Returns
-// { wallet, binding }. `ephemeralPriv` is optional (deterministic tests).
+// runResponder (agent/test mirror): reads the legacy-wire owner claim, sends info
+// in msg2, then verifies msg3 (owner auth over the channel binding and, when
+// requested, the agent-registration commitment). `ephemeralPriv` is optional.
 export async function runResponder(mc, token, info, ephemeralPriv = null) {
   const hs = new HandshakeNNpsk0({ initiator: false, psk: pskFromToken(token), ephemeralPriv });
   const msg1 = await mc.recv();
@@ -252,7 +267,29 @@ export async function runResponder(mc, token, info, ephemeralPriv = null) {
   const msg2 = hs.writeMessage(infoJSON);
   await mc.send(msg2);
   const binding = hs.binding();
-  const sig = await mc.recv(); // msg3
-  if (!verifyAuth(claim.wallet, binding, sig)) throw new Error('pairing: wallet auth failed');
-  return { wallet: claim.wallet, binding };
+  const proof = await mc.recv(); // msg3: legacy raw signature or proof JSON
+  let sig = proof;
+  let registry = '';
+  let registrationAuth = '';
+  if (proof.length !== 64) {
+    const p = JSON.parse(new TextDecoder().decode(proof));
+    const binary = atob(p.signature || '');
+    sig = Uint8Array.from(binary, (c) => c.charCodeAt(0));
+    registry = p.registry || '';
+    registrationAuth = p.registration_auth || '';
+  }
+  if (!verifyAuth(claim.wallet, binding, sig)) throw new Error('pairing: owner auth failed');
+  if (info.registration_commitment) {
+    let registrationSig;
+    try {
+      const binary = atob(registrationAuth);
+      registrationSig = Uint8Array.from(binary, (c) => c.charCodeAt(0));
+    } catch {
+      throw new Error('pairing: invalid agent registration authorization');
+    }
+    if (!verifyAuth(claim.wallet, registrationChallenge(info.machine_id, info.registration_commitment), registrationSig)) {
+      throw new Error('pairing: invalid agent registration authorization');
+    }
+  }
+  return { wallet: claim.wallet, registry, registration_auth: registrationAuth, binding };
 }

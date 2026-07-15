@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// Fixed binding inputs for the vector: the B1.1 test wallet binds the X25519
+// Fixed binding inputs: the test signer binds the X25519
 // transport key derived from the same prf. ts is a fixed constant (no clock).
 const (
 	bindDevice = "a1b2c3d4e5f60718"
@@ -16,10 +16,10 @@ const (
 	bindTs     = int64(1749600000)
 )
 
-func testWallet(t *testing.T) *Wallet {
+func testSigner(t *testing.T) *Signer {
 	t.Helper()
-	prf, _ := hex.DecodeString(walletPrfHex)
-	w, err := DeriveWallet(prf)
+	prf, _ := hex.DecodeString(signerRootHex)
+	w, err := DeriveSigner(prf)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,7 +27,7 @@ func testWallet(t *testing.T) *Wallet {
 }
 
 func TestSignVerifyRoundTrip(t *testing.T) {
-	w := testWallet(t)
+	w := testSigner(t)
 	sb, err := w.SignBinding(bindDevice, bindX25519, bindTs)
 	if err != nil {
 		t.Fatal(err)
@@ -50,7 +50,7 @@ func TestSignVerifyRoundTrip(t *testing.T) {
 }
 
 func TestTamperFailsVerify(t *testing.T) {
-	w := testWallet(t)
+	w := testSigner(t)
 	sb, _ := w.SignBinding(bindDevice, bindX25519, bindTs)
 	bad := *sb
 	bad.Device = "b1b2c3d4e5f60718" // flip one field; sig no longer matches
@@ -65,7 +65,7 @@ func TestTamperFailsVerify(t *testing.T) {
 }
 
 func TestRejectsUnsafeFields(t *testing.T) {
-	w := testWallet(t)
+	w := testSigner(t)
 	for _, dev := range []string{`a"b`, `a\b`, "a b", "a,b", ""} {
 		if _, err := w.SignBinding(dev, bindX25519, bindTs); err == nil {
 			t.Errorf("device %q should be rejected", dev)
@@ -77,7 +77,7 @@ func TestRejectsUnsafeFields(t *testing.T) {
 }
 
 func bindingVectorPath() string {
-	return filepath.Join("..", "..", "..", "testdata", "wallet-binding.json")
+	return filepath.Join("..", "..", "..", "testdata", "identity-binding.json")
 }
 
 type bindingVector struct {
@@ -92,7 +92,7 @@ type bindingVector struct {
 }
 
 func TestBindingVector(t *testing.T) {
-	w := testWallet(t)
+	w := testSigner(t)
 	sb, err := w.SignBinding(bindDevice, bindX25519, bindTs)
 	if err != nil {
 		t.Fatal(err)
@@ -116,7 +116,7 @@ func TestBindingVector(t *testing.T) {
 		if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		t.Log("wallet-binding.json written")
+		t.Log("identity-binding.json written")
 		return
 	}
 
