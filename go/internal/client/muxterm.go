@@ -13,10 +13,10 @@ import (
 	"github.com/srcful/terminal-relay/go/internal/peer"
 )
 
-// AttachAll attaches every named machine and returns their sessions + a cleanup.
+// AttachAll attaches every resolved machine and returns their sessions + a cleanup.
 // On any failure it cleans up the ones already attached. relayOnly is threaded to
 // each Attach to skip LAN-direct discovery.
-func AttachAll(ctx context.Context, dir string, names []string, id *Identity, ice []peer.ICEServer, relayOnly bool) ([]*MuxSession, func(), error) {
+func AttachAll(ctx context.Context, machines []Machine, id *Identity, ice []peer.ICEServer, relayOnly bool) ([]*MuxSession, func(), error) {
 	var sessions []*MuxSession
 	var cleanups []func()
 	cleanupAll := func() {
@@ -24,16 +24,11 @@ func AttachAll(ctx context.Context, dir string, names []string, id *Identity, ic
 			c()
 		}
 	}
-	for _, name := range names {
-		m, err := GetMachine(dir, name)
+	for _, m := range machines {
+		mc, sess, cleanup, err := Attach(ctx, m, id, ice, relayOnly)
 		if err != nil {
 			cleanupAll()
-			return nil, nil, err
-		}
-		mc, sess, cleanup, err := Attach(ctx, *m, id, ice, relayOnly)
-		if err != nil {
-			cleanupAll()
-			return nil, nil, fmt.Errorf("attach %s: %w", name, err)
+			return nil, nil, fmt.Errorf("attach %s: %w", m.Name, err)
 		}
 		sessions = append(sessions, &MuxSession{Name: m.Name, MC: mc, Sess: sess})
 		cleanups = append(cleanups, cleanup)

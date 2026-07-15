@@ -16,11 +16,8 @@ import (
 // binary, and atomically replaces targetPath. targetPath should be the absolute
 // path of the currently running executable (see os.Executable).
 //
-// Verification order matters: we authenticate checksums.txt (cosign keyless,
-// when available — see verifyChecksumsSignature) BEFORE trusting any digest it
-// contains, then check the archive against that now-trusted digest. When cosign
-// isn't installed the update stays quiet (the checksum still guards the download);
-// set MIR_REQUIRE_COSIGN to demand signature verification.
+// Verification order matters: we authenticate checksums.txt with cosign before
+// trusting any digest it contains. Missing verification is a hard failure.
 func (c *Client) Apply(rel *Release, targetPath string) error {
 	archive, err := c.fetch(rel.AssetURL)
 	if err != nil {

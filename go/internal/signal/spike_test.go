@@ -90,6 +90,14 @@ func TestSpikeFullPathThroughSignalingServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	_, readyData, err := bc.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ready, err := decodeSignal(readyData)
+	if err != nil || ready.Type != TypeReady || ready.Session == "" {
+		t.Fatalf("expected attach ready, got %+v (%v)", ready, err)
+	}
 	off, offOpened, err := peer.NewOfferer(nil)
 	if err != nil {
 		t.Fatal(err)

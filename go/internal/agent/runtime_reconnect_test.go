@@ -124,6 +124,32 @@ func TestUpReconnectsAfterDrop(t *testing.T) {
 	}
 }
 
+func TestRevokedAgentStopsRegistrationLoop(t *testing.T) {
+	var attempts int32
+	seen := make(chan struct{}, 4)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&attempts, 1)
+		seen <- struct{}{}
+		http.Error(w, "machine revoked", http.StatusGone)
+	}))
+	defer srv.Close()
+	cfg := &Config{SignalURL: srv.URL, MachineID: "m1", PairedOwners: []string{"owner"}}
+	rt := NewRuntime(cfg, []string{"sh"}, nil)
+	rt.baseBackoff, rt.maxBackoff = time.Millisecond, time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	go rt.serveOwner(ctx, "owner")
+	select {
+	case <-seen:
+	case <-ctx.Done():
+		t.Fatal("agent never attempted registration")
+	}
+	time.Sleep(20 * time.Millisecond)
+	if got := atomic.LoadInt32(&attempts); got != 1 {
+		t.Fatalf("revoked registration attempts = %d, want exactly 1", got)
+	}
+}
+
 // Pairing a new device/identity must take effect WITHOUT restarting the agent:
 // `mir up` should pick up an owner added to config.json at runtime.
 func TestUpHotReloadsNewlyPairedOwner(t *testing.T) {

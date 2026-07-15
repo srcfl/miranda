@@ -23,7 +23,8 @@ type SignalMsg struct {
 	Session  string `json:"session,omitempty"`
 	SDP      string `json:"sdp,omitempty"`
 	Reason   string `json:"reason,omitempty"`
-	Binding  string `json:"binding,omitempty"`  // opaque wallet-binding record; relay forwards, never reads
+	Binding  string `json:"binding,omitempty"`  // opaque owner-binding record; relay forwards, never reads
+	Auth     string `json:"auth,omitempty"`     // owner signature over session+machine+SDP; relay forwards blindly
 	Registry string `json:"registry,omitempty"` // opaque encrypted device record; relay holds + serves, never reads
 }
 

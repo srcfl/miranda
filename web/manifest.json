@@ -1,7 +1,7 @@
 {
   "name": "Miranda",
   "short_name": "Miranda",
-  "description": "Passkey-authenticated, end-to-end encrypted terminal in your browser.",
+  "description": "Leave your desk. Keep your terminal. Passkey-native terminal continuity.",
   "id": "/",
   "start_url": "/",
   "scope": "/",

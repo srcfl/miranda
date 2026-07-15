@@ -5,7 +5,7 @@
 // QUIC's TLS is treated as *dumb transport* here: it gives us an encrypted,
 // reliable, ordered byte stream and nothing more. The real authentication —
 // proving the peer is the right owner/agent — is the Noise-KK handshake plus
-// the wallet binding that run *inside* this MsgConn. Because the transport TLS
+// the owner binding that run *inside* this MsgConn. Because the transport TLS
 // identity carries no trust, the client deliberately skips TLS verification
 // (ClientTLS sets InsecureSkipVerify) and the server presents an ephemeral
 // self-signed certificate (ServerTLS). Trust is established one layer up, not
@@ -136,7 +136,7 @@ func (c *Conn) Close() error {
 
 // ServerTLS returns a TLS config for the listener using a freshly generated,
 // ephemeral self-signed certificate. The cert identity is meaningless on
-// purpose: trust comes from Noise-KK + the wallet binding inside the stream,
+// purpose: trust comes from Noise-KK + the owner binding inside the stream,
 // not from this certificate.
 func ServerTLS() (*tls.Config, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -172,7 +172,7 @@ func ServerTLS() (*tls.Config, error) {
 
 // ClientTLS returns a TLS config for dialing. It skips verification on purpose:
 // the QUIC TLS identity carries no trust in Miranda — the real authentication
-// is the Noise-KK handshake and wallet binding that run inside the stream.
+// is the Noise-KK handshake and owner binding that run inside the stream.
 func ClientTLS() *tls.Config {
 	return &tls.Config{
 		InsecureSkipVerify: true, // trust is established by Noise-KK inside, not by TLS

@@ -1,6 +1,6 @@
 // web/src/registry.js — discover your machines from the relay's encrypted device
 // registry (B2). Mirrors go/internal/client/registry.go. The relay serves opaque
-// blobs keyed by wallet; only a wallet-holder (registryKey) can open them, so a
+// blobs keyed by owner id; only an owner-root holder (registryKey) can open them, so a
 // forged/garbage blob fails to open and is silently dropped. Discovery only — the
 // Noise data plane and attach path are unchanged.
 import { registryKey, openRecord } from './identity/registry.js';
@@ -15,7 +15,7 @@ function b64ToBytes(s) {
 }
 
 // decodeRegistry turns the relay's `[{machine_id, blob}]` into machines, dropping
-// any blob that fails to open (a forgery, or one sealed under a different wallet).
+// any blob that fails to open (a forgery, or one sealed under a different owner root).
 // fallbackSignal is used when a record carries no signal_url of its own.
 export function decodeRegistry(entries, secret, fallbackSignal) {
   const key = registryKey(secret);
@@ -37,12 +37,12 @@ export function decodeRegistry(entries, secret, fallbackSignal) {
   return out;
 }
 
-// fetchMachines GETs the wallet's registry from `origin` and decodes it. Best-effort:
+// fetchMachines GETs the owner's registry from `origin` and decodes it. Best-effort:
 // any failure (relay down, not served same-origin, bad JSON) returns [] so the caller
 // falls back to the locally-stored machine list without surfacing noise.
-export async function fetchMachines(origin, wallet, secret) {
+export async function fetchMachines(origin, signer, secret) {
   try {
-    const url = origin.replace(/\/$/, '') + '/registry?wallet=' + encodeURIComponent(wallet.address);
+    const url = origin.replace(/\/$/, '') + '/registry?owner_id=' + encodeURIComponent(signer.address);
     const r = await fetch(url);
     if (!r.ok) return [];
     return decodeRegistry(await r.json(), secret, origin);

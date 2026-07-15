@@ -17,11 +17,13 @@ builds:
     env: [CGO_ENABLED=0]
     goos: [linux, darwin]
     goarch: [amd64, arm64]
+    flags: [-trimpath, -buildvcs=false]
+    mod_timestamp: "{{ .CommitTimestamp }}"
     ldflags:
-      - -s -w
+      - -s -w -buildid=
       - -X github.com/srcful/terminal-relay/go/internal/version.Version={{ .Version }}
       - -X github.com/srcful/terminal-relay/go/internal/version.Commit={{ .ShortCommit }}
-      - -X github.com/srcful/terminal-relay/go/internal/version.Date={{ .Date }}
+      - -X github.com/srcful/terminal-relay/go/internal/version.Date={{ .CommitDate }}
   - id: mir-agent
     main: ./cmd/mir-agent
     binary: mir-agent
@@ -29,11 +31,13 @@ builds:
     env: [CGO_ENABLED=0]
     goos: [linux, darwin]
     goarch: [amd64, arm64]
+    flags: [-trimpath, -buildvcs=false]
+    mod_timestamp: "{{ .CommitTimestamp }}"
     ldflags:
-      - -s -w
+      - -s -w -buildid=
       - -X github.com/srcful/terminal-relay/go/internal/version.Version={{ .Version }}
       - -X github.com/srcful/terminal-relay/go/internal/version.Commit={{ .ShortCommit }}
-      - -X github.com/srcful/terminal-relay/go/internal/version.Date={{ .Date }}
+      - -X github.com/srcful/terminal-relay/go/internal/version.Date={{ .CommitDate }}
   - id: mir-signal
     main: ./cmd/mir-signal
     binary: mir-signal
@@ -41,11 +45,13 @@ builds:
     env: [CGO_ENABLED=0]
     goos: [linux, darwin]
     goarch: [amd64, arm64]
+    flags: [-trimpath, -buildvcs=false]
+    mod_timestamp: "{{ .CommitTimestamp }}"
     ldflags:
-      - -s -w
+      - -s -w -buildid=
       - -X github.com/srcful/terminal-relay/go/internal/version.Version={{ .Version }}
       - -X github.com/srcful/terminal-relay/go/internal/version.Commit={{ .ShortCommit }}
-      - -X github.com/srcful/terminal-relay/go/internal/version.Date={{ .Date }}
+      - -X github.com/srcful/terminal-relay/go/internal/version.Date={{ .CommitDate }}
 
 archives:
   # One archive entry PER build id. A single entry covering multiple builds would

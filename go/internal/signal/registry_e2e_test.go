@@ -28,7 +28,7 @@ func TestRegistryE2ESealedRecordRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wallet, err := identity.DeriveWallet(secret)
+	wallet, err := identity.DeriveSigner(secret)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,13 +45,15 @@ func TestRegistryE2ESealedRecordRoundTrips(t *testing.T) {
 	}
 	b64blob := base64.StdEncoding.EncodeToString(blob)
 
-	a := registerAgentWithRegistry(t, srv.URL, wallet.Address, machineID, b64blob)
+	_, auth := registrationCredentials(t, secret, machineID, goodRegistrationSecret)
+	a := registerAuthorizedAgentWithRegistry(t, srv.URL, wallet.Address, machineID, goodRegistrationSecret, auth, b64blob)
 	defer a.CloseNow()
 	// A second agent under the SAME wallet publishing a FORGED blob (sealed under a
 	// different key) must be served by the (blind) relay but dropped by the fetcher.
 	forgedKey, _ := identity.RegistryKey(bytes.Repeat([]byte{0xff}, 32))
 	forged, _ := identity.SealRecord(forgedKey, nonce, pt, "m-forged")
-	f := registerAgentWithRegistry(t, srv.URL, wallet.Address, "m-forged", base64.StdEncoding.EncodeToString(forged))
+	_, forgedAuth := registrationCredentials(t, secret, "m-forged", badRegistrationSecret)
+	f := registerAuthorizedAgentWithRegistry(t, srv.URL, wallet.Address, "m-forged", badRegistrationSecret, forgedAuth, base64.StdEncoding.EncodeToString(forged))
 	defer f.CloseNow()
 
 	// Poll until both blobs are live on the relay.

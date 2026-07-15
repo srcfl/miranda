@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 import { runInitiator, runResponder } from '../src/pairing/nnpsk0.js';
 import { safetyNumber } from '../src/pairing/sas.js';
-import { deriveWallet } from '../src/identity/wallet.js';
+import { deriveSigner } from '../src/identity/signer.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const v = JSON.parse(readFileSync(join(here, '..', '..', 'testdata', 'pair-interop.json'), 'utf8'));
@@ -39,7 +39,7 @@ test('JS NNpsk0 reproduces the Go pairing wire bytes + wallet auth + safety numb
   // The wallet is derived from the SAME prf root the Go vector used, so the JS
   // side reproduces msg1 (PairClaim) and msg3 (the Ed25519 auth signature, which
   // is deterministic) byte-for-byte.
-  const wallet = deriveWallet(hexToBytes(v.wallet_prf));
+  const wallet = deriveSigner(hexToBytes(v.wallet_prf));
   const info = JSON.parse(v.info_json);
 
   // fixed ephemerals so the bytes are deterministic (match the Go vectors)
@@ -57,4 +57,22 @@ test('JS NNpsk0 reproduces the Go pairing wire bytes + wallet auth + safety numb
   assert.equal(client.info.host_pub, info.host_pub);
   assert.equal(safetyNumber(client.binding), v.safety_number);
   assert.equal(safetyNumber(agent.binding), v.safety_number);
+});
+
+test('provisioned pairing authorizes the exact agent registration commitment', async () => {
+  const [clientMC, agentMC] = pipe();
+  const token = crypto.getRandomValues(new Uint8Array(16));
+  const signer = deriveSigner(crypto.getRandomValues(new Uint8Array(32)));
+  const info = {
+    host_pub: '11'.repeat(32),
+    machine_id: 'machine-registration',
+    name: 'box',
+    registration_commitment: 'ab'.repeat(32),
+  };
+  const agentP = runResponder(agentMC, token, info);
+  await runInitiator(clientMC, token, signer, null, () => 'opaque-record');
+  const agent = await agentP;
+  assert.equal(agent.wallet, signer.address);
+  assert.equal(agent.registry, 'opaque-record');
+  assert.ok(agent.registration_auth, 'owner registration authorization is provisioned');
 });

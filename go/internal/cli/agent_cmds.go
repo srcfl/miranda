@@ -20,10 +20,13 @@ import (
 
 func (a *app) cmdEnroll(args []string) error {
 	fs := flag.NewFlagSet("enroll", flag.ExitOnError)
-	dir := fs.String("dir", defaultDir(), "config directory")
+	dir := fs.String("dir", defaultAgentDir(), "agent state directory")
 	name := fs.String("name", hostname(), "machine display name")
 	signalURL := fs.String("signal", defaults.SignalURL(), "signaling server base URL")
 	_ = fs.Parse(args)
+	if err := ensureAgentOnlyDir(*dir); err != nil {
+		return err
+	}
 
 	cfg, err := agent.LoadOrInit(*dir, *name, *signalURL)
 	if err != nil {
@@ -41,9 +44,12 @@ func (a *app) cmdEnroll(args []string) error {
 
 func (a *app) cmdPairDev(args []string) error {
 	fs := flag.NewFlagSet("pair-dev", flag.ExitOnError)
-	dir := fs.String("dir", defaultDir(), "config directory")
+	dir := fs.String("dir", defaultAgentDir(), "agent state directory")
 	ownerPub := fs.String("owner-pub", "", "owner X25519 public key (hex) to trust")
 	_ = fs.Parse(args)
+	if err := ensureAgentOnlyDir(*dir); err != nil {
+		return err
+	}
 	if *ownerPub == "" {
 		return fmt.Errorf("--owner-pub is required")
 	}
@@ -56,14 +62,21 @@ func (a *app) cmdPairDev(args []string) error {
 
 func (a *app) cmdUp(args []string) error {
 	fs := flag.NewFlagSet("up", flag.ExitOnError)
-	dir := fs.String("dir", defaultDir(), "config directory")
+	dir := fs.String("dir", defaultAgentDir(), "agent state directory")
 	name := fs.String("name", hostname(), "machine display name")
 	signalURL := fs.String("signal", defaults.SignalURL(), "signaling server base URL")
 	shell := fs.String("shell", "tmux:new:-A:-s:main", "launch command, ':'-separated")
 	ice := iceFlags(fs)
 	autoUpdate := fs.Bool("auto-update", os.Getenv("MIR_AUTO_UPDATE") == "1", "opt-in: automatically self-update when idle")
 	noLAN := fs.Bool("no-lan", false, "disable LAN-direct (no QUIC listener, no mDNS advertise); serve the relay only")
+	allowRoot := fs.Bool("allow-root", false, "unsafe override: allow the terminal agent to run as root")
 	_ = fs.Parse(args)
+	if err := ensureAgentOnlyDir(*dir); err != nil {
+		return err
+	}
+	if os.Geteuid() == 0 && !*allowRoot {
+		return fmt.Errorf("refusing to expose a root shell; run mir as the target user (or pass --allow-root only in an isolated environment)")
+	}
 
 	cfg, err := agent.LoadOrInit(*dir, *name, *signalURL)
 	if err != nil {
@@ -79,12 +92,6 @@ func (a *app) cmdUp(args []string) error {
 
 	rt := agent.NewRuntime(cfg, launch, ice())
 	rt.DisableLAN = *noLAN
-	// Wallet-rooted machines auto-serve their own wallet (no pairing for your own
-	// devices) and publish an encrypted registry record. Legacy (wallet-less) mir
-	// up is unchanged: it serves PairedOwners and publishes nothing.
-	if err := a.applyWalletToUp(*dir, rt); err != nil {
-		return err
-	}
 	// Structured, timestamped agent log. RFC3339-ish date+time in UTC plus the
 	// binary prefix turns a bare "owner … disconnected" line into something you
 	// can correlate against relay logs and tell a flap (low uptime) from a normal
@@ -100,28 +107,6 @@ func (a *app) cmdUp(args []string) error {
 	if err := rt.Up(ctx); err != nil && ctx.Err() == nil {
 		return err
 	}
-	return nil
-}
-
-// applyWalletToUp wires this machine's wallet into the serving Runtime. On a
-// wallet-rooted identity it auto-pins the machine's OWN wallet as a served owner
-// (so your own devices attach with no SAS/pairing — B1.4 bindings) and hands the
-// wallet secret + address to the Runtime so it can seal + publish its encrypted
-// registry record on the live registration. A wallet-less (legacy) identity is a
-// no-op: `mir up` keeps today's behavior (serve PairedOwners, publish nothing).
-// PinOwner writes config.json's PairedOwners (the agent hot-reloads owners; pinning
-// before Up() puts it in the initial set). Any pin failure aborts so we never serve
-// in a half-configured state.
-func (a *app) applyWalletToUp(dir string, rt *agent.Runtime) error {
-	idn, err := a.identity(dir)
-	if err != nil || !idn.HasWallet() {
-		return nil // legacy / no wallet: unchanged behavior
-	}
-	if err := agent.PinOwner(dir, idn.WalletAddress); err != nil {
-		return err
-	}
-	rt.WalletSecret = idn.Secret()
-	rt.WalletAddress = idn.WalletAddress
 	return nil
 }
 

@@ -105,7 +105,7 @@ func classifyPair(positionals []string) (pairMode, string, error) {
 
 func (a *app) cmdPair(args []string) error {
 	fs := flag.NewFlagSet("pair", flag.ExitOnError)
-	dir := fs.String("dir", defaultDir(), "config directory")
+	dir := fs.String("dir", "", "state directory (defaults to client or agent state by pairing role)")
 	name := fs.String("name", hostname(), "machine display name (responder)")
 	signalURL := fs.String("signal", defaults.SignalURL(), "signaling server base URL (responder)")
 	webURL := fs.String("web", defaults.WebURL(), "browser SPA base URL the QR opens (responder)")
@@ -117,6 +117,13 @@ func (a *app) cmdPair(args []string) error {
 	if err != nil {
 		return err
 	}
+	if *dir == "" {
+		if mode == pairInitiator {
+			*dir = defaultClientDir()
+		} else {
+			*dir = defaultAgentDir()
+		}
+	}
 	gate := sasGate{
 		confirmSAS: *confirmSAS,
 		skip:       *yes,
@@ -125,6 +132,9 @@ func (a *app) cmdPair(args []string) error {
 	}
 	if mode == pairInitiator {
 		return a.pairInitiate(*dir, code, gate)
+	}
+	if err := ensureAgentOnlyDir(*dir); err != nil {
+		return err
 	}
 	return a.pairRespond(*dir, *name, *signalURL, *webURL, gate)
 }
@@ -142,10 +152,10 @@ func (a *app) pairInitiate(dir, codeStr string, gate sasGate) error {
 	if err != nil {
 		return err
 	}
-	if err := a.requireWallet(idn); err != nil {
+	if err := a.requireRootedIdentity(idn); err != nil {
 		return err
 	}
-	w, err := idn.Wallet()
+	w, err := idn.Signer()
 	if err != nil {
 		return err
 	}
@@ -156,11 +166,18 @@ func (a *app) pairInitiate(dir, codeStr string, gate sasGate) error {
 		return err
 	}
 	defer closeConn()
-	info, binding, err := pairing.RunInitiator(ctx, mc, token, w)
+	var provisioned client.Machine
+	info, binding, err := pairing.RunInitiatorProvisioned(ctx, mc, token, w, func(info *pairing.AgentInfo) (string, error) {
+		provisioned = client.Machine{Name: info.Name, MachineID: info.MachineID, HostPubHex: info.HostPubHex, SignalURL: signalURL}
+		return client.SealRegistryMachine(idn, provisioned)
+	})
 	if err != nil {
 		return err
 	}
-	m := client.Machine{Name: info.Name, MachineID: info.MachineID, HostPubHex: info.HostPubHex, SignalURL: signalURL}
+	m := provisioned
+	if m.MachineID == "" { // defensive: provisioner must have run after msg2
+		m = client.Machine{Name: info.Name, MachineID: info.MachineID, HostPubHex: info.HostPubHex, SignalURL: signalURL}
+	}
 
 	// Show the safety number FIRST, then require confirmation BEFORE persisting —
 	// otherwise the printed number is advisory and a MITM is never caught.
@@ -185,7 +202,10 @@ func (a *app) pairRespond(dir, name, signalURL, webURL string, gate sasGate) err
 	if err != nil {
 		return err
 	}
-	token := pairing.NewToken()
+	token, err := pairing.NewToken()
+	if err != nil {
+		return fmt.Errorf("generate pairing token: %w", err)
+	}
 	code := pairing.EncodeCode(signalURL, token)
 	pairURL := strings.TrimRight(webURL, "/") + "/#" + code
 
@@ -204,8 +224,12 @@ func (a *app) pairRespond(dir, name, signalURL, webURL string, gate sasGate) err
 	}
 	defer closeConn()
 
-	info := pairing.AgentInfo{HostPubHex: cfg.HostPubHex, MachineID: cfg.MachineID, Name: cfg.MachineName}
-	wallet, binding, err := pairing.RunResponder(ctx, mc, token, info)
+	commitment, err := cfg.RegistrationCommitment()
+	if err != nil {
+		return err
+	}
+	info := pairing.AgentInfo{HostPubHex: cfg.HostPubHex, MachineID: cfg.MachineID, Name: cfg.MachineName, RegistrationCommitment: commitment}
+	ownerID, provision, binding, err := pairing.RunResponderProvisioned(ctx, mc, token, info)
 	if err != nil {
 		return err
 	}
@@ -217,9 +241,9 @@ func (a *app) pairRespond(dir, name, signalURL, webURL string, gate sasGate) err
 	if ok, reason := gate.confirm(safety, a.out); !ok {
 		return fmt.Errorf("pairing cancelled: %s", reason)
 	}
-	if err := agent.PinOwner(dir, wallet); err != nil {
+	if err := agent.ProvisionOwner(dir, ownerID, provision.Registry, provision.RegistrationAuth); err != nil {
 		return err
 	}
-	fmt.Fprintf(a.out, "✓ paired — trusting wallet %s…\n", wallet[:16])
+	fmt.Fprintf(a.out, "✓ paired — trusting Miranda identity %s…\n", ownerID[:16])
 	return nil
 }

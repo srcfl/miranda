@@ -20,7 +20,7 @@ const lanService = "_miranda._udp"
 // Returns the bound address (for callers/tests) and a stop func. Each connection runs
 // the same binding-gated authenticated session as the relay path.
 //
-// The QUIC TLS identity carries no trust (see quicmsg): authentication is the wallet
+// The QUIC TLS identity carries no trust (see quicmsg): authentication is the owner
 // binding (frame 0) plus the Noise-KK handshake that run inside the stream.
 func (rt *Runtime) startLAN(ctx context.Context) (addr string, stop func(), err error) {
 	ln, err := quicmsg.Listen("0.0.0.0:0") // ephemeral; advertised via mDNS
@@ -74,8 +74,8 @@ func (rt *Runtime) acceptLAN(ctx context.Context, ln *quicmsg.Listener) {
 	}
 }
 
-// lanAccept gates a single LAN-direct connection: it reads the wallet binding as
-// frame 0, refuses any unpinned wallet *before* the Noise handshake, recovers the
+// lanAccept gates a single LAN-direct connection: it reads the owner binding as
+// frame 0, refuses any unpinned owner *before* the Noise handshake, recovers the
 // X25519 pin from the binding, then runs the same authenticated PTY session as the
 // relay path. admit() bounds concurrent pre-auth handshakes (a DoS bound shared with
 // the relay path).
@@ -95,7 +95,7 @@ func (rt *Runtime) lanAccept(ctx context.Context, conn *quicmsg.Conn) {
 		return
 	}
 	if !rt.cfg.IsOwnerPinned(sb.Wallet) {
-		return // unpinned wallet: refuse pre-Noise, no session starts
+		return // unpinned owner: refuse pre-Noise, no session starts
 	}
 	ownerPub, err := ownerPubFromBinding(string(bindingJSON), sb.Wallet)
 	if err != nil {

@@ -17,4 +17,13 @@ verify_sha256 "$tmp" "payload.tar.gz" "$tmp.sums" || fail "verify_sha256 rejecte
 printf 'deadbeef  payload.tar.gz\n' > "$tmp.bad"
 if verify_sha256 "$tmp" "payload.tar.gz" "$tmp.bad"; then fail "verify_sha256 accepted a bad checksum"; fi
 
+# Supply-chain verification is fail-closed when cosign is unavailable.
+empty_path=$(mktemp -d)
+old_path=$PATH
+PATH=$empty_path
+if verify_checksums_sig "https://invalid.example" "$empty_path" 2>/dev/null; then
+	fail "verify_checksums_sig accepted a checksum without cosign"
+fi
+PATH=$old_path
+
 echo "OK install_test"

@@ -7,15 +7,29 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/srcful/terminal-relay/go/internal/client"
 	"github.com/srcful/terminal-relay/go/internal/defaults"
 	"github.com/srcful/terminal-relay/go/internal/peer"
 )
 
 const repoSlug = "srcfl/miranda"
 
-func defaultDir() string {
+func stateRoot() string {
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".terminal-relay")
+	return filepath.Join(home, ".miranda")
+}
+
+func defaultClientDir() string { return filepath.Join(stateRoot(), "client") }
+func defaultAgentDir() string  { return filepath.Join(stateRoot(), "agent") }
+
+// ensureAgentOnlyDir prevents a target machine from accidentally sharing the
+// directory that contains an owner's mesh-wide client identity. A compromised
+// target must yield only that target's device key.
+func ensureAgentOnlyDir(dir string) error {
+	if client.IdentityExists(dir) {
+		return fmt.Errorf("refusing agent state directory %q: it contains owner.json; use a separate --dir (default: %s)", dir, defaultAgentDir())
+	}
+	return nil
 }
 
 func updateCachePath(dir string) string { return filepath.Join(dir, "update-check.json") }
@@ -23,9 +37,12 @@ func updateCachePath(dir string) string { return filepath.Join(dir, "update-chec
 // freshSetup reports whether the default config dir holds no mir state yet, so the
 // no-argument guide can lead with a one-time welcome.
 func freshSetup() bool {
-	dir := defaultDir()
-	for _, f := range []string{"owner.json", "config.json", "machines.json"} {
-		if _, err := os.Stat(filepath.Join(dir, f)); err == nil {
+	for _, path := range []string{
+		filepath.Join(defaultClientDir(), "owner.json"),
+		filepath.Join(defaultClientDir(), "machines.json"),
+		filepath.Join(defaultAgentDir(), "config.json"),
+	} {
+		if _, err := os.Stat(path); err == nil {
 			return false
 		}
 	}

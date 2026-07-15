@@ -3,6 +3,7 @@ package pairing
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"strings"
@@ -17,24 +18,79 @@ import (
 
 // testWallet mints a real prf-rooted wallet for pairing tests. The prf seed is
 // derived from b so each call with a distinct byte yields a distinct wallet.
-func testWallet(t *testing.T, b byte) *identity.Wallet {
+func testWallet(t *testing.T, b byte) *identity.Signer {
 	t.Helper()
 	prf := make([]byte, 32)
 	for i := range prf {
 		prf[i] = b ^ byte(i)
 	}
-	w, err := identity.DeriveWallet(prf)
+	w, err := identity.DeriveSigner(prf)
 	if err != nil {
 		t.Fatalf("DeriveWallet: %v", err)
 	}
 	return w
 }
 
+func TestProvisionedPairingBindsAgentRegistrationToOwner(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+
+	token := testToken(t)
+	owner := testWallet(t, 0x19)
+	_, hostPub, _ := noise.GenerateStatic()
+	info := AgentInfo{
+		HostPubHex:             hex.EncodeToString(hostPub),
+		MachineID:              "machine-registration",
+		Name:                   "box",
+		RegistrationCommitment: strings.Repeat("ab", 32),
+	}
+	clientMC, agentMC := peer.Pipe()
+	type result struct {
+		owner     string
+		provision Provision
+		err       error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		gotOwner, provision, _, err := RunResponderProvisioned(ctx, agentMC, token, info)
+		resultCh <- result{owner: gotOwner, provision: provision, err: err}
+	}()
+
+	if _, _, err := RunInitiatorProvisioned(ctx, clientMC, token, owner, func(*AgentInfo) (string, error) {
+		return "opaque-registry-record", nil
+	}); err != nil {
+		t.Fatalf("initiator: %v", err)
+	}
+	r := <-resultCh
+	if r.err != nil {
+		t.Fatalf("responder: %v", r.err)
+	}
+	if r.owner != owner.Address || r.provision.Registry != "opaque-registry-record" {
+		t.Fatalf("wrong provision: owner=%q provision=%+v", r.owner, r.provision)
+	}
+	sig, err := base64.StdEncoding.DecodeString(r.provision.RegistrationAuth)
+	if err != nil {
+		t.Fatalf("registration auth encoding: %v", err)
+	}
+	if err := identity.VerifyAuth(owner.Address, identity.RegistrationChallenge(info.MachineID, info.RegistrationCommitment), sig); err != nil {
+		t.Fatalf("registration auth: %v", err)
+	}
+}
+
+func testToken(t *testing.T) []byte {
+	t.Helper()
+	token, err := NewToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return token
+}
+
 func TestPairingExchangesAndPinsKeys(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 
-	token := NewToken()
+	token := testToken(t)
 	wallet := testWallet(t, 0x11)           // client wallet
 	_, hostPub, _ := noise.GenerateStatic() // agent host key
 
@@ -85,9 +141,9 @@ func TestPairingFailsWithWrongToken(t *testing.T) {
 	clientMC, agentMC := peer.Pipe()
 	info := AgentInfo{HostPubHex: hex.EncodeToString(hostPub), MachineID: "m", Name: "n"}
 
-	go func() { _, _, _ = RunResponder(ctx, agentMC, NewToken(), info) }() // different token
+	go func() { _, _, _ = RunResponder(ctx, agentMC, testToken(t), info) }() // different token
 
-	if _, _, err := RunInitiator(ctx, clientMC, NewToken(), wallet); err == nil {
+	if _, _, err := RunInitiator(ctx, clientMC, testToken(t), wallet); err == nil {
 		t.Fatal("expected pairing to fail with mismatched tokens")
 	}
 }
@@ -101,7 +157,7 @@ func TestPairingRejectsBadWalletAuth(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 
-	token := NewToken()
+	token := testToken(t)
 	wallet := testWallet(t, 0x33)
 	_, hostPub, _ := noise.GenerateStatic()
 	clientMC, agentMC := peer.Pipe()
@@ -143,7 +199,7 @@ func TestPairingRejectsBadWalletAuth(t *testing.T) {
 		if err == nil {
 			t.Fatal("responder accepted a wallet that did not sign the binding")
 		}
-		if !strings.Contains(err.Error(), "wallet auth failed") {
+		if !strings.Contains(err.Error(), "owner auth failed") {
 			t.Fatalf("expected wallet auth failure, got: %v", err)
 		}
 	case <-time.After(2 * time.Second):

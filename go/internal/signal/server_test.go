@@ -91,6 +91,9 @@ func TestOfferReachesAgentAnswerReachesBrowser(t *testing.T) {
 	}
 
 	browser := dialJSON(t, wsURL(srv.URL, "/attach", map[string]string{"owner_id": "o", "machine_id": "m"}))
+	if ready := readMsg(t, browser); ready.Type != TypeReady || ready.Session == "" {
+		t.Fatalf("browser expected ready, got %+v", ready)
+	}
 
 	// Agent is notified of the attach with a session id.
 	attach := readMsg(t, agent)
@@ -123,6 +126,9 @@ func TestOfferBindingReachesAgentVerbatim(t *testing.T) {
 	}
 
 	browser := dialJSON(t, wsURL(srv.URL, "/attach", map[string]string{"owner_id": "o", "machine_id": "m"}))
+	if ready := readMsg(t, browser); ready.Type != TypeReady || ready.Session == "" {
+		t.Fatalf("browser expected ready, got %+v", ready)
+	}
 	attach := readMsg(t, agent)
 	if attach.Type != TypeAttach || attach.Session == "" {
 		t.Fatalf("expected attach with session, got %+v", attach)

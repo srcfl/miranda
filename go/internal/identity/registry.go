@@ -11,11 +11,11 @@ import (
 )
 
 // registrySalt domain-separates the registry AEAD key from any other use of the
-// wallet secret. K_reg = HKDF-SHA256(wallet_secret, registrySalt, "aead-key").
+// owner root. K_reg = HKDF-SHA256(owner_root, registrySalt, "aead-key").
 const registrySalt = "miranda/registry/v1"
 
-// RegistryKey derives the symmetric registry-encryption key from the wallet's
-// 32-byte prf secret. Only wallet-holders can derive it; the relay never sees it.
+// RegistryKey derives the symmetric registry-encryption key from the 32-byte
+// owner root. Only owner clients can derive it; the relay never sees it.
 // Mirrors web/src/identity/registry.js exactly.
 func RegistryKey(secret []byte) ([]byte, error) {
 	r := hkdf.New(sha256.New, secret, []byte(registrySalt), []byte("aead-key"))

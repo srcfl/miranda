@@ -70,12 +70,11 @@ backbone.
 | Role | Binary | Thematic name (story / docs / service brand) |
 |---|---|---|
 | Client you type all day (`mir attach macbook`) | **`mir`** | Miranda |
-| Machine-side agent | **`mir-agent`** | **Prospero** — the magician who conjures the shell |
+| Machine-side mode (`mir up`) | **`mir`** | **Prospero** — the magician who conjures the shell |
 | Blind signaling / relay server | **`mir-signal`** | **Ariel** — the invisible spirit that carries messages and is bound to obey |
 
-Binaries stay functional (`mir` / `mir-agent` / `mir-signal`) for discoverability;
-the Tempest names (Prospero, Ariel) are used in the README, marketing, and as the
-brand for the hosted relay service — not as binary names.
+`mir-agent` remains only as a deprecated compatibility shim. The Tempest names
+(Prospero, Ariel) are story names, not extra binaries users need to learn.
 
 ### Verification at decision time
 
@@ -89,11 +88,11 @@ brand for the hosted relay service — not as binary names.
   Both dev-adjacent → some name recognition + weaker SEO. Accepted for the strength
   of the story; distinct enough in context.
 
-### Rollout (mechanical, do as its own change / PR)
+### Implementation notes
 
-- Rename binaries: `trm` → `mir`, `tr-agent` → `mir-agent`, `tr-signal` →
-  `mir-signal` (`go/cmd/*`, Makefile, `web/dev-serve.sh`, deploy scripts, systemd unit).
-- Rewrite README (SEO + what-it-does first, then story) and update CLAUDE.md + deploy docs.
-- Rename repo `srcfl/terminal-relay` → `srcfl/miranda` (GitHub keeps a redirect).
-- Re-deploy the relay after the binary rename (`deploy/lightsail/redeploy.sh`).
-- Optional: buy a marketing domain (`getmiranda.com` free) or keep `*.sourceful-labs.net`.
+- The repository and product are Miranda; `mir` and `mir-signal` are the primary
+  binaries.
+- The Go module path and historical cryptographic wire-domain strings remain
+  `github.com/srcful/terminal-relay/go` / `terminal-relay/...` for compatibility.
+- Product positioning now lives in [`product.md`](product.md): passkey-native
+  terminal continuity, not a general VPN or SSH reimplementation.

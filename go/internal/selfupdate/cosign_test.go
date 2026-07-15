@@ -35,10 +35,7 @@ func TestCosignIdentityRegexp(t *testing.T) {
 	}
 }
 
-// TestVerifyChecksumsSignatureNoCosign pins the graceful-degradation contract:
-// with cosign absent from PATH, verification returns nil (checksum-only fallback)
-// and stays SILENT — a successful update must not nag the majority who have no
-// cosign. We force "cosign not found" by pointing PATH at an empty dir.
+// Missing cosign is a hard failure: checksum-only is not provenance.
 func TestVerifyChecksumsSignatureNoCosign(t *testing.T) {
 	t.Setenv("PATH", t.TempDir()) // no cosign on this PATH
 	if _, err := exec.LookPath("cosign"); err == nil {
@@ -48,16 +45,16 @@ func TestVerifyChecksumsSignatureNoCosign(t *testing.T) {
 	var notes []string
 	c := &Client{Repo: "srcfl/miranda"}
 	rel := &Release{ChecksumsSigURL: "http://x/sig", ChecksumsCertURL: "http://x/pem"}
-	if err := c.verifyChecksumsSignature(rel, []byte("sums"), func(m string) { notes = append(notes, m) }); err != nil {
-		t.Fatalf("expected nil (fallback) when cosign absent, got %v", err)
+	if err := c.verifyChecksumsSignature(rel, []byte("sums"), func(m string) { notes = append(notes, m) }); err == nil || !strings.Contains(err.Error(), "cosign is required") {
+		t.Fatalf("expected hard failure when cosign absent, got %v", err)
 	}
 	if len(notes) != 0 {
 		t.Fatalf("expected NO output when cosign is absent (don't nag), got %v", notes)
 	}
 }
 
-// TestVerifyChecksumsSignatureStrictRequiresCosign: with MIR_REQUIRE_COSIGN set,
-// a missing cosign becomes a hard error so an operator can MANDATE provenance.
+// The old strict environment switch remains harmless; verification is strict by
+// default now.
 func TestVerifyChecksumsSignatureStrictRequiresCosign(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	t.Setenv("MIR_REQUIRE_COSIGN", "1")
@@ -67,15 +64,12 @@ func TestVerifyChecksumsSignatureStrictRequiresCosign(t *testing.T) {
 	c := &Client{Repo: "srcfl/miranda"}
 	rel := &Release{ChecksumsSigURL: "http://x/sig", ChecksumsCertURL: "http://x/pem"}
 	err := c.verifyChecksumsSignature(rel, []byte("sums"), nil)
-	if err == nil || !strings.Contains(err.Error(), "MIR_REQUIRE_COSIGN") {
-		t.Fatalf("expected a hard error under MIR_REQUIRE_COSIGN, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "cosign is required") {
+		t.Fatalf("expected a hard error, got %v", err)
 	}
 }
 
-// TestVerifyChecksumsSignatureUnsignedRelease pins that a release WITHOUT
-// signing assets (empty .sig/.pem URLs, e.g. a legacy tag) falls back silently
-// rather than hard-failing — even when cosign IS installed. We fake a cosign on
-// PATH so the LookPath check passes; it must never be invoked on this path.
+// An unsigned release is rejected even when cosign itself is installed.
 func TestVerifyChecksumsSignatureUnsignedRelease(t *testing.T) {
 	dir := t.TempDir()
 	fakeCosign := filepath.Join(dir, "cosign")
@@ -88,8 +82,8 @@ func TestVerifyChecksumsSignatureUnsignedRelease(t *testing.T) {
 	var notes []string
 	c := &Client{Repo: "srcfl/miranda"}
 	rel := &Release{} // no ChecksumsSigURL / ChecksumsCertURL
-	if err := c.verifyChecksumsSignature(rel, []byte("sums"), func(m string) { notes = append(notes, m) }); err != nil {
-		t.Fatalf("expected nil (fallback) for unsigned release, got %v", err)
+	if err := c.verifyChecksumsSignature(rel, []byte("sums"), func(m string) { notes = append(notes, m) }); err == nil || !strings.Contains(err.Error(), "no cosign signature") {
+		t.Fatalf("expected unsigned release rejection, got %v", err)
 	}
 	if len(notes) != 0 {
 		t.Fatalf("expected NO output for an unsigned release, got %v", notes)

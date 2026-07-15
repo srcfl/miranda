@@ -12,11 +12,11 @@ import (
 	"fmt"
 )
 
-// FromBinding renders a Noise channel binding as a 64-bit safety number, in four
-// 4-hex-digit groups (e.g. "a3f1-9c2b-77de-4051"). 64 bits resists a real-time
-// birthday-collision MITM grinder within an interactive pairing window.
+// FromBinding renders a Noise channel binding as a 96-bit safety number in six
+// compact groups. Pairing is rare; the extra comparison cost buys a much wider
+// defense-in-depth margin if a pairing token is exposed.
 func FromBinding(binding []byte) string {
-	h := sha256.Sum256(append([]byte("terminal-relay/sas/v1"), binding...))
-	return fmt.Sprintf("%02x%02x-%02x%02x-%02x%02x-%02x%02x",
-		h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7])
+	h := sha256.Sum256(append([]byte("miranda/sas/v2"), binding...))
+	return fmt.Sprintf("%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x",
+		h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], h[8], h[9], h[10], h[11])
 }

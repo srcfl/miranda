@@ -5,11 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/srcful/terminal-relay/go/internal/client"
 	"github.com/srcful/terminal-relay/go/internal/peer"
 	"github.com/srcful/terminal-relay/go/internal/version"
 )
@@ -32,6 +35,52 @@ func TestIsCleanDetach(t *testing.T) {
 	}
 	if isCleanDetach(nil) {
 		t.Error("nil is not a detach error")
+	}
+}
+
+func TestMachineRevokePublishesAndHidesMachine(t *testing.T) {
+	t.Setenv("MIR_NO_UPDATE_CHECK", "1")
+	posts := 0
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/registry":
+			_, _ = io.WriteString(w, "[]")
+		case r.URL.Path == "/revocations" && r.Method == http.MethodGet:
+			_, _ = io.WriteString(w, "[]")
+		case r.URL.Path == "/revocations" && r.Method == http.MethodPost:
+			posts++
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer relay.Close()
+	t.Setenv("MIR_SIGNAL", relay.URL)
+	dir := t.TempDir()
+	if _, err := client.LoadOrCreateIdentity(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.AddMachine(dir, client.Machine{Name: "box", MachineID: "machine-1", HostPubHex: "aabb", SignalURL: relay.URL}); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	if code := Run([]string{"machine", "revoke", "box", "--dir", dir, "--yes"}, &out, &errb); code != 0 {
+		t.Fatalf("exit = %d, stdout=%q stderr=%q", code, out.String(), errb.String())
+	}
+	if posts != 1 {
+		t.Fatalf("POST count = %d, want 1", posts)
+	}
+	records, err := client.ListRevocations(dir)
+	if err != nil || len(records) != 1 || records[0].MachineID != "machine-1" {
+		t.Fatalf("records=%+v err=%v", records, err)
+	}
+	out.Reset()
+	errb.Reset()
+	if code := Run([]string{"list", "--dir", dir}, &out, &errb); code != 0 {
+		t.Fatalf("list exit = %d, stderr=%q", code, errb.String())
+	}
+	if strings.Contains(out.String(), "machine-1") {
+		t.Fatalf("revoked machine still listed: %q", out.String())
 	}
 }
 
@@ -67,7 +116,7 @@ func TestNoArgsShowsGuide(t *testing.T) {
 	var out, errb bytes.Buffer
 	Run(nil, &out, &errb)
 	g := out.String()
-	for _, want := range []string{"mir attach", "mir pair", "wallet", "LAN"} {
+	for _, want := range []string{"mir attach", "mir pair", "identity", "LAN"} {
 		if !strings.Contains(g, want) {
 			t.Fatalf("guide missing %q:\n%s", want, g)
 		}
@@ -87,7 +136,7 @@ func TestAttachLegacyIdentityGuidesToKeygen(t *testing.T) {
 	if code := Run([]string{"attach", "--dir", dir, "box"}, &out, &errb); code == 0 {
 		t.Fatal("attach with a wallet-less identity should fail")
 	}
-	if !strings.Contains(errb.String(), "keygen --wallet") || !strings.Contains(errb.String(), "re-paired") {
+	if !strings.Contains(errb.String(), "identity rotate --yes") || !strings.Contains(errb.String(), "re-paired") {
 		t.Fatalf("expected a keygen + re-pair migration hint, got:\n%s", errb.String())
 	}
 }

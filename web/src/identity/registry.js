@@ -1,7 +1,7 @@
 // web/src/identity/registry.js
-// Mirrors go/internal/identity/registry.go: a wallet-derived symmetric key and a
+// Mirrors go/internal/identity/registry.go: an owner-root-derived symmetric key and a
 // ChaCha20-Poly1305 (IETF, 12-byte nonce) record seal/open. Byte-identical to Go,
-// gated by testdata/registry-vector.json. Only wallet-holders can derive K_reg;
+// gated by testdata/registry-vector.json. Only owner clients can derive K_reg;
 // the relay only ever holds the opaque nonce||ciphertext||tag blob.
 import { chacha20poly1305 } from '@noble/ciphers/chacha';
 import { hkdf } from '@noble/hashes/hkdf';
@@ -11,7 +11,7 @@ const enc = new TextEncoder();
 const SALT = enc.encode('miranda/registry/v1');
 const INFO = enc.encode('aead-key');
 
-// registryKey derives the 32-byte registry AEAD key from the wallet's 32-byte prf
+// registryKey derives the 32-byte registry AEAD key from the owner's 32-byte PRF
 // secret. K_reg = HKDF-SHA256(secret, salt='miranda/registry/v1', info='aead-key').
 export function registryKey(secret) {
   return hkdf(sha256, secret, SALT, INFO, 32);

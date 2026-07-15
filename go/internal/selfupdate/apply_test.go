@@ -51,6 +51,10 @@ func TestApplyReplacesTarget(t *testing.T) {
 			_, _ = w.Write(archive)
 		case "/checksums":
 			fmt.Fprintf(w, "%s  mir_1.0.0_%s_%s.tar.gz\n", hex.EncodeToString(sum[:]), "os", "arch")
+		case "/sig":
+			_, _ = w.Write([]byte("signature"))
+		case "/pem":
+			_, _ = w.Write([]byte("certificate"))
 		default:
 			http.NotFound(w, r)
 		}
@@ -61,8 +65,13 @@ func TestApplyReplacesTarget(t *testing.T) {
 	if err := os.WriteFile(target, []byte("old"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	c := &Client{Binary: "mir", OS: "os", Arch: "arch", HTTP: srv.Client()}
-	rel := &Release{Tag: "v1.0.0", AssetName: "mir_1.0.0_os_arch.tar.gz", AssetURL: srv.URL + "/asset", ChecksumsURL: srv.URL + "/checksums"}
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "cosign"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+	c := &Client{Repo: "srcfl/miranda", Binary: "mir", OS: "os", Arch: "arch", HTTP: srv.Client()}
+	rel := &Release{Tag: "v1.0.0", AssetName: "mir_1.0.0_os_arch.tar.gz", AssetURL: srv.URL + "/asset", ChecksumsURL: srv.URL + "/checksums", ChecksumsSigURL: srv.URL + "/sig", ChecksumsCertURL: srv.URL + "/pem"}
 	if err := c.Apply(rel, target); err != nil {
 		t.Fatal(err)
 	}

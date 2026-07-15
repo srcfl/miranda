@@ -3,12 +3,12 @@ package agent
 
 import (
 	"context"
-	cryptorand "crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand"
 	"net/http"
 	"net/url"
@@ -24,19 +24,19 @@ import (
 	"github.com/srcful/terminal-relay/go/internal/signal"
 )
 
-// ownerPubFromBinding verifies the offer's wallet binding and returns the X25519
-// transport key to pin for Noise-KK. owner is the routing wallet (owner_id). There
-// is no legacy hex path: a valid binding whose wallet == owner_id is required.
+// ownerPubFromBinding verifies the offer's owner binding and returns the X25519
+// transport key to pin for Noise-KK. The signed record retains the historical
+// Wallet field on the wire, but it contains the Miranda owner id.
 func ownerPubFromBinding(bindingJSON, owner string) ([]byte, error) {
 	if bindingJSON == "" {
-		return nil, fmt.Errorf("attach: missing wallet binding")
+		return nil, fmt.Errorf("attach: missing owner binding")
 	}
 	sb, err := identity.ParseSignedBinding([]byte(bindingJSON))
 	if err != nil {
 		return nil, err
 	}
 	if sb.Wallet != owner {
-		return nil, fmt.Errorf("attach: binding wallet %q != owner_id %q", sb.Wallet, owner)
+		return nil, fmt.Errorf("attach: binding owner %q != owner_id %q", sb.Wallet, owner)
 	}
 	if err := identity.VerifyBinding(sb); err != nil {
 		return nil, err
@@ -59,7 +59,7 @@ const minHealthyUptime = 10 * time.Second
 // layer, so without this cap anyone who knows an owner_id+machine_id could pump
 // offers and exhaust the agent's FDs/memory/goroutines (a pre-auth DoS) — without
 // ever getting the shell. 64 comfortably covers a person's real devices.
-const defaultMaxConcurrentAttaches = 64
+const defaultMaxConcurrentAttaches = 16
 
 // Runtime runs the agent: it holds the signaling channel and, per attach,
 // answers the WebRTC offer, runs the Noise responder, and bridges to a shell.
@@ -70,6 +70,9 @@ type Runtime struct {
 
 	sem chan struct{} // bounds concurrent in-flight attach handshakes (pre-auth DoS guard)
 
+	seenMu       sync.Mutex
+	seenAttaches map[string]time.Time // valid signed session ids; replay guard
+
 	active int64 // count of authenticated, serving sessions (atomic); gates auto-update
 
 	baseBackoff    time.Duration        // first reconnect delay (grows on repeated dial failures)
@@ -79,14 +82,6 @@ type Runtime struct {
 
 	DisableLAN bool // when set, mir up serves the relay only (no QUIC listener / mDNS advertise)
 
-	// WalletSecret is the 32-byte prf secret of THIS machine's wallet (nil =
-	// legacy/no wallet). It derives K_reg, the key under which the agent seals its
-	// encrypted device registry record. Never sent to the relay.
-	WalletSecret []byte
-	// WalletAddress is this machine's base58 wallet. The agent publishes a registry
-	// record on the live registration for this owner so your other devices discover
-	// it; it publishes only for this self-wallet (it has no other wallet's K_reg).
-	WalletAddress string
 }
 
 // admit reserves a slot for a new attach handshake, returning false immediately
@@ -110,7 +105,24 @@ func (rt *Runtime) sessionEnded()   { atomic.AddInt64(&rt.active, -1) }
 func (rt *Runtime) ActiveSessions() int { return int(atomic.LoadInt64(&rt.active)) }
 
 func NewRuntime(cfg *Config, launch []string, ice []peer.ICEServer) *Runtime {
-	return &Runtime{cfg: cfg, launch: launch, ice: ice, sem: make(chan struct{}, defaultMaxConcurrentAttaches), baseBackoff: time.Second, maxBackoff: 30 * time.Second, reloadInterval: 3 * time.Second}
+	return &Runtime{cfg: cfg, launch: launch, ice: ice, sem: make(chan struct{}, defaultMaxConcurrentAttaches), seenAttaches: make(map[string]time.Time), baseBackoff: time.Second, maxBackoff: 30 * time.Second, reloadInterval: 3 * time.Second}
+}
+
+func (rt *Runtime) acceptAttachSession(owner, session string) bool {
+	now := time.Now()
+	key := owner + "|" + session
+	rt.seenMu.Lock()
+	defer rt.seenMu.Unlock()
+	for k, seen := range rt.seenAttaches {
+		if now.Sub(seen) > 5*time.Minute {
+			delete(rt.seenAttaches, k)
+		}
+	}
+	if _, replay := rt.seenAttaches[key]; replay {
+		return false
+	}
+	rt.seenAttaches[key] = now
+	return true
 }
 
 // Up keeps the agent registered on the signaling channel for EVERY paired owner
@@ -219,6 +231,12 @@ func (rt *Runtime) serveOwner(ctx context.Context, owner string) {
 		if ctx.Err() != nil {
 			return
 		}
+		if errors.Is(err, errMachineRevoked) {
+			if rt.Logf != nil {
+				rt.Logf("event=revoked owner=%s; stopping registration for this owner", short(owner))
+			}
+			return
+		}
 		backoff = nextBackoff(backoff, rt.baseBackoff, rt.maxBackoff, dialed, uptime)
 		sleep := rt.jitter(backoff)
 		code, reason := closeCodeReason(err)
@@ -234,43 +252,6 @@ func (rt *Runtime) serveOwner(ctx context.Context, owner string) {
 	}
 }
 
-// registryBlob builds and AEAD-seals this machine's device registry record under
-// K_reg (derived from the wallet secret), returning base64(nonce||ciphertext||tag).
-// The record — {v, name, host_pub, signal_url, ts} — lets your other devices
-// discover this machine by name with no pairing. The relay never parses it (it's
-// encrypted and opaque); only a wallet-holder can open it, so plain json.Marshal
-// of the map is fine. A fresh random nonce per call keeps reconnect re-publishes
-// safe. Errors when there is no wallet (legacy mir up publishes nothing).
-func (rt *Runtime) registryBlob() (string, error) {
-	if len(rt.WalletSecret) == 0 {
-		return "", fmt.Errorf("registry: no wallet secret")
-	}
-	rec := map[string]any{
-		"v":          1,
-		"name":       rt.cfg.MachineName,
-		"host_pub":   rt.cfg.HostPubHex,
-		"signal_url": rt.cfg.SignalURL,
-		"ts":         time.Now().Unix(),
-	}
-	pt, err := json.Marshal(rec)
-	if err != nil {
-		return "", err
-	}
-	key, err := identity.RegistryKey(rt.WalletSecret)
-	if err != nil {
-		return "", err
-	}
-	nonce := make([]byte, 12)
-	if _, err := cryptorand.Read(nonce); err != nil {
-		return "", err
-	}
-	blob, err := identity.SealRecord(key, nonce, pt, rt.cfg.MachineID)
-	if err != nil {
-		return "", err
-	}
-	return base64.StdEncoding.EncodeToString(blob), nil
-}
-
 // serveOnce dials the signaling channel for one owner and serves offers until
 // the connection drops. It returns:
 //   - dialed: whether the dial itself succeeded (vs. relay down).
@@ -280,8 +261,17 @@ func (rt *Runtime) registryBlob() (string, error) {
 //   - err: the read error, with any websocket.CloseError code+reason preserved
 //     so a deliberate relay rejection isn't misread as a network blip.
 func (rt *Runtime) serveOnce(ctx context.Context, owner string) (dialed bool, uptime time.Duration, err error) {
-	c, _, err := websocket.Dial(ctx, agentSignalURL(rt.cfg.SignalURL, owner, rt.cfg.MachineID), agentDialOptions(rt.cfg.RegistrationSecret))
+	c, response, err := websocket.Dial(ctx, agentSignalURL(rt.cfg.SignalURL, owner, rt.cfg.MachineID), agentDialOptions(rt.cfg.RegistrationSecret, RegistrationAuthForOwner(rt.cfg.Dir, owner)))
 	if err != nil {
+		if response != nil {
+			if response.Body != nil {
+				_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+				response.Body.Close()
+			}
+			if response.StatusCode == http.StatusGone {
+				return false, 0, fmt.Errorf("%w: relay returned %s", errMachineRevoked, response.Status)
+			}
+		}
 		return false, 0, err
 	}
 	defer c.CloseNow()
@@ -294,15 +284,11 @@ func (rt *Runtime) serveOnce(ctx context.Context, owner string) (dialed bool, up
 		rt.Logf("event=connected owner=%s", short(owner))
 	}
 
-	// Publish our encrypted device registry record as the first message, but ONLY
-	// for our own wallet (we hold no other wallet's K_reg). It rides this live
-	// registration; the relay holds it opaquely and serves it to your other
-	// devices. Re-publishing on every reconnect is correct (fresh nonce + ts).
-	if owner == rt.WalletAddress && len(rt.WalletSecret) > 0 {
-		if blob, err := rt.registryBlob(); err == nil {
-			if msg, err := json.Marshal(signal.SignalMsg{Type: signal.TypeRegistry, Registry: blob}); err == nil {
-				_ = c.Write(ctx, websocket.MessageText, msg)
-			}
+	// Publish the opaque record the owner provisioned during pairing. The agent
+	// has no key capable of opening or forging it.
+	if blob := RegistryForOwner(rt.cfg.Dir, owner); blob != "" {
+		if msg, err := json.Marshal(signal.SignalMsg{Type: signal.TypeRegistry, Registry: blob}); err == nil {
+			_ = c.Write(ctx, websocket.MessageText, msg)
 		}
 	}
 
@@ -380,6 +366,24 @@ func (rt *Runtime) iceFor(ctx context.Context) []peer.ICEServer {
 }
 
 func (rt *Runtime) handleOffer(ctx context.Context, c *websocket.Conn, m signal.SignalMsg, owner string) {
+	// Verify owner control before allocating ICE, TURN, file descriptors, or a
+	// Pion PeerConnection. The stable binding selects the Noise key; the fresh
+	// signature binds this exact SDP to the relay-issued one-shot session.
+	if !rt.cfg.IsOwnerPinned(owner) || m.Session == "" || m.Auth == "" {
+		return
+	}
+	ownerPub, err := ownerPubFromBinding(m.Binding, owner)
+	if err != nil {
+		return
+	}
+	auth, err := base64.StdEncoding.DecodeString(m.Auth)
+	if err != nil || identity.VerifyAuth(owner, identity.AttachChallenge(m.Session, rt.cfg.MachineID, m.SDP), auth) != nil {
+		return
+	}
+	if !rt.acceptAttachSession(owner, m.Session) {
+		return
+	}
+
 	ans, opened, err := peer.NewAnswerer(rt.iceFor(ctx))
 	if err != nil {
 		return
@@ -427,10 +431,6 @@ func (rt *Runtime) handleOffer(ctx context.Context, c *websocket.Conn, m signal.
 		return // no P2P path (strict P2P) — give up this attach
 	}
 
-	ownerPub, err := ownerPubFromBinding(m.Binding, owner)
-	if err != nil {
-		return
-	}
 	_ = rt.serveAuthenticated(attachCtx, dc, ownerPub)
 }
 
@@ -473,13 +473,14 @@ func agentSignalURL(base, owner, machine string) string {
 	return ws + "/agent/signal?owner_id=" + url.QueryEscape(owner) + "&machine_id=" + url.QueryEscape(machine)
 }
 
-func agentDialOptions(registrationSecret string) *websocket.DialOptions {
-	if registrationSecret == "" {
+func agentDialOptions(registrationSecret, registrationAuth string) *websocket.DialOptions {
+	if registrationSecret == "" && registrationAuth == "" {
 		return nil
 	}
 	return &websocket.DialOptions{
 		HTTPHeader: http.Header{
 			signal.AgentRegistrationSecretHeader: []string{registrationSecret},
+			signal.AgentRegistrationAuthHeader:   []string{registrationAuth},
 		},
 	}
 }
@@ -488,4 +489,5 @@ type runtimeError string
 
 func (e runtimeError) Error() string { return string(e) }
 
-const errNoOwner = runtimeError("no paired owner; run `mir pair-dev --owner-pub <hex>` first")
+const errNoOwner = runtimeError("no paired owner; run `mir pair` first")
+const errMachineRevoked = runtimeError("machine revoked by owner")

@@ -3,6 +3,7 @@ package client
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -17,38 +18,71 @@ import (
 	"github.com/srcful/terminal-relay/go/internal/identity"
 )
 
-// registryEntry is the relay's blind wire shape: GET /registry?wallet=W ->
-// [{machine_id, blob}]. blob is base64(nonce||ciphertext||tag), sealed by a
-// wallet-holding agent (AAD = machine_id). The relay never opens it.
+// registryEntry is the relay's blind wire shape: GET /registry?owner_id=W ->
+// [{machine_id, blob}]. blob is base64(nonce||ciphertext||tag), sealed by the
+// owner client (AAD = machine_id). The relay never opens it.
 type registryEntry struct {
 	MachineID string `json:"machine_id"`
 	Blob      string `json:"blob"`
 }
 
 // registryRecord is the sealed plaintext an agent publishes: {v, name, host_pub,
-// signal_url, ts}. Only the wallet-holder can open the blob to recover it.
+// signal_url, ts}. Only an owner-root holder can open the blob to recover it.
 type registryRecord struct {
+	V         int    `json:"v"`
 	Name      string `json:"name"`
 	HostPub   string `json:"host_pub"`
 	SignalURL string `json:"signal_url"`
+	TS        int64  `json:"ts"`
 }
 
-// FetchRegistry asks the relay for this wallet's live device records and decrypts
-// them. Forged/garbage blobs (sealed by a non-wallet-holder) fail to open and are
-// silently dropped. Best-effort: a relay error or a wallet-less identity returns
+// SealRegistryMachine creates the opaque discovery record provisioned to an
+// agent during pairing. Encryption happens on the owner client; the agent only
+// stores and republishes the blob and never receives the registry key or root.
+func SealRegistryMachine(id *Identity, m Machine) (string, error) {
+	if !id.HasRootedIdentity() {
+		return "", fmt.Errorf("registry: identity has no secret root")
+	}
+	rec := registryRecord{V: 1, Name: m.Name, HostPub: m.HostPubHex, SignalURL: m.SignalURL, TS: time.Now().Unix()}
+	pt, err := json.Marshal(rec)
+	if err != nil {
+		return "", err
+	}
+	secret := id.Secret()
+	defer zeroBytes(secret)
+	key, err := identity.RegistryKey(secret)
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, 12)
+	if _, err := rand.Read(nonce); err != nil {
+		return "", err
+	}
+	blob, err := identity.SealRecord(key, nonce, pt, m.MachineID)
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(blob), nil
+}
+
+// FetchRegistry asks the relay for this owner's live device records and decrypts
+// them. Forged/garbage blobs (sealed without the owner root) fail to open and are
+// silently dropped. Best-effort: a relay error or a legacy identity returns
 // nil so callers can fall back to the local machines.json without surfacing noise.
 func FetchRegistry(ctx context.Context, hc *http.Client, signalURL string, id *Identity) ([]Machine, error) {
-	if !id.HasWallet() {
+	if !id.HasRootedIdentity() {
 		return nil, nil
 	}
-	key, err := identity.RegistryKey(id.Secret())
+	secret := id.Secret()
+	defer zeroBytes(secret)
+	key, err := identity.RegistryKey(secret)
 	if err != nil {
 		return nil, err
 	}
 	if hc == nil {
 		hc = &http.Client{Timeout: 8 * time.Second}
 	}
-	url := strings.TrimRight(signalURL, "/") + "/registry?wallet=" + neturl.QueryEscape(id.WalletAddress)
+	url := strings.TrimRight(signalURL, "/") + "/registry?owner_id=" + neturl.QueryEscape(id.OwnerID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -155,7 +189,7 @@ func NotifyNewDevices(w io.Writer, dir string, machines []Machine) error {
 		known[m.MachineID] = true
 		seen.MachineIDs = append(seen.MachineIDs, m.MachineID)
 		changed = true
-		fmt.Fprintf(w, "📣 new device %q joined your wallet\n", m.Name)
+		fmt.Fprintf(w, "📣 new machine %q joined your Miranda identity\n", m.Name)
 	}
 	if !changed {
 		return nil

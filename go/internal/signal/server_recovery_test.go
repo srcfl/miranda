@@ -25,6 +25,9 @@ func TestAgentDeathNotifiesAttachedBrowsers(t *testing.T) {
 	}
 
 	browser := dialJSON(t, wsURL(srv.URL, "/attach", map[string]string{"owner_id": "o", "machine_id": "m"}))
+	if ready := readMsg(t, browser); ready.Type != TypeReady {
+		t.Fatalf("browser expected ready, got %+v", ready)
+	}
 
 	// Agent learns about the attach.
 	if attach := readMsg(t, agent); attach.Type != TypeAttach || attach.Session == "" {
@@ -98,6 +101,9 @@ func TestAgentReRegistrationTearsDownOldSessions(t *testing.T) {
 	}
 
 	browser := dialJSON(t, wsURL(srv.URL, "/attach", map[string]string{"owner_id": "o", "machine_id": "m"}))
+	if ready := readMsg(t, browser); ready.Type != TypeReady {
+		t.Fatalf("browser expected ready, got %+v", ready)
+	}
 	if attach := readMsg(t, a1); attach.Type != TypeAttach {
 		t.Fatalf("a1 expected attach, got %+v", attach)
 	}
@@ -119,6 +125,9 @@ func TestAgentReRegistrationTearsDownOldSessions(t *testing.T) {
 	// A fresh attach now reaches the live agent a2 (and not the dead a1).
 	browser2 := dialJSON(t, wsURL(srv.URL, "/attach", map[string]string{"owner_id": "o", "machine_id": "m"}))
 	defer browser2.CloseNow()
+	if ready := readMsg(t, browser2); ready.Type != TypeReady {
+		t.Fatalf("browser2 expected ready, got %+v", ready)
+	}
 	attach := readMsg(t, a2)
 	if attach.Type != TypeAttach || attach.Session == "" {
 		t.Fatalf("a2 expected attach with session, got %+v", attach)

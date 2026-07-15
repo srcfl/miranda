@@ -11,11 +11,14 @@ import (
 	"net/url"
 )
 
-// NewToken returns a fresh 16-byte (128-bit) single-use pairing token.
-func NewToken() []byte {
+// NewToken returns a fresh 16-byte (128-bit) single-use pairing token and fails
+// closed if the operating system CSPRNG is unavailable.
+func NewToken() ([]byte, error) {
 	b := make([]byte, 16)
-	_, _ = rand.Read(b)
-	return b
+	if _, err := rand.Read(b); err != nil {
+		return nil, err
+	}
+	return b, nil
 }
 
 type codePayload struct {

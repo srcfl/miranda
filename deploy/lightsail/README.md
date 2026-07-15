@@ -1,6 +1,7 @@
 # Deploying `mir-signal` (AWS Lightsail + Cloudflare)
 
-The signaling server is a tiny stateless Go binary. It runs on a small Lightsail
+The signaling server is a tiny Go binary with only one durable data set: verified,
+owner-signed machine revocation tombstones. It runs on a small Lightsail
 instance behind Cloudflare, which provides TLS for the browser SPA at
 `https://term.sourceful-labs.net` and signaling at
 `wss://relay.sourceful-labs.net` (or any other proxied hostname routed to this
@@ -18,24 +19,27 @@ below). After a successful `redeploy.sh` the box matches this table.
 | ------------------ | -------------------------------------------------------------------------------------------------------------------------- |
 | Lightsail instance | `tr-signal` (legacy AWS name; renamed only on recreate), region `eu-north-1` (Stockholm), `ubuntu_24_04`, `nano_3_0` (~$5/mo) |
 | Static IP          | `16.171.89.172` (Lightsail `tr-signal-ip`)                                                                                 |
-| Service            | systemd `mir-signal.service`, listens on `:80`, user `mirsignal` + `CAP_NET_BIND_SERVICE`, serves `/opt/mir-web` when present |
-| Open ports         | 22 (SSH), 80 (HTTP — Cloudflare origin); TURN ports only when enabled                                                      |
-| Health             | `curl http://16.171.89.172/healthz` → 200                                                                                  |
+| Service            | systemd `mir-signal.service`, HTTPS `:443`, local health `:80`, user `mirsignal`, durable revocations in `/var/lib/mir-signal` |
+| Open ports         | restricted SSH, HTTPS 443 from Cloudflare ranges; TURN ports only when enabled                                            |
+| Health             | `curl https://relay.sourceful-labs.net/healthz` → 200 and local `curl http://localhost/healthz` → 200                    |
 
 Architecture: browser `https://term.sourceful-labs.net` and client/agent
 `wss://relay.sourceful-labs.net` -> **Cloudflare** (TLS termination, WebSocket
-proxy) -> origin `http://16.171.89.172:80` -> `mir-signal`.
+proxy) -> origin TLS `https://16.171.89.172:443` -> `mir-signal`. Port 80 is not
+publicly exposed; it exists for localhost health checks during deploy/rollback.
 
 ## Cloudflare setup (manual — do this in the `sourceful-labs.net` dashboard)
 
 1. **DNS** → add a record:
    - Type `A`, Name `term`, IPv4 `16.171.89.172`, **Proxied** (orange cloud).
    - Type `A`, Name `relay`, IPv4 `16.171.89.172`, **Proxied** (orange cloud).
-2. **SSL/TLS → Overview** → encryption mode **Flexible** (Cloudflare ⇄ origin over
-   HTTP:80; the origin has no cert). Cloudflare presents a valid public cert to
-   clients, so `https://term.sourceful-labs.net` and
-   `wss://relay.sourceful-labs.net` just work.
+2. Create a Cloudflare Origin CA certificate for the hostnames, install it as
+   `/etc/ssl/mir-signal/{cert,key}.pem`, owned/readable by `mirsignal`, then set
+   **SSL/TLS → Overview → Full (strict)**. The production unit uses
+   `--require-tls` and refuses to start without both files.
 3. **Network** → ensure **WebSockets** is **On** (default on).
+4. Restrict the origin firewall so 443 accepts only Cloudflare's published IPv4
+   and IPv6 ranges. Restrict SSH to the deployment source. Do not expose port 80.
 
 Then verify:
 
@@ -44,10 +48,9 @@ curl https://term.sourceful-labs.net/healthz
 curl https://relay.sourceful-labs.net/healthz
 ```
 
-> Hardening (optional, later): switch to **Full (strict)** by generating a
-> Cloudflare **Origin CA** cert in the dashboard and terminating TLS on the origin
-> (e.g. Caddy in front of `mir-signal`). Flexible is fine to start because the data
-> plane is already E2E (Noise); the origin only sees signaling SDP.
+Never use Flexible mode for production. Noise protects terminal bytes, but
+signaling metadata, registration credentials, and the served browser trust root
+still require authenticated encryption on the Cloudflare-to-origin leg.
 
 ## Live security hardening checklist
 
@@ -81,6 +84,8 @@ Starting rules:
 | Pair bridge    | `and http.request.uri.path eq "/pair"`             |  20 upgrades / minute / IP | Block for 10 minutes |
 | Browser attach | `and http.request.uri.path eq "/attach"`           | 120 upgrades / minute / IP | Block for 10 minutes |
 | Agent signal   | `and http.request.uri.path eq "/agent/signal"`     |  60 upgrades / minute / IP | Block for 10 minutes |
+| Registry       | `and http.request.uri.path eq "/registry"`         | 120 requests / minute / IP | Block for 10 minutes |
+| Revocations    | `and http.request.uri.path eq "/revocations"`      |  30 requests / minute / IP | Block for 10 minutes |
 
 Rollout steps:
 
@@ -93,6 +98,31 @@ Rollout steps:
    directly grants relay bandwidth.
 4. Review the first 24 hours of events, then either lower noisy limits or document
    the observed baseline here.
+
+The binary enforces the same starting limits with a bounded in-process table as a
+second layer. `CF-Connecting-IP` is accepted only when the immediate source belongs
+to the explicit `--trusted-proxy-cidr` allow-list. Keep the unit's ranges synchronized
+with Cloudflare's definitive IP-range list; never enable proxy-header trust without
+that allow-list: <https://www.cloudflare.com/ips/>.
+
+### Durable revocations
+
+The production unit stores verified tombstones at
+`/var/lib/mir-signal/revocations.json`, created through systemd's
+`StateDirectory=mir-signal`. Startup verifies every owner signature and fails on
+corruption rather than silently re-enabling a machine.
+
+Checks and backup:
+
+```bash
+sudo -u mirsignal test -r /var/lib/mir-signal/revocations.json
+sudo journalctl -u mir-signal | grep -E 'machine_revoked|revocation_.*error'
+sudo install -m 0600 -o mirsignal -g mirsignal \
+  /var/lib/mir-signal/revocations.json /var/backups/mir-signal-revocations.json
+```
+
+Restore the file only while the service is stopped. Never edit records by hand;
+invalid signatures intentionally make the next startup fail.
 
 ### TURN TTL and abuse monitoring
 
@@ -147,7 +177,9 @@ Use the **repeatable `--csp-connect-src` flag** in the systemd unit, one origin
 per occurrence (this is what `deploy/lightsail/mir-signal.service` ships):
 
 ```ini
-ExecStart=/usr/local/bin/mir-signal --addr :80 --webroot /opt/mir-web \
+ExecStart=/usr/local/bin/mir-signal --addr :80 --require-tls \
+  --tls-addr :443 --tls-cert /etc/ssl/mir-signal/cert.pem \
+  --tls-key /etc/ssl/mir-signal/key.pem --webroot /opt/mir-web \
   --csp-connect-src "'self'" \
   --csp-connect-src https://relay.sourceful-labs.net \
   --csp-connect-src wss://relay.sourceful-labs.net \
@@ -299,15 +331,11 @@ assumes that build is deployed.
   headers" above and the shipped `mir-signal.service`). The binary joins those
   tokens verbatim, so keep `'self'`'s quotes — and wrap it as `"'self'"` so
   systemd's *own* ExecStart quoting delivers the literal `'self'` token.
-- **A missing TLS cert used to crash-loop the relay.** The unit passes
-  `--tls-addr :443 --tls-cert … --tls-key …` for an eventual Cloudflare Full
-  (strict) cutover, but the box currently runs Cloudflare **Flexible** with no
-  origin cert. The binary now `os.Stat`-gates the TLS branch: if the cert/key
-  files are absent it logs a warning and serves HTTP-only instead of
-  `log.Fatal`-ing the process. So the `--tls-*` flags are safe to leave in; to
-  actually enable HTTPS later, just drop the PEMs into `/etc/ssl/mir-signal/` and
-  restart. (Before the gate, a stray `--tls-*` on a no-cert box meant
-  `Restart=always` + instant fatal = a tight crash loop.)
+- **TLS is now fail-closed.** The production unit includes `--require-tls`; a
+  missing/unreadable origin certificate makes startup fail and the health-gated
+  deploy rolls back. Install the certificate and select Full (strict) before the
+  first deploy of this unit. Plain HTTP remains available only for localhost
+  health checks and must stay closed in the public firewall.
 - **`TR_TURN_SECRET` → `MIR_TURN_SECRET` rename.** The TURN shared secret env var
   was renamed with the `tr-` → `mir-` cutover. `redeploy.sh` migrates an existing
   `/etc/tr-signal.env` automatically (see above); `deploy/turn/setup-coturn.sh`

@@ -22,12 +22,24 @@ EnvironmentFile=-/etc/mir-signal.env
 # as CSP requires) the 'self' token is wrapped in DOUBLE quotes -> "'self'".
 # The URL tokens have no special characters and are passed bare.
 #
-# TLS: the --tls-* flags below are os.Stat-gated by the binary — it only enters
-# the HTTPS branch when BOTH cert and key files exist. On a Cloudflare-Flexible
-# (HTTP-only, no cert) box it logs a warning and serves HTTP-only instead of
-# crash-looping, so it is safe to leave these flags in for an eventual Full
-# (strict) cutover (just drop the PEM files into /etc/ssl/mir-signal/).
+# TLS is mandatory in this production unit. Install the origin certificate and
+# select Cloudflare Full (strict) before enabling the service.
 ExecStart=/usr/local/bin/mir-signal --addr :80 \
+  --trust-proxy-headers \
+  --trusted-proxy-cidr 103.21.244.0/22 --trusted-proxy-cidr 103.22.200.0/22 \
+  --trusted-proxy-cidr 103.31.4.0/22 --trusted-proxy-cidr 104.16.0.0/13 \
+  --trusted-proxy-cidr 104.24.0.0/14 --trusted-proxy-cidr 108.162.192.0/18 \
+  --trusted-proxy-cidr 131.0.72.0/22 --trusted-proxy-cidr 141.101.64.0/18 \
+  --trusted-proxy-cidr 162.158.0.0/15 --trusted-proxy-cidr 172.64.0.0/13 \
+  --trusted-proxy-cidr 173.245.48.0/20 --trusted-proxy-cidr 188.114.96.0/20 \
+  --trusted-proxy-cidr 190.93.240.0/20 --trusted-proxy-cidr 197.234.240.0/22 \
+  --trusted-proxy-cidr 198.41.128.0/17 \
+  --trusted-proxy-cidr 2400:cb00::/32 --trusted-proxy-cidr 2606:4700::/32 \
+  --trusted-proxy-cidr 2803:f800::/32 --trusted-proxy-cidr 2405:b500::/32 \
+  --trusted-proxy-cidr 2405:8100::/32 --trusted-proxy-cidr 2a06:98c0::/29 \
+  --trusted-proxy-cidr 2c0f:f248::/32 \
+  --revocations-file /var/lib/mir-signal/revocations.json \
+  --require-tls \
   --tls-addr :443 --tls-cert /etc/ssl/mir-signal/cert.pem --tls-key /etc/ssl/mir-signal/key.pem \
   --webroot /opt/mir-web --turn-url turn:16.171.89.172:3478 \
   --csp-connect-src "'self'" \
@@ -38,11 +50,20 @@ ExecStart=/usr/local/bin/mir-signal --addr :80 \
 Restart=always
 RestartSec=2
 User=mirsignal
+StateDirectory=mir-signal
+StateDirectoryMode=0700
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
 
 [Install]
 WantedBy=multi-user.target

@@ -1,195 +1,287 @@
-# Security model
+# Miranda security model
 
-Miranda lets you reach a real shell on your machines from anywhere. The
-whole point is that **you do not have to trust the relay** (our hosted signaling
-server, the Cloudflare proxy in front of it, an optional TURN relay, or the
-network in between). This document states precisely what that means, what you
-_do_ have to trust, and how to verify the claims.
+Miranda exposes a real terminal. Its security boundary must therefore be smaller
+and clearer than its marketing.
 
-We do not say "100% secure" — no system is. We make a **precise, falsifiable
-guarantee** and are honest about the residual exposure. The honesty is the point:
-if you can read this and audit the code, you can decide for yourself.
+The core guarantee is:
 
-## The guarantee
+> With uncompromised endpoints and correctly confirmed pairing, the rendezvous
+> relay cannot read or forge authenticated terminal plaintext, even when it carries
+> signaling or optional TURN ciphertext.
 
-> The relay **cannot read or modify your terminal traffic**, and **cannot
-> impersonate you or your machines**. Terminal data flows peer-to-peer and is
-> end-to-end encrypted; the relay only ever sees ciphertext and routing metadata.
+The relay can observe metadata and deny service. The target machine, client code,
+owner identity, and initial pairing confirmation remain trusted components.
 
-This holds even if the relay operator is malicious, the relay is compromised, or
-the network is hostile — provided the trust roots below are intact.
+Miranda is an alpha and has not had an independent security audit.
 
-## How it works (the basis for the guarantee)
+## Security invariants
 
-- **Peer-to-peer data plane.** Terminal bytes travel over a direct WebRTC
-  DataChannel between your client and the agent (hole-punched via STUN). They do
-  **not** pass through the relay. The relay only brokers the WebRTC handshake
-  (SDP/ICE) and then steps out. (See `go/internal/peer`, `go/internal/signal`.)
-- **End-to-end encryption: Noise `KK`.** Inside the DataChannel we run
-  `Noise_KK_25519_ChaChaPoly_SHA256` — mutual authentication with **pinned static
-  keys** plus forward secrecy. Because both ends already hold each other's static
-  public key (pinned at pairing), a relay that tampers with the WebRTC DTLS
-  fingerprints (a classic proxy MITM) **cannot** complete the handshake. DTLS is
-  just transport; Noise is what authenticates the peers. (See `go/internal/noise`,
-  certified byte-for-byte against the reference implementation in `testdata/`.)
-- **Identity.** Your **owner key** is derived from your passkey (WebAuthn `prf`)
-  in the browser, or a local key file for the CLI. The relay never sees the
-  private key, so it can never authenticate as you to an agent. Each agent has a
-  **host key** pinned by you at pairing (trust-on-first-use).
-- **Pairing without trusting the relay.** Adding a machine uses a one-time,
-  128-bit **token** shown out-of-band (a QR/code you scan or paste). The token is
-  the pre-shared key of a `Noise_NNpsk0` handshake; the relay only ever sees
-  `roomID = H(token)` (domain-separated) and opaque ciphertext — never the token,
-  never the exchanged keys. So the relay cannot MITM pairing either. The token is
-  the **trust anchor**: it is the one secret that bootstraps everything, and it
-  travels out of band, not through the relay. (See `go/internal/pairing`.)
-- **Agent registration proof.** Each agent persists a random
-  `registration_secret` in its local `config.json` and sends it only on
-  `/agent/signal` as `X-TR-Agent-Registration-Secret`. The relay learns that
-  proof for the `owner_id` + `machine_id` slot and rejects later replacement
-  attempts that do not present the same value. This protects live registrations
-  from clients that only know routing metadata while keeping the relay blind to
-  terminal bytes, host private keys, owner secrets, and pairing tokens. Existing
-  configs are auto-migrated on the next agent load; older no-secret agents keep
-  legacy behavior until a relay has learned a proof for that slot.
+- The relay never receives terminal plaintext.
+- The agent never receives or persists an owner root/private key.
+- Browser owner identity is derived from WebAuthn PRF output for the exact app RP
+  ID. Derived key material lives in page memory for the active ceremony/session.
+- Go and JavaScript cryptography must remain byte-identical. Stable vectors under
+  [`testdata/`](testdata/) gate identity, binding, registry, Noise, and pairing
+  behavior.
+- A target shell runs with the agent process's OS privileges. `mir up` refuses root
+  by default.
 
-## What you have to trust (and it is never the relay)
+## Components and trust
 
-1. **The pairing token, at the one moment it is shown.** Treat it as a bearer
-   secret: scan the QR in person or paste it over a channel you trust. It is
-   single-use and short-lived. If an attacker obtains a live token, they could
-   pair in your place — so do not post it publicly.
-2. **Your passkey / iCloud Keychain** (browser) or your **owner key file** (CLI).
-   Whoever holds these is you.
-3. **The target machine.** The agent runs a real shell as you; a compromised host
-   is game over (that is true of SSH too). **Run the agent as a dedicated,
-   low-privilege user — never as root.** The shell it spawns inherits the agent's
-   privileges, so anyone who reaches that shell gets exactly that user's rights;
-   running as root turns a single agent compromise (or a leaked pairing token)
-   into full control of the box. Give it its own unprivileged account, no
-   passwordless sudo, and only the access that account genuinely needs.
-4. **The code you run.** This is why open source + verifiable builds matter (see
-   roadmap). Do **not** install binaries fetched blindly from the relay.
-5. **The browser JavaScript served by `term.sourceful-labs.net`.** When the SPA is
-   served from `mir-signal`, that JavaScript is a trust root just like an installed
-   binary. A compromised Cloudflare zone, origin host, deploy key, or build output
-   could ship client code that reads terminal data before encryption or derives
-   the owner key after a valid WebAuthn ceremony.
+### Owner client
 
-## Residual exposure (honest, by design)
+The owner client is the authority that can pair machines and authorize attaches.
 
-- **Metadata.** The relay sees: your `owner_id` (a pseudonymous public key, not
-  your name), your `machine_id`s, the SDP/ICE blobs (**which include your
-  machines' candidate IP addresses** — inherent to establishing a direct path),
-  and connection timing. It does **not** see terminal content, display names, or
-  what you run. If hiding IPs from the relay matters to you, run over a VPN/overlay.
-- **Availability.** The relay is the rendezvous point; a malicious or down relay
-  can deny new connections. It cannot read or alter existing P2P sessions.
-  Registration proofs prevent unauthenticated third-party clients from replacing
-  an already protected live agent registration, but the relay can still deny
-  service by policy or outage.
-- **TURN fallback (opt-in).** For symmetric NATs that cannot hole-punch, an
-  operator may enable a TURN relay. Even then the relay forwards only ciphertext —
-  Noise keeps it blind — but it does carry (encrypted) bytes and learns more
-  timing/volume. It is **off by default**.
-- **LAN-direct (mDNS + QUIC).** `mir up` advertises itself on the local network
-  (mDNS `_miranda._udp`, instance = your opaque `machine_id`) and listens for direct
-  QUIC connections, so a `mir attach` on the same LAN reaches it **without the relay**.
-  This changes nothing about trust: the QUIC layer uses a throwaway self-signed cert
-  (the client skips TLS verification), and the **real** authentication is the unchanged
-  Noise-KK handshake + the wallet binding that runs *inside* the QUIC stream — exactly
-  as over the relay. A rogue LAN host that spoofs the mDNS record or connects to the
-  listener can at worst cause a **failed handshake (DoS)**: it cannot impersonate your
-  agent (Noise-KK pins `host_pub`), cannot attach as you (the agent rejects any
-  unpinned wallet *before* Noise, and a binding requires your wallet key), and cannot
-  read traffic (Noise). The new exposure is (a) the agent now accepts inbound LAN
-  connections — bounded by the same pre-auth handshake limiter as relay attaches — and
-  (b) the mDNS advertisement reveals that a Miranda node with a given `machine_id`
-  exists on the LAN. Disable both with `mir up --no-lan`; skip LAN discovery on a
-  client with `mir attach --relay-only`.
-- **Device registry (auto-discovery).** `mir up` publishes a device record so your other
-  devices find this machine by name with no manual pairing. The record (`name`, `host_pub`,
-  `signal_url`) is **encrypted** with a key derived from your wallet (ChaCha20-Poly1305,
-  HKDF of the wallet secret) before it leaves the machine, and the relay holds it **only
-  in-memory**, tied to the live registration — **no persistence, no database**. The relay
-  sees an opaque blob and which `machine_id`s are live under a wallet (the same linkability
-  it already has at attach); it **cannot read the record, and cannot forge one** — a record
-  sealed by anyone without your wallet fails to decrypt and is dropped by your devices, so
-  the AEAD is the authenticity check (no relay verification needed). The blob is bound to
-  its `machine_id` (AEAD associated data), so the relay can't even shuffle records between
-  slots. Discovery is online-only; "revocation" is powering a device off (it stops
-  registering) or, for a leaked phrase, rotating the wallet.
-- **Compromised endpoints / Keychain.** Out of scope — the same trust you already
-  place in your own devices.
+- In the browser, a passkey's WebAuthn PRF output is the root. The RP ID is the
+  exact hostname serving Miranda, not its parent domain.
+- In the native CLI, the recovery root is stored in macOS Keychain or the Linux
+  Secret Service. `~/.miranda/client/owner.json` (mode `0600`) contains only an
+  opaque keychain reference and public metadata. Existing plaintext-root files
+  migrate atomically on first load; there is no plaintext fallback.
+- Domain-separated derivations produce the Ed25519 owner signer, X25519 Noise
+  static key, and registry AEAD key.
 
-## Live deployment operations
+Compromise of the passkey account, unlocked OS keychain/user account, browser
+process, or client binary is compromise of the owner identity.
 
-The live browser deployment is `https://term.sourceful-labs.net`; signaling may
-also be exposed on `https://relay.sourceful-labs.net` for CLIs and agents. Apply
-these controls to every Cloudflare hostname that routes to `mir-signal`.
+### Target agent
 
-- **Rate-limit public rendezvous endpoints.** `/turn-credentials`, `/pair`,
-  `/attach`, and `/agent/signal` are intentionally public and unauthenticated at
-  the HTTP layer. Protect them in Cloudflare WAF rate limiting rules before broad
-  use. Treat `/pair`, `/attach`, and `/agent/signal` as WebSocket endpoints: the
-  edge can rate-limit the initial HTTP upgrade request, but it will not inspect
-  frames after the socket is established.
-- **Monitor TURN as a paid abuse surface.** `/turn-credentials` issues coturn REST
-  credentials when `MIR_TURN_SECRET` and `--turn-url` are configured. The current
-  credential TTL is 12 hours, so an exposed credential can consume relay bandwidth
-  until expiry. Watch both Cloudflare request volume and coturn allocation logs;
-  rotate the shared secret and close TURN firewall ports if abuse appears.
-- **Serve the SPA with defensive headers.** If `mir-signal --webroot` serves the
-  browser app, set CSP and security headers at Cloudflare or in the origin before
-  relying on the browser flow for real machines. The CSP must still allow module
-  scripts/assets from the same origin and `connect-src` to the live signaling
-  hostnames.
-- **Keep the WebAuthn RP ID boundary small and intentional.** The browser code
-  uses `term.sourceful-labs.net` — the exact app host — as the RP ID, so the
-  owner passkey is bound to that single origin. Sibling `*.sourceful-labs.net`
-  subdomains (including `relay`) are therefore **outside** the owner-key trust
-  boundary: a passkey scoped to `term.sourceful-labs.net` cannot be exercised by
-  another subdomain, and the registrable parent domain is **not** the RP ID.
-  Keep it that way: do not widen the RP ID to the parent domain to "share"
-  passkeys across subdomains without a deliberate re-enrollment plan, since that
-  would pull every such subdomain into the trust boundary.
-- **Require pairing safety-number confirmation.** A scanned/pasted pairing code is
-  not enough for high-assurance pairing. The operator and browser/CLI user must
-  compare the printed `safety number: xxxx-xxxx-xxxx-xxxx` out of band and abort
-  on any mismatch.
+The target stores only machine-scoped authority in
+`~/.miranda/agent/config.json`:
 
-## How to verify (don't take our word for it)
+- its X25519 host private key;
+- a random machine ID;
+- a random relay-registration secret;
+- pinned owner public IDs;
+- owner signatures authorizing registration;
+- opaque owner-encrypted discovery records.
 
-- **Read the code.** The crypto is small, standard, and isolated:
-  `go/internal/noise` (Noise KK), `go/internal/pairing` (NNpsk0), the `prf`→owner
-  derivation. Cross-language interop is pinned by `testdata/` vectors.
-- **Run the tests.** `cd go && go test ./...` (and `-race`). The relay's
-  blindness is structural: `go/internal/signal` only ever marshals SDP/`roomID`,
-  never terminal bytes.
-- **Watch the wire.** The data plane is a direct DataChannel; the relay never
-  receives it. `deploy/netsim` reproduces real NAT scenarios locally.
-- **Compare the safety number at pairing.** Both ends of `mir pair` each print a
-  `safety number: xxxx-xxxx-xxxx-xxxx`. If both ends show the same value,
-  you have visibly confirmed there is no MITM — even if the pairing token leaked.
+It cannot decrypt or forge those discovery records and cannot authorize another
+machine. Client and agent state directories are separate; `mir up` refuses a state
+directory containing `owner.json`.
 
-## Roadmap to full, independent trust
+A compromised target still exposes everything available to the Unix account running
+the agent. Use a dedicated unprivileged account, no passwordless sudo, and minimal
+filesystem credentials. The `--allow-root` override is for isolated development,
+not normal deployment.
 
-These are the steps that let _anyone_ — not just us — trust the relay-free model:
+### Rendezvous relay
 
-- [ ] **Open source** the client, agent, relay, and crypto (so it is auditable).
-- [ ] **Signed, checksummed releases** (and an installer that verifies them — never
-      trust binaries from the relay).
-- [ ] **Reproducible builds** (the binary you run matches the audited source).
-- [x] **Verifiable pairing authenticity (safety number).** Both ends of
-      `mir pair` print a 64-bit **safety number** derived from the Noise
-      handshake transcript hash. With no MITM both ends show the same number;
-      a man-in-the-middle (e.g. with a leaked token) produces two different
-      handshakes → mismatched numbers, which you catch by eye. (Session-time SAS
-      on `attach` is a planned extension.)
-- [ ] **Independent third-party security audit** of the crypto and protocol.
-- [ ] **Metadata minimization** (e.g. rotating/blinded `owner_id`s) where feasible.
+The relay matches owner/machine IDs, forwards one-shot SDP messages, bridges pairing
+rooms, serves temporary TURN credentials when configured, retains encrypted
+registry blobs only with live agent registrations, and persists owner-signed
+machine revocation tombstones.
+
+It is not trusted for confidentiality, integrity, identity, or availability. It can:
+
+- see `owner_id`, `machine_id`, source addresses, connection times, SDP/ICE data,
+  candidate IP addresses, and traffic size/timing;
+- correlate machines belonging to the same stable owner ID;
+- drop, delay, replay, or alter control-plane messages;
+- claim a machine is offline, withhold registry records, or deny all new sessions;
+- observe an agent registration secret and its public owner authorization.
+- suppress a real revocation record or lie about revocation availability.
+
+It cannot use those capabilities to complete the pinned Noise handshake as the
+owner or host. Tampering becomes a failed connection, not authenticated plaintext.
+A malicious relay can always cause denial of service.
+
+### Browser application origin
+
+The JavaScript served by the Miranda web origin is a trust root equivalent to an
+installed client binary. Compromise of the origin, Cloudflare account, deploy key,
+service worker, or build output can read data before encryption or after decryption.
+
+Self-hosting the relay does not remove this trust unless the browser app is also
+self-hosted from an origin you control. Custom deployments use their exact hostname
+as the WebAuthn RP ID and require a separate passkey enrollment.
+
+## Protocol flows
+
+### 1. Pairing and provisioning
+
+1. The agent generates a 128-bit random token and displays it only in the QR/code.
+2. The relay sees a domain-separated hash of that token as the room ID, not the
+   token itself.
+3. Both endpoints run `Noise_NNpsk0_25519_ChaChaPoly_SHA256`, with a PSK derived
+   from the token.
+4. The client claims an owner public ID, then signs the completed Noise transcript.
+   The agent pins the owner only after this verifies.
+5. Both endpoints display a 96-bit, six-group safety number derived from the
+   transcript. Neither CLI endpoint persists trust until the human confirms it.
+6. Inside the authenticated pairing channel, the owner sends:
+   - an encrypted discovery record; and
+   - a signature over the machine ID plus the SHA-256 commitment of the agent's
+     registration secret.
+
+The token is a temporary bearer secret. Scan it in person or send it over a trusted
+channel, compare every safety-number group, and cancel on any mismatch. Possession
+of a live token enables an active pairing attempt; the safety-number comparison is
+what detects a substituted endpoint.
+
+### 2. Agent registration
+
+For every paired owner, the agent registers its `owner_id` + `machine_id` slot with:
+
+- the 256-bit random local registration secret; and
+- the owner's Ed25519 signature over that machine ID and the secret commitment.
+
+The relay validates the owner signature before accepting the WebSocket. It then
+uses a constant-time comparison against the first learned secret for replacement
+defense. This closes first-registration squatting for real Miranda owner IDs while
+keeping the owner key out of the agent.
+
+The relay learns the registration credential over TLS. This credential controls
+only relay availability for one slot; it is not a terminal or Noise credential.
+Relay restarts lose the learned-secret cache, but the owner signature remains
+independently verifiable.
+
+### 3. Attach authorization
+
+Before an agent allocates WebRTC, ICE, TURN, or Pion resources:
+
+1. the relay creates a fresh 128-bit session ID and sends it to the client;
+2. the client signs a domain-separated challenge containing that session ID,
+   machine ID, and SHA-256 hash of the exact SDP offer;
+3. the offer also carries the owner's signed binding to its X25519 Noise key;
+4. the agent verifies that the owner is pinned, verifies both signatures, and
+   rejects session replays.
+
+Idle attach sockets have a short first-offer deadline. The relay and agent bound
+message size, pair rooms, per-agent browser sessions, proof storage, and concurrent
+pre-auth attaches. These are resource controls, not a substitute for edge rate
+limits.
+
+### 4. Terminal data plane
+
+After authorization, the peers establish WebRTC or LAN QUIC and run
+`Noise_KK_25519_ChaChaPoly_SHA256` inside it. Both static keys were authenticated
+through pairing/binding, so transport DTLS/TLS certificates are not the identity
+boundary.
+
+Noise provides mutual authentication, forward secrecy for session traffic, and
+authenticated encryption. A relay or network attacker may corrupt or suppress
+ciphertext, causing disconnect, but cannot turn modified bytes into accepted
+terminal plaintext.
+
+### 5. Encrypted discovery
+
+The passkey/owner client creates each machine record during pairing and seals it
+with ChaCha20-Poly1305 under a domain-separated registry key. `machine_id` is AEAD
+associated data. The target stores and republishes the opaque base64 record but
+cannot open or alter it.
+
+The relay holds records only in memory while the corresponding agent is live.
+Clients discard records that fail AEAD authentication. The relay still sees the
+stable owner/machine routing relationship.
+
+### 6. Machine revocation
+
+`mir machine revoke <name> --yes` and the browser revoke action create a permanent,
+domain-separated Ed25519 tombstone over `owner_id`, `machine_id`, and timestamp.
+The client stores it locally before publication. Honest relays verify the owner
+signature, persist the record atomically, close the target's signaling registration
+and pending attaches, and reject future registration/attach attempts for that slot.
+An already-established P2P/LAN Noise session no longer traverses the relay and
+cannot be remotely killed by it; the client performing revocation closes its own
+session, while other already-connected clients must disconnect or sync the record.
+
+Every client independently verifies fetched tombstones before filtering discovery
+and attach. A relay cannot forge a revocation, but it can suppress one. Previously
+cached local records remain enforced while offline or during relay failure. A fully
+compromised owner root can authorize attaches and cannot be repaired by per-machine
+revocation; rotate the entire identity and re-pair instead.
+
+## Network paths
+
+- **WebRTC direct:** preferred across networks; STUN exposes candidate addresses as
+  required for NAT traversal.
+- **TURN:** available only when the deployment configures it. TURN forwards Noise
+  ciphertext and learns traffic metadata/volume.
+- **LAN direct:** mDNS advertises `_miranda._udp` and the opaque machine ID; QUIC
+  connects directly. The self-signed QUIC certificate is transport-only. Noise is
+  still mandatory. Disable both advertisement and listener with `mir up --no-lan`;
+  clients can use `mir attach --relay-only`.
+
+Miranda does not hide IP addresses or provide traffic anonymity. Use a separate
+privacy network if that is a requirement.
+
+## Recovery and rotation
+
+- `mir identity export-recovery --yes` intentionally prints a 24-word recovery
+  phrase. Anyone who sees it controls the owner identity.
+- Import never accepts a phrase in process arguments. Interactive input is hidden;
+  controlled automation must opt into `--stdin`.
+- `mir identity rotate --yes` creates a new owner identity and requires pairing
+  every target again.
+- `mir machine revoke <name> --yes` permanently blocks a lost/compromised target
+  for the current owner identity. The browser exposes the same action from the
+  terminal toolbar.
+
+## Supply chain
+
+- CI actions are pinned to commit SHAs.
+- Releases sign `checksums.txt` through GitHub Actions OIDC and cosign keyless
+  signing.
+- The installer and self-updater require cosign verification and fail closed if
+  cosign or signature assets are missing.
+- The browser vendors cryptographic dependencies locally and does not load them
+  from a runtime CDN.
+- Release binaries use `-trimpath`, omit VCS/build IDs, use the commit timestamp,
+  and pass a two-clean-cache byte comparison in CI. Independent verification is
+  documented in [`docs/release.md`](docs/release.md). Reproducibility and release
+  provenance do not replace a source/security audit.
+
+## Operational requirements
+
+Before exposing a public deployment:
+
+- keep the bounded in-process per-IP limits enabled and add edge/global limits to
+  `/pair`, `/attach`, `/agent/signal`, `/registry`, `/revocations`, and
+  `/turn-credentials`;
+- monitor agent replacement/flap events, capacity events, TURN allocations, and
+  unusual owner/machine cardinality;
+- keep TURN credential TTL and bandwidth limits conservative;
+- serve the SPA with the emitted CSP nonce and defensive security headers;
+- protect the web origin and release workflow as production trust roots;
+- require Full (strict) TLS to the origin, restrict the origin firewall to trusted
+  proxy ranges, and back up the signed revocation file;
+- run the agent under a dedicated non-root service account;
+- test direct, symmetric-NAT, cellular, reconnect, and relay-outage paths.
+
+## Known gaps before production
+
+- independent third-party protocol and implementation audit;
+- privacy improvements for stable owner/machine metadata;
+- measured, abuse-tested limits on the actual public relay and TURN service;
+- sustained fuzz campaigns beyond the CI smoke targets, plus hostile-network and
+  real NAT/cellular interoperability testing;
+- recovery testing across the supported macOS Keychain/Linux Secret Service
+  environments and passkey browser matrix.
+
+## Verification
+
+Run both language suites after any cryptographic or protocol change:
+
+```bash
+cd go && go test ./...
+cd ../web && npm test
+cd .. && ./scripts/verify-reproducible.sh
+```
+
+If a legitimate handshake/derivation change updates a stable vector:
+
+```bash
+cd go
+UPDATE_VECTORS=1 go test ./internal/noise/ -run TestInteropVectorsStable
+go test ./...
+cd ../web && npm test
+```
+
+The relay's lack of terminal plaintext is also structural: terminal frames exist in
+the peer/Noise data plane, not in `go/internal/signal`.
 
 ## Reporting
 
-Found a problem? Please report privately to security@sourceful-labs.net before
-public disclosure.
+Report vulnerabilities privately to **security@sourceful-labs.net** before public
+disclosure. Include affected version/commit, reproduction steps, and expected impact.
