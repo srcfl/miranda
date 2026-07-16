@@ -80,14 +80,23 @@ func (s commandSecretStore) Get(ref string) ([]byte, error) {
 
 func (s commandSecretStore) Put(ref string, secret []byte) error {
 	var cmd *exec.Cmd
+	var input []byte
 	if runtime.GOOS == "darwin" {
-		// With -w last, security reads the password from stdin. It never appears in
-		// argv (and therefore not in ps output, shell history, or diagnostics).
-		cmd = exec.Command(s.path, "add-generic-password", "-a", ref, "-s", keychainService, "-U", "-w")
+		// See darwinPutInput: `add-generic-password ... -w` (flag last, no value)
+		// does NOT read the secret from piped stdin — security prompts via
+		// readpassphrase and silently stores an EMPTY secret when stdin is a pipe.
+		// Drive interactive command mode so the whole command, secret included,
+		// travels on stdin — never argv (no ps exposure), never a tty prompt.
+		in, err := darwinPutInput(ref, keychainService, secret)
+		if err != nil {
+			return fmt.Errorf("%s: could not store owner secret (plaintext fallback is disabled)", s.kind)
+		}
+		cmd = exec.Command(s.path, "-i")
+		input = in
 	} else {
 		cmd = exec.Command(s.path, "store", "--label=Miranda owner identity", "service", keychainService, "owner", ref)
+		input = append(append([]byte(nil), secret...), '\n')
 	}
-	input := append(append([]byte(nil), secret...), '\n')
 	defer zeroBytes(input)
 	cmd.Stdin = bytes.NewReader(input)
 	cmd.Stdout = io.Discard
@@ -111,6 +120,23 @@ func (s commandSecretStore) Delete(ref string) error {
 		return fmt.Errorf("%s: could not delete retired owner secret", s.kind)
 	}
 	return nil
+}
+
+// darwinPutInput builds the stdin fed to `security -i` for a keychain write.
+// The secret must be safe to place on the interactive command line (which lives
+// entirely on stdin, never argv): no whitespace that would end the token early
+// and no quote/backslash that `security`'s tokenizer would treat specially. The
+// owner secret is hex, so this always holds; the guard is fail-closed defense in
+// depth against a caller passing raw bytes. Returned bytes hold the secret — the
+// caller must zero them.
+func darwinPutInput(ref, service string, secret []byte) ([]byte, error) {
+	if !secretRefRE.MatchString(ref) || !secretRefRE.MatchString(service) {
+		return nil, fmt.Errorf("invalid keychain reference")
+	}
+	if len(secret) == 0 || bytes.ContainsAny(secret, " \t\r\n\"'\\") {
+		return nil, fmt.Errorf("secret is not command-line safe")
+	}
+	return []byte(fmt.Sprintf("add-generic-password -a %s -s %s -U -w %s\n", ref, service, secret)), nil
 }
 
 // fileSecretStore is test-only; platformSecretStore refuses to select it from a

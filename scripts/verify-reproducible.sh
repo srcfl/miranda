@@ -10,9 +10,17 @@ trap 'rm -rf "$TMP"' EXIT
 
 VERSION="${VERSION:-$(git -C "$ROOT" describe --tags --always --dirty)}"
 VERSION="${VERSION#v}"
-COMMIT="$(git -C "$ROOT" rev-parse --short=8 HEAD)"
-DATE="$(git -C "$ROOT" show -s --format=%cI HEAD)"
-export SOURCE_DATE_EPOCH="$(git -C "$ROOT" show -s --format=%ct HEAD)"
+# These -X values are baked into the binary, so to reproduce a *published*
+# release the recipe must derive them EXACTLY as GoReleaser does (.goreleaser.yaml):
+#   .ShortCommit -> first 7 chars of the full SHA (not `--short=8`, and not git's
+#                   variable-length abbreviation).
+#   .CommitDate  -> the commit time in UTC RFC3339 with a literal Z (not `%cI`,
+#                   which emits the local-timezone offset and made the hash both
+#                   wrong vs. the release AND dependent on the reviewer's timezone).
+# With the old 8-char commit / local-tz date, this script could only ever prove
+# self-consistency (build twice locally); it never matched an honest release.
+COMMIT="$(git -C "$ROOT" rev-parse HEAD | cut -c1-7)"
+DATE="$(TZ=UTC0 git -C "$ROOT" show -s --date=format-local:%Y-%m-%dT%H:%M:%SZ --format=%cd HEAD)"
 
 build_set() {
   local output="$1" cache="$2"

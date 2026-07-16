@@ -36,6 +36,9 @@ func TestConnRoundTripFrames(t *testing.T) {
 	accepted := make(chan acceptResult, 1)
 	go func() {
 		c, err := ln.Accept(ctx)
+		if err == nil {
+			err = c.Establish(ctx)
+		}
 		accepted <- acceptResult{c, err}
 	}()
 
@@ -116,6 +119,10 @@ func TestRecvRespectsContext(t *testing.T) {
 	go func() {
 		c, err := ln.Accept(dialCtx)
 		if err != nil {
+			accepted <- nil
+			return
+		}
+		if err := c.Establish(dialCtx); err != nil {
 			accepted <- nil
 			return
 		}

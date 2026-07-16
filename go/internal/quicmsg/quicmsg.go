@@ -226,25 +226,37 @@ func Listen(addr string) (*Listener, error) {
 // the ephemeral port).
 func (l *Listener) Addr() net.Addr { return l.ln.Addr() }
 
-// Accept waits for the next QUIC connection, accepts its first bidirectional
-// stream, consumes the open-nudge frame Dial sent, and wraps it in a *Conn.
+// Accept waits for the next QUIC connection and wraps it in a *Conn. The Conn is
+// NOT yet usable for Send/Recv: the caller must call Establish (under a deadline,
+// off the accept path) to accept the peer's stream and consume the open-nudge
+// frame. Splitting these two phases is deliberate — doing AcceptStream inline
+// here would let a peer that completes the QUIC handshake but never opens a
+// stream block the entire accept loop indefinitely (head-of-line DoS). Accept
+// only blocks on the genuine "wait for the next connection" step.
 func (l *Listener) Accept(ctx context.Context) (*Conn, error) {
 	conn, err := l.ln.Accept(ctx)
 	if err != nil {
 		return nil, err
 	}
-	stream, err := conn.AcceptStream(ctx)
+	return &Conn{conn: conn}, nil
+}
+
+// Establish accepts the peer's single bidirectional stream and consumes the
+// open-nudge frame Dial sent, making the Conn usable for Send/Recv. It honors
+// ctx: pass a deadline so a peer that connects but never opens a stream fails
+// here (releasing whatever pre-auth budget the caller reserved) instead of
+// parking forever. Safe to call exactly once per Conn returned by Accept.
+func (c *Conn) Establish(ctx context.Context) error {
+	stream, err := c.conn.AcceptStream(ctx)
 	if err != nil {
-		_ = conn.CloseWithError(0, "")
-		return nil, err
+		return err
 	}
-	c := &Conn{conn: conn, stream: stream}
+	c.stream = stream
 	// Consume the empty open-nudge frame Dial wrote to flush the stream open.
 	if _, err := c.Recv(ctx); err != nil {
-		_ = c.Close()
-		return nil, err
+		return err
 	}
-	return c, nil
+	return nil
 }
 
 // Close closes the listener (does not close already-accepted connections).

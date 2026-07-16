@@ -85,6 +85,10 @@ func (s *Server) getRevocations(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Unlock()
 	sort.Slice(out, func(i, j int) bool { return out[i].MachineID < out[j].MachineID })
+	// Revocation freshness is security-relevant: a cached (pre-revocation) empty
+	// list could let a client that relies on the relay fetch still attach to a
+	// revoked machine. Forbid caching intermediaries from serving a stale list.
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)
 }
@@ -110,12 +114,24 @@ func (s *Server) postRevocation(w http.ResponseWriter, r *http.Request) {
 
 	slot := key(record.OwnerID, record.MachineID)
 	s.mu.Lock()
-	if _, exists := s.revoked[slot]; !exists && s.maxRevocations > 0 && len(s.revoked) >= s.maxRevocations {
+	existing, exists := s.revoked[slot]
+	if exists && existing == record {
+		// Exact replay of an already-recorded tombstone changes nothing. Skip the
+		// whole-file marshal + fsync entirely: without this, resending one
+		// observed, validly-signed revocation forces an O(n) rewrite under the
+		// global broker lock on every request — a cheap way to stall all
+		// signaling. (Revocation is permanent, so a byte-identical record is a
+		// pure no-op.)
+		s.mu.Unlock()
+		s.logf("event=machine_revoked owner=%s machine=%s duplicate=true ip=%s", shortID(record.OwnerID), shortID(record.MachineID), s.remoteIP(r))
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if !exists && s.maxRevocations > 0 && len(s.revoked) >= s.maxRevocations {
 		s.mu.Unlock()
 		http.Error(w, capacityReason, http.StatusServiceUnavailable)
 		return
 	}
-	_, existed := s.revoked[slot]
 	s.revoked[slot] = record
 	ac := s.agents[slot]
 	delete(s.agents, slot)
@@ -129,7 +145,7 @@ func (s *Server) postRevocation(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not persist revocation", http.StatusInternalServerError)
 		return
 	}
-	s.logf("event=machine_revoked owner=%s machine=%s duplicate=%t ip=%s", shortID(record.OwnerID), shortID(record.MachineID), existed, s.remoteIP(r))
+	s.logf("event=machine_revoked owner=%s machine=%s duplicate=%t ip=%s", shortID(record.OwnerID), shortID(record.MachineID), exists, s.remoteIP(r))
 	w.WriteHeader(http.StatusNoContent)
 }
 

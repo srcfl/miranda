@@ -5,6 +5,7 @@ import (
 	"context"
 	"net"
 	"strconv"
+	"time"
 
 	"github.com/grandcat/zeroconf"
 
@@ -15,6 +16,13 @@ import (
 // lanService is the mDNS service type advertised for LAN-direct attach. Clients
 // browse for this to discover an agent's ephemeral QUIC port on the local network.
 const lanService = "_miranda._udp"
+
+// lanPreAuthTimeout bounds the pre-authentication phase of a LAN-direct
+// connection — accepting the peer's stream and reading the owner binding
+// (frame 0). A peer that opens a QUIC connection but then stalls must not hold an
+// admit() slot indefinitely; it fails here and releases the slot. The full Noise
+// session that follows runs under the agent's long-lived context, not this one.
+const lanPreAuthTimeout = 10 * time.Second
 
 // startLAN opens a QUIC listener for LAN-direct attach and advertises it over mDNS.
 // Returns the bound address (for callers/tests) and a stop func. Each connection runs
@@ -86,7 +94,18 @@ func (rt *Runtime) lanAccept(ctx context.Context, conn *quicmsg.Conn) {
 	}
 	defer rt.release()
 
-	bindingJSON, err := conn.Recv(ctx) // frame 0
+	// Bound the whole pre-auth phase: accepting the peer's stream and reading the
+	// owner binding. A silent peer fails here rather than parking on an admit()
+	// slot forever. serveAuthenticated below uses ctx (not authCtx) so an
+	// authenticated session is not cut off after the pre-auth window.
+	authCtx, cancel := context.WithTimeout(ctx, lanPreAuthTimeout)
+	defer cancel()
+
+	if err := conn.Establish(authCtx); err != nil {
+		return // peer never opened a stream in time
+	}
+
+	bindingJSON, err := conn.Recv(authCtx) // frame 0
 	if err != nil {
 		return
 	}
