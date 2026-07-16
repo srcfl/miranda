@@ -133,14 +133,19 @@ func (s *Server) postRevocation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.revoked[slot] = record
+	s.revVersion++
+	version := s.revVersion
+	snapshot := s.snapshotRevocationsLocked()
 	ac := s.agents[slot]
 	delete(s.agents, slot)
-	err := s.persistRevocationsLocked()
 	s.mu.Unlock()
+	// Enforcement (tearing down the live agent) has already happened under s.mu;
+	// durability is best-effort and now runs off the broker lock so a slow fsync
+	// cannot stall signaling.
 	if ac != nil {
 		ac.teardown()
 	}
-	if err != nil {
+	if err := s.persistRevocations(version, snapshot); err != nil {
 		s.logf("event=revocation_persist_error owner=%s machine=%s", shortID(record.OwnerID), shortID(record.MachineID))
 		http.Error(w, "could not persist revocation", http.StatusInternalServerError)
 		return
@@ -149,12 +154,10 @@ func (s *Server) postRevocation(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// persistRevocationsLocked writes the complete signed tombstone set atomically.
-// s.mu must be held so concurrent POSTs cannot reorder whole-file snapshots.
-func (s *Server) persistRevocationsLocked() error {
-	if s.revocationsFile == "" {
-		return nil
-	}
+// snapshotRevocationsLocked returns a stable, sorted copy of the tombstone set.
+// s.mu must be held. The copy is what the (lock-free) persister writes, so a slow
+// fsync never touches s.revoked or blocks the broker lock.
+func (s *Server) snapshotRevocationsLocked() []identity.Revocation {
 	list := make([]identity.Revocation, 0, len(s.revoked))
 	for _, record := range s.revoked {
 		list = append(list, record)
@@ -165,6 +168,34 @@ func (s *Server) persistRevocationsLocked() error {
 		}
 		return list[i].OwnerID < list[j].OwnerID
 	})
+	return list
+}
+
+// persistRevocations writes a versioned snapshot to disk under persistMu (NOT the
+// broker lock). Writers are serialized here, and a snapshot whose version is
+// already <= revPersisted is skipped: because every version bump happens under
+// s.mu together with the map write, a higher-versioned snapshot is always a
+// superset, so dropping the stale write still leaves a superset on disk.
+func (s *Server) persistRevocations(version uint64, list []identity.Revocation) error {
+	if s.revocationsFile == "" {
+		return nil
+	}
+	s.persistMu.Lock()
+	defer s.persistMu.Unlock()
+	if version <= s.revPersisted {
+		return nil // a newer (superset) snapshot already reached disk
+	}
+	if err := s.writeRevocationsFile(list); err != nil {
+		return err
+	}
+	s.revPersisted = version
+	return nil
+}
+
+// writeRevocationsFile atomically writes the given snapshot. It reads no shared
+// state, so it holds neither s.mu nor (beyond the caller) persistMu longer than
+// the disk write. Callers pass a snapshot taken under s.mu.
+func (s *Server) writeRevocationsFile(list []identity.Revocation) error {
 	data, err := json.MarshalIndent(revocationFile{V: 1, Revocations: list}, "", "  ")
 	if err != nil {
 		return err

@@ -57,6 +57,8 @@ jobs:
         run: npm test
       - working-directory: web
         run: npm audit --omit=dev
+      - name: vendored crypto bundles match pinned packages
+        run: ./web/tools/verify-vendor.sh
 
   # The Go and web jobs together are the byte-identical crypto gate: go test
   # writes/asserts testdata/ vectors and npm test asserts the JS side matches the

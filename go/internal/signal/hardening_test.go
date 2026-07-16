@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -140,6 +141,60 @@ func TestDuplicateRevocationSkipsPersist(t *testing.T) {
 	dup.Body.Close()
 	if dup.StatusCode != http.StatusNoContent {
 		t.Fatalf("duplicate POST status = %d, want 204 (persist must be skipped, not attempted)", dup.StatusCode)
+	}
+}
+
+// TestConcurrentRevocationsAllPersist exercises the lock-free, versioned
+// persister: many distinct revocations posted concurrently must all survive to
+// disk. The stale-snapshot skip is only safe if a higher version is always a
+// superset — this asserts no write is lost.
+func TestConcurrentRevocationsAllPersist(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "revocations.json")
+	s := New()
+	if err := s.LoadRevocations(path); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+
+	const n = 12
+	records := make([]struct {
+		root    []byte
+		machine string
+	}, n)
+	for i := range records {
+		records[i].root = bytes.Repeat([]byte{byte(0x40 + i)}, 32)
+		records[i].machine = "machine-conc-" + string(rune('a'+i))
+	}
+
+	var wg sync.WaitGroup
+	for i := range records {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			rec := signedRevocation(t, records[i].root, records[i].machine)
+			resp := postRevocation(t, srv.URL, rec)
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusNoContent {
+				t.Errorf("POST %d status = %d, want 204", i, resp.StatusCode)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	// Reload from disk in a fresh server: every concurrently-posted tombstone must
+	// be present and signature-valid.
+	reloaded := New()
+	if err := reloaded.LoadRevocations(path); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	reloaded.mu.Lock()
+	got := len(reloaded.revoked)
+	reloaded.mu.Unlock()
+	if got != n {
+		t.Fatalf("persisted %d revocations, want %d (a concurrent write was lost)", got, n)
 	}
 }
 

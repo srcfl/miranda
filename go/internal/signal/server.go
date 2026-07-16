@@ -120,6 +120,16 @@ type Server struct {
 	maxRevocations  int
 	maxAgents       int
 
+	// Revocation durability is serialized on persistMu, NOT the broker lock s.mu,
+	// so the whole-file fsync no longer stalls all signaling. Each in-memory
+	// change (under s.mu) bumps revVersion and snapshots the set; the persister
+	// (under persistMu) writes that snapshot and records revPersisted. A snapshot
+	// whose version is already <= revPersisted is skipped — a newer snapshot is a
+	// superset, so it is safe to drop the stale write.
+	persistMu    sync.Mutex
+	revVersion   uint64
+	revPersisted uint64
+
 	// Logf records one structured line per relay event (register, replace,
 	// reject, gone, attach, flap, stats). It is never nil at runtime: New()
 	// installs a no-op so the broker code can call it unconditionally; the
