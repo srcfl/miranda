@@ -48,6 +48,20 @@ const (
 	defaultMaxRateEntries   = 8192
 	defaultMaxRevocations   = 100000
 	capacityReason          = "server capacity reached"
+
+	// defaultMaxAgents caps the number of concurrently registered agent
+	// sockets. Without a cap, an attacker can open a registration per
+	// (owner_id, machine_id) — the non-32-byte owner_id path is unauthenticated —
+	// and hold each socket open with a retained registry blob, growing relay
+	// memory without bound. The cap turns an unbounded memory-exhaustion DoS into
+	// a bounded slot-exhaustion that only affects new registrations.
+	defaultMaxAgents = 4096
+
+	// maxRegistryBlobBytes caps the opaque device blob an agent may publish on
+	// its live registration. A registry blob is a small AEAD-sealed device list;
+	// bounding it well below maxSignalMessageBytes (256 KiB) removes the 256 KiB
+	// per-agent memory amplification an attacker would otherwise get for free.
+	maxRegistryBlobBytes = 16 << 10
 )
 
 const (
@@ -104,6 +118,17 @@ type Server struct {
 
 	revocationsFile string
 	maxRevocations  int
+	maxAgents       int
+
+	// Revocation durability is serialized on persistMu, NOT the broker lock s.mu,
+	// so the whole-file fsync no longer stalls all signaling. Each in-memory
+	// change (under s.mu) bumps revVersion and snapshots the set; the persister
+	// (under persistMu) writes that snapshot and records revPersisted. A snapshot
+	// whose version is already <= revPersisted is skipped — a newer snapshot is a
+	// superset, so it is safe to drop the stale write.
+	persistMu    sync.Mutex
+	revVersion   uint64
+	revPersisted uint64
 
 	// Logf records one structured line per relay event (register, replace,
 	// reject, gone, attach, flap, stats). It is never nil at runtime: New()
@@ -265,6 +290,16 @@ func New() *Server {
 		maxPairRooms:     defaultMaxPairRooms,
 		limiter:          newRequestLimiter(defaultMaxRateEntries),
 		maxRevocations:   defaultMaxRevocations,
+		maxAgents:        defaultMaxAgents,
+	}
+}
+
+// SetMaxAgents overrides the concurrent-agent-registration cap. A value <= 0
+// leaves the default in place. Use it to size the relay to the host's memory:
+// worst-case retained registry memory is roughly maxAgents * maxRegistryBlobBytes.
+func (s *Server) SetMaxAgents(n int) {
+	if n > 0 {
+		s.maxAgents = n
 	}
 }
 
@@ -401,6 +436,9 @@ func (s *Server) handleRegistry(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.mu.Unlock()
+	// A stale registry listing must never be served: no-store keeps any caching
+	// intermediary (CDN/proxy) from pinning an old view of an owner's live agents.
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out) // [] when none; encode never fails the relay
 }
@@ -436,6 +474,14 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 	machine := r.URL.Query().Get("machine_id")
 	if owner == "" || machine == "" {
 		http.Error(w, "missing owner_id/machine_id", http.StatusBadRequest)
+		return
+	}
+	// '|' is the internal owner|machine slot separator. Forbidding it in the
+	// identifiers keeps an attacker from registering owner_id="VICTIM|x" and
+	// thereby injecting a bogus entry into VICTIM's GET /registry listing (the
+	// blob still fails the victim's AEAD, but the namespace must stay clean).
+	if strings.ContainsRune(owner, '|') || strings.ContainsRune(machine, '|') {
+		http.Error(w, "invalid owner_id/machine_id", http.StatusBadRequest)
 		return
 	}
 	proof := r.Header.Get(AgentRegistrationSecretHeader)
@@ -490,6 +536,16 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	prev := s.agents[k]
+	// Bound total live registrations. Replacing an existing slot (prev != nil) is
+	// always allowed — it is routine on agent restart and does not grow the map —
+	// but a brand-new slot is refused once the cap is reached so a flood of
+	// distinct (owner, machine) pairs cannot exhaust memory.
+	if prev == nil && s.maxAgents > 0 && len(s.agents) >= s.maxAgents {
+		s.mu.Unlock()
+		s.logf("event=agent_reject reason=capacity owner=%s machine=%s ip=%s", ownerS, machineS, ip)
+		c.Close(websocket.StatusTryAgainLater, capacityReason)
+		return
+	}
 	s.proofs.learn(k, proof)
 	s.agents[k] = ac
 	// Track replacements while holding s.mu so the flap counter is consistent
@@ -552,7 +608,13 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 			if m.Type == TypeRegistry {
 				// The agent publishes its opaque encrypted device blob on the
 				// live registration. The relay holds it in-memory (no persist,
-				// no decrypt) and serves it via GET /registry.
+				// no decrypt) and serves it via GET /registry. An oversized blob
+				// is dropped: a real registry blob is a small AEAD-sealed device
+				// list, so anything larger is only useful for memory
+				// amplification.
+				if len(m.Registry) > maxRegistryBlobBytes {
+					continue
+				}
 				ac.setRegistry(m.Registry)
 				continue
 			}

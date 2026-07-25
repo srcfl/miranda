@@ -292,6 +292,12 @@ func setStaticSecurityHeaders(w http.ResponseWriter, nonce string) {
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "DENY")
+	// HSTS at the origin (defense in depth; the CDN may also set it). This host is
+	// a passkey/crypto trust root, so pin TLS for future visits. No
+	// includeSubDomains — this asserts only for the exact host it is served from,
+	// so it cannot force HSTS onto sibling subdomains. Browsers ignore it over
+	// plain HTTP (e.g. local dev), so it is safe to send unconditionally.
+	w.Header().Set("Strict-Transport-Security", "max-age=31536000")
 	w.Header().Set("Permissions-Policy", "camera=(self), microphone=(), geolocation=(), payment=(), usb=(), serial=()")
 	// The SPA currently has unhashed /src and /vendor paths. Prefer freshness over
 	// stale trusted-code delivery until a content-hashed build exists.

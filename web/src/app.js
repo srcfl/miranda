@@ -21,20 +21,36 @@ import jsQR from '/vendor/jsqr.js';
 
 const te = new TextEncoder();
 const td = new TextDecoder();
-const DEFAULT_STUN = 'stun:stun.l.google.com:19302';
+// Default STUN server for server-reflexive candidate discovery. Overridable via
+// window.MIRANDA_STUN (set it to '' to disable) so a privacy-conscious deployment
+// can point at its own STUN instead of a third party. A bare STUN request leaks
+// the client IP to whoever runs the server, so this default is only ever used as
+// a last resort — see iceServers.
+const DEFAULT_STUN = (typeof window !== 'undefined' && typeof window.MIRANDA_STUN === 'string')
+  ? window.MIRANDA_STUN
+  : 'stun:stun.l.google.com:19302';
 
-// iceServers builds the ICE config: a default STUN plus ephemeral TURN creds
-// fetched from the signaling server (for symmetric-NAT / cellular reachability).
-// TURN only ever relays ciphertext — Noise keeps content end-to-end.
+// iceServers builds the ICE config. It prefers the relay's own ephemeral TURN
+// credentials: a TURN server already yields a server-reflexive candidate via its
+// built-in STUN, so when TURN is available we do NOT add a standalone third-party
+// STUN server — that would leak the client IP to a third party on every attach
+// for no connectivity gain. Only when the relay offers no TURN do we fall back to
+// the (configurable) default STUN. TURN, when used, relays ciphertext only —
+// Noise keeps content end-to-end.
 async function iceServers(signalURL) {
-  const list = [{ urls: DEFAULT_STUN }];
+  const list = [];
+  let haveTurn = false;
   try {
     const r = await fetch(signalURL.replace(/\/$/, '') + '/turn-credentials');
     if (r.ok) {
       const t = await r.json();
-      if (t.urls && t.urls.length) list.push({ urls: t.urls, username: t.username, credential: t.password });
+      if (t.urls && t.urls.length) {
+        list.push({ urls: t.urls, username: t.username, credential: t.password });
+        haveTurn = true;
+      }
     }
   } catch {}
+  if (!haveTurn && DEFAULT_STUN) list.unshift({ urls: DEFAULT_STUN });
   return list;
 }
 

@@ -44,6 +44,10 @@ func TestLANLocatorDialSendsBinding(t *testing.T) {
 			gotErr <- err
 			return
 		}
+		if err := conn.Establish(actx); err != nil {
+			gotErr <- err
+			return
+		}
 		frame, err := conn.Recv(actx)
 		if err != nil {
 			gotErr <- err

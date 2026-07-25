@@ -51,10 +51,11 @@ func (c *Client) verifyChecksumsSignature(rel *Release, sums []byte, note func(s
 		return fmt.Errorf("cosign is required to verify Miranda releases")
 	}
 
-	// A release cut before signing was introduced carries no .sig/.pem. cosign
-	// being installed cannot conjure them — fall back rather than hard-fail so
-	// upgrading FROM an old release still works. (The next signed tag is the
-	// first one that will actually exercise verification.)
+	// Fail closed: a release that carries no .sig/.pem is refused. Do NOT soften
+	// this into a fallback — accepting an unsigned release would let anyone who
+	// can publish (or MITM) a GitHub release strip the signature and push a
+	// malicious binary, which is exactly the attack cosign verification exists to
+	// stop. This matches SECURITY.md's stated guarantee.
 	if rel.ChecksumsSigURL == "" || rel.ChecksumsCertURL == "" {
 		return fmt.Errorf("release has no cosign signature; refusing update")
 	}
