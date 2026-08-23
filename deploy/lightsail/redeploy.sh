@@ -30,8 +30,10 @@ check_spa() {
   # in /opt/mir-web and get served as bogus assets. --exclude drops any that exist.
   # manifest.json/sw.js/icons are the PWA app-shell — sw.js MUST land at the webroot
   # root (served at /sw.js) so its scope covers the whole origin.
+  # gzip -n omits the header timestamp so two packs of the same tree hash equal.
   COPYFILE_DISABLE=1 tar --no-xattrs --exclude='._*' \
-    -C "$REPO/web" -czf /tmp/mir-web.tgz index.html manifest.json sw.js icons src vendor
+    -C "$REPO/web" -cf - index.html manifest.json sw.js icons src vendor \
+    | gzip -n > /tmp/mir-web.tgz
   WEB_SHA="$(sha256_of /tmp/mir-web.tgz)"
   if ! "$REPO/scripts/verify-web-integrity.sh" /tmp/mir-web.tgz "${MIR_WEB_SHA256:-}"; then
     echo "       set MIR_WEB_SHA256 to the sha256 of the packed web tarball" >&2
