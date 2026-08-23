@@ -5,6 +5,7 @@ import { encodeData, encodeResize, encodeControl, decodeFrame, FRAME_DATA, FRAME
 import { awaitSocketOpen } from './net/ws-open.js';
 import { runSession } from './net/reconnect.js';
 import { backoff } from './net/backoff.js';
+import { iceSessionDead } from './net/ice-state.js';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -124,7 +125,7 @@ export async function connectOnce(machine, term, current, onConnected, onWindows
   // recv() so the read loop unwinds and connectOnce resolves (-> prompt reconnect).
   let endSession;
   const ended = new Promise((res) => { endSession = res; });
-  pc.onconnectionstatechange = () => { diag.conn = pc.connectionState; if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) endSession(); };
+  pc.onconnectionstatechange = () => { diag.conn = pc.connectionState; if (iceSessionDead(pc.connectionState)) endSession(); };
   dc.onclose = () => endSession();
 
   // Abort handle for the caller: close the transports (which triggers endSession via
@@ -430,7 +431,8 @@ function viewPair(root, prefill = '', auto = false) {
     mount(root, el('div', { className: 'view' }, el('h1', {}, 'pairing…'), status));
     status.textContent = 'pairing…';
     try {
-      const { machine, safetyNumber } = await pairWithCode(code, signerKey(), _id.secret);
+      const ceremony = await pairWithCode(code, signerKey(), _id.secret);
+      const { machine, safetyNumber } = ceremony;
       const pending = pendingPairingConfirmation(machine, safetyNumber);
       window.__lastSafety = safetyNumber;
       status.innerHTML = '';
@@ -439,7 +441,8 @@ function viewPair(root, prefill = '', auto = false) {
         el('div', { className: 'sas' }, pending.safetyNumber),
         el('div', { className: 'muted' }, 'Find the safety number printed by `mir pair` on the machine. Continue only if all six groups match exactly.'),
         el('div', { className: 'actions' },
-          el('button', { className: 'btn', onclick: () => {
+          el('button', { className: 'btn', onclick: async () => {
+            if (ceremony.commit) await ceremony.commit();
             const confirmed = confirmPairingSafety(pending);
             const persisted = machineAfterConfirmedPairing(confirmed);
             addMachine(persisted);
@@ -448,7 +451,10 @@ function viewPair(root, prefill = '', auto = false) {
               el('div', { className: 'ok' }, '✓ paired ' + (persisted.name || persisted.machine_id)),
               el('button', { className: 'btn', onclick: () => leaveScanner(() => viewMachines(root)) }, 'Done'));
           } }, 'Safety number matches'),
-          el('button', { className: 'link', onclick: () => leaveScanner(() => viewPair(root)) }, 'Cancel pairing')));
+          el('button', { className: 'link', onclick: () => {
+            if (ceremony.abort) ceremony.abort();
+            leaveScanner(() => viewPair(root));
+          } }, 'Cancel pairing')));
     } catch (e) {
       status.innerHTML = '';
       const msg = (e && e.message) || String(e);

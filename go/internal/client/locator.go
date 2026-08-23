@@ -13,7 +13,8 @@ import (
 var ErrUnreachable = errors.New("locator: machine not reachable by this path")
 
 // Locator turns a Machine into a live MsgConn (post-transport, pre-Noise) plus a
-// cleanup. Attach composes locators and runs Noise-KK over the first that connects.
+// cleanup. Attach races locators and only treats a Dial as a win after Noise-KK
+// against the pinned host key succeeds for that connection.
 type Locator interface {
 	Dial(ctx context.Context, m Machine, id *Identity, ice []peer.ICEServer) (peer.MsgConn, func(), error)
 }

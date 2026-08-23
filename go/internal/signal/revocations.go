@@ -50,10 +50,17 @@ func (s *Server) LoadRevocations(path string) error {
 			loaded[key(record.OwnerID, record.MachineID)] = record
 		}
 	}
+	durable := make(map[string]bool, len(loaded))
+	for slot := range loaded {
+		durable[slot] = true
+	}
 	s.mu.Lock()
 	s.revoked = loaded
 	s.revocationsFile = path
 	s.mu.Unlock()
+	s.persistMu.Lock()
+	s.revDurable = durable
+	s.persistMu.Unlock()
 	return nil
 }
 
@@ -116,13 +123,12 @@ func (s *Server) postRevocation(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	existing, exists := s.revoked[slot]
 	if exists && existing == record {
-		// Exact replay of an already-recorded tombstone changes nothing. Skip the
-		// whole-file marshal + fsync entirely: without this, resending one
-		// observed, validly-signed revocation forces an O(n) rewrite under the
-		// global broker lock on every request — a cheap way to stall all
-		// signaling. (Revocation is permanent, so a byte-identical record is a
-		// pure no-op.)
+		durable := s.slotDurable(slot)
 		s.mu.Unlock()
+		if s.revocationsFile != "" && !durable {
+			http.Error(w, "could not persist revocation", http.StatusInternalServerError)
+			return
+		}
 		s.logf("event=machine_revoked owner=%s machine=%s duplicate=true ip=%s", shortID(record.OwnerID), shortID(record.MachineID), s.remoteIP(r))
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -146,6 +152,7 @@ func (s *Server) postRevocation(w http.ResponseWriter, r *http.Request) {
 		ac.teardown()
 	}
 	if err := s.persistRevocations(version, snapshot); err != nil {
+		s.rollbackRevocation(slot, existing, exists)
 		s.logf("event=revocation_persist_error owner=%s machine=%s", shortID(record.OwnerID), shortID(record.MachineID))
 		http.Error(w, "could not persist revocation", http.StatusInternalServerError)
 		return
@@ -189,7 +196,29 @@ func (s *Server) persistRevocations(version uint64, list []identity.Revocation) 
 		return err
 	}
 	s.revPersisted = version
+	if s.revDurable == nil {
+		s.revDurable = map[string]bool{}
+	}
+	for _, rec := range list {
+		s.revDurable[key(rec.OwnerID, rec.MachineID)] = true
+	}
 	return nil
+}
+
+func (s *Server) slotDurable(slot string) bool {
+	s.persistMu.Lock()
+	defer s.persistMu.Unlock()
+	return s.revDurable[slot]
+}
+
+func (s *Server) rollbackRevocation(slot string, existing identity.Revocation, existed bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if existed {
+		s.revoked[slot] = existing
+		return
+	}
+	delete(s.revoked, slot)
 }
 
 // writeRevocationsFile atomically writes the given snapshot. It reads no shared

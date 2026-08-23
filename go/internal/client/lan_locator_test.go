@@ -146,3 +146,48 @@ func TestLANLocatorUnreachableWithoutWallet(t *testing.T) {
 		t.Fatal("expected nil conn/cleanup without a wallet")
 	}
 }
+
+func TestLANAddrDialable(t *testing.T) {
+	cases := []struct {
+		addr string
+		want bool
+	}{
+		{"127.0.0.1:9", true},
+		{"10.0.0.1:9", true},
+		{"192.168.1.5:3478", true},
+		{"172.16.0.1:1", true},
+		{"169.254.1.1:9", true},
+		{"[::1]:9", true},
+		{"[fe80::1]:9", true},
+		{"[fd00::1]:9", true},
+		{"8.8.8.8:3478", false},
+		{"1.2.3.4:9", false},
+		{"[2001:4860:4860::8888]:9", false},
+	}
+	for _, tc := range cases {
+		if got := LANAddrDialable(tc.addr); got != tc.want {
+			t.Errorf("LANAddrDialable(%q) = %v, want %v", tc.addr, got, tc.want)
+		}
+	}
+}
+
+func TestLANLocatorUnreachableOnPublicAddr(t *testing.T) {
+	id := &Identity{}
+	secret := make([]byte, 32)
+	for i := range secret {
+		secret[i] = byte(i + 3)
+	}
+	if err := id.SetFromSecret(secret); err != nil {
+		t.Fatalf("set from secret: %v", err)
+	}
+	res := staticResolver{addr: "8.8.8.8:3478"}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	conn, cleanup, err := lanLocator{res: res}.Dial(ctx, Machine{Name: "box", MachineID: "m"}, id, nil)
+	if !errors.Is(err, ErrUnreachable) {
+		t.Fatalf("expected ErrUnreachable for public mDNS address, got %v", err)
+	}
+	if conn != nil || cleanup != nil {
+		t.Fatal("must not dial a public address from mDNS")
+	}
+}

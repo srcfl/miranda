@@ -141,8 +141,8 @@ func (a *app) cmdPair(args []string) error {
 
 // pairInitiate is the body of the old client `mir pair <code>`: pair TO a machine
 // that printed a code, learning its host key + name and pinning it locally. The
-// safety number is shown and CONFIRMED before the machine is persisted — matching
-// the web client, which only stores the peer after "Safety number matches".
+// safety number is shown and confirmed before msg3 is sent — matching the web
+// client, which withholds the owner proof until "Safety number matches".
 func (a *app) pairInitiate(dir, codeStr string, gate sasGate) error {
 	signalURL, token, err := pairing.DecodeCode(codeStr)
 	if err != nil {
@@ -166,25 +166,25 @@ func (a *app) pairInitiate(dir, codeStr string, gate sasGate) error {
 		return err
 	}
 	defer closeConn()
-	var provisioned client.Machine
-	info, binding, err := pairing.RunInitiatorProvisioned(ctx, mc, token, w, func(info *pairing.AgentInfo) (string, error) {
-		provisioned = client.Machine{Name: info.Name, MachineID: info.MachineID, HostPubHex: info.HostPubHex, SignalURL: signalURL}
-		return client.SealRegistryMachine(idn, provisioned)
-	})
+	started, err := pairing.StartInitiator(ctx, mc, token, w)
 	if err != nil {
 		return err
 	}
-	m := provisioned
-	if m.MachineID == "" { // defensive: provisioner must have run after msg2
-		m = client.Machine{Name: info.Name, MachineID: info.MachineID, HostPubHex: info.HostPubHex, SignalURL: signalURL}
-	}
+	m := client.Machine{Name: started.Info.Name, MachineID: started.Info.MachineID, HostPubHex: started.Info.HostPubHex, SignalURL: signalURL}
 
-	// Show the safety number FIRST, then require confirmation BEFORE persisting —
-	// otherwise the printed number is advisory and a MITM is never caught.
-	safety := sas.FromBinding(binding)
+	// SAS is derived from the msg2 transcript. Confirm it before sending msg3 so a
+	// QR/web peer can compare numbers; the web initiator withholds msg3 the same way.
+	safety := sas.FromBinding(started.Binding)
 	fmt.Fprintf(a.out, "  safety number: %s  (must match the machine's)\n", safety)
 	if ok, reason := gate.confirm(safety, a.out); !ok {
 		return fmt.Errorf("pairing cancelled: %s", reason)
+	}
+	if err := started.Finish(func(info *pairing.AgentInfo) (string, error) {
+		return client.SealRegistryMachine(idn, client.Machine{
+			Name: info.Name, MachineID: info.MachineID, HostPubHex: info.HostPubHex, SignalURL: signalURL,
+		})
+	}); err != nil {
+		return err
 	}
 	if err := client.AddMachine(dir, m); err != nil {
 		return err
@@ -195,8 +195,8 @@ func (a *app) pairInitiate(dir, codeStr string, gate sasGate) error {
 
 // pairRespond is the body of the old agent `mir-agent pair`: make THIS machine
 // pairable — print a code + QR and wait for an owner to pair, then pin them. The
-// owner is trusted only AFTER the safety number is shown and confirmed, matching
-// the web client's "Safety number matches" gate.
+// safety number is printed after msg2 so a QR client can compare it; msg3 is
+// received next, and the owner is pinned only after the operator confirms.
 func (a *app) pairRespond(dir, name, signalURL, webURL string, gate sasGate) error {
 	cfg, err := agent.LoadOrInit(dir, name, signalURL)
 	if err != nil {
@@ -229,15 +229,21 @@ func (a *app) pairRespond(dir, name, signalURL, webURL string, gate sasGate) err
 		return err
 	}
 	info := pairing.AgentInfo{HostPubHex: cfg.HostPubHex, MachineID: cfg.MachineID, Name: cfg.MachineName, RegistrationCommitment: commitment}
-	ownerID, provision, binding, err := pairing.RunResponderProvisioned(ctx, mc, token, info)
+	started, err := pairing.StartResponder(ctx, mc, token, info)
 	if err != nil {
 		return err
 	}
 
-	// Show the safety number FIRST, then require confirmation BEFORE pinning the
-	// owner — otherwise the printed number is advisory and a MITM is never caught.
-	safety := sas.FromBinding(binding)
+	// Print SAS after msg2, before Recv(msg3). The web initiator withholds msg3
+	// until the human confirms; if we Recv first the agent never shows a number
+	// to compare.
+	safety := sas.FromBinding(started.Binding)
 	fmt.Fprintf(a.out, "  safety number: %s  (must match the client's)\n", safety)
+	fmt.Fprintln(a.out, "waiting for the other device to confirm…")
+	ownerID, provision, err := started.Finish(ctx)
+	if err != nil {
+		return err
+	}
 	if ok, reason := gate.confirm(safety, a.out); !ok {
 		return fmt.Errorf("pairing cancelled: %s", reason)
 	}

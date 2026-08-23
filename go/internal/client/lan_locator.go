@@ -41,6 +41,9 @@ func (l lanLocator) Dial(ctx context.Context, m Machine, id *Identity, _ []peer.
 	if err != nil {
 		return nil, nil, ErrUnreachable
 	}
+	if !LANAddrDialable(addr) {
+		return nil, nil, ErrUnreachable
+	}
 	conn, err := quicmsg.Dial(dctx, addr)
 	if err != nil {
 		return nil, nil, ErrUnreachable
@@ -99,10 +102,9 @@ func (mdnsResolver) resolve(ctx context.Context, machineID string) (string, erro
 			if entry == nil || !matchesMachine(entry, machineID) {
 				continue
 			}
-			if len(entry.AddrIPv4) == 0 || entry.Port == 0 {
-				continue
+			if addr, ok := lanAddrFromEntry(entry); ok {
+				return addr, nil
 			}
-			return net.JoinHostPort(entry.AddrIPv4[0].String(), strconv.Itoa(entry.Port)), nil
 		case <-bctx.Done():
 			return "", ErrUnreachable
 		}
@@ -122,6 +124,40 @@ func matchesMachine(entry *zeroconf.ServiceEntry, machineID string) bool {
 		}
 	}
 	return false
+}
+
+// LANAddrDialable reports whether host:port is a loopback, link-local, or
+// private address. Public IPv4/IPv6 from mDNS is not dialed: an attacker on
+// the LAN can otherwise point the client at an arbitrary host.
+func LANAddrDialable(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
+}
+
+func lanAddrFromEntry(entry *zeroconf.ServiceEntry) (string, bool) {
+	if entry.Port == 0 {
+		return "", false
+	}
+	for _, ip := range entry.AddrIPv4 {
+		addr := net.JoinHostPort(ip.String(), strconv.Itoa(entry.Port))
+		if LANAddrDialable(addr) {
+			return addr, true
+		}
+	}
+	for _, ip := range entry.AddrIPv6 {
+		addr := net.JoinHostPort(ip.String(), strconv.Itoa(entry.Port))
+		if LANAddrDialable(addr) {
+			return addr, true
+		}
+	}
+	return "", false
 }
 
 // newMDNSResolver returns the production mDNS-backed resolver.

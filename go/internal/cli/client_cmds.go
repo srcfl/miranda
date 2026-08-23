@@ -15,6 +15,7 @@ import (
 
 	"github.com/srcful/terminal-relay/go/internal/client"
 	"github.com/srcful/terminal-relay/go/internal/defaults"
+	"github.com/srcful/terminal-relay/go/internal/noise"
 	"github.com/srcful/terminal-relay/go/internal/peer"
 	"github.com/srcful/terminal-relay/go/internal/selfupdate"
 	"github.com/srcful/terminal-relay/go/internal/version"
@@ -140,9 +141,9 @@ func (a *app) cmdKeygen(args []string) error {
 		}
 		fmt.Fprintln(a.errOut, "identity rotated — owner_id changed; re-pair your machines")
 	}
-	fmt.Fprintf(a.out, "owner public key:\n  %s\n\nPin it on each machine:\n  mir pair-dev --owner-pub %s\n", id.OwnerPubHex, id.OwnerPubHex)
+	fmt.Fprintf(a.out, "owner public key:\n  %s\n", id.OwnerPubHex)
 	if id.HasRootedIdentity() {
-		fmt.Fprintf(a.out, "\nMiranda owner id:\n  %s\n", id.OwnerID)
+		fmt.Fprintf(a.out, "\nMiranda owner id:\n  %s\n\nPin it on each machine:\n  mir pair-dev --owner-id %s\n", id.OwnerID, id.OwnerID)
 	}
 	return nil
 }
@@ -410,20 +411,26 @@ func (a *app) cmdAttach(args []string) error {
 	if err != nil {
 		return err
 	}
+	iceList := servers
+	if len(resolved) > 0 && !iceHasTURN(servers) {
+		if got, err := client.ResolveICE(ctx, resolved[0].SignalURL, iceSTUNURLs(servers)); err == nil {
+			iceList = got
+		}
+	}
 	if len(resolved) == 1 {
 		m := resolved[0]
-		mc, sess, cleanup, err := client.Attach(ctx, m, idn, servers, *relayOnly)
-		if err != nil {
-			return err
-		}
-		defer cleanup()
-		if err := client.RunInteractive(ctx, mc, sess, m.Name); err != nil && ctx.Err() == nil && !isCleanDetach(err) {
+		err := client.ReconnectLoop(ctx, func(ctx context.Context) (peer.MsgConn, *noise.Session, func(), error) {
+			return client.Attach(ctx, m, idn, iceList, *relayOnly)
+		}, func(ctx context.Context, mc peer.MsgConn, sess *noise.Session) error {
+			return client.RunInteractive(ctx, mc, sess, m.Name)
+		})
+		if err != nil && ctx.Err() == nil && !isCleanDetach(err) {
 			return err
 		}
 		return nil
 	}
 
-	sessions, cleanup, err := client.AttachAll(ctx, resolved, idn, servers, *relayOnly)
+	sessions, cleanup, err := client.AttachAll(ctx, resolved, idn, iceList, *relayOnly)
 	if err != nil {
 		return err
 	}

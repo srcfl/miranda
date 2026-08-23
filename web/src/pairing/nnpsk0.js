@@ -229,7 +229,7 @@ export class HandshakeNNpsk0 {
 // runInitiator (client): sends the owner id in the historical `wallet` wire
 // field, then proves owner control with msg3 = signAuth(channelBinding).
 // Returns { info, binding }. `ephemeralPriv` is optional (deterministic tests).
-export async function runInitiator(mc, token, signer, ephemeralPriv = null, provisioner = null) {
+export async function startInitiator(mc, token, signer, ephemeralPriv = null) {
   const hs = new HandshakeNNpsk0({ initiator: true, psk: pskFromToken(token), ephemeralPriv });
   const msg1 = hs.writeMessage(new TextEncoder().encode(JSON.stringify({ wallet: signer.address })));
   await mc.send(msg1);
@@ -237,10 +237,12 @@ export async function runInitiator(mc, token, signer, ephemeralPriv = null, prov
   const payload = hs.readMessage(msg2);
   const info = JSON.parse(new TextDecoder().decode(payload));
   const binding = hs.binding();
-  const sig = signAuth(signer, binding);
-  if (!provisioner) {
-    await mc.send(sig); // compatibility with v0.6 responders
-  } else {
+  const finish = async (provisioner = null) => {
+    const sig = signAuth(signer, binding);
+    if (!provisioner) {
+      await mc.send(sig);
+      return;
+    }
     const registry = await provisioner(info);
     let binary = '';
     for (const b of sig) binary += String.fromCharCode(b);
@@ -252,8 +254,14 @@ export async function runInitiator(mc, token, signer, ephemeralPriv = null, prov
       registration_auth = btoa(registrationBinary);
     }
     await mc.send(new TextEncoder().encode(JSON.stringify({ signature: btoa(binary), registry, registration_auth })));
-  }
-  return { info, binding };
+  };
+  return { info, binding, finish };
+}
+
+export async function runInitiator(mc, token, signer, ephemeralPriv = null, provisioner = null) {
+  const started = await startInitiator(mc, token, signer, ephemeralPriv);
+  await started.finish(provisioner);
+  return { info: started.info, binding: started.binding };
 }
 
 // runResponder (agent/test mirror): reads the legacy-wire owner claim, sends info

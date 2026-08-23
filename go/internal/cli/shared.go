@@ -49,6 +49,20 @@ func freshSetup() bool {
 	return true
 }
 
+func looksLikeX25519Hex(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 func hostname() string {
 	h, err := os.Hostname()
 	if err != nil {
@@ -78,6 +92,25 @@ func iceFlags(fs *flag.FlagSet) func() []peer.ICEServer {
 }
 
 // splitCSV splits a comma-separated flag into a trimmed slice; empty -> nil.
+func iceHasTURN(servers []peer.ICEServer) bool {
+	for _, s := range servers {
+		if s.Username != "" || s.Credential != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func iceSTUNURLs(servers []peer.ICEServer) []string {
+	var out []string
+	for _, s := range servers {
+		if s.Username == "" && s.Credential == "" {
+			out = append(out, s.URLs...)
+		}
+	}
+	return out
+}
+
 func splitCSV(s string) []string {
 	s = strings.TrimSpace(s)
 	if s == "" {

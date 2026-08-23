@@ -92,7 +92,14 @@ func (rt *Runtime) lanAccept(ctx context.Context, conn *quicmsg.Conn) {
 	if !rt.admit() {
 		return // too many pre-auth handshakes in flight
 	}
-	defer rt.release()
+	held := true
+	releaseHS := func() {
+		if held {
+			held = false
+			rt.release()
+		}
+	}
+	defer releaseHS()
 
 	// Bound the whole pre-auth phase: accepting the peer's stream and reading the
 	// owner binding. A silent peer fails here rather than parking on an admit()
@@ -113,12 +120,12 @@ func (rt *Runtime) lanAccept(ctx context.Context, conn *quicmsg.Conn) {
 	if err != nil {
 		return
 	}
-	if !rt.cfg.IsOwnerPinned(sb.Wallet) {
+	if !rt.ownerPinned(sb.Wallet) {
 		return // unpinned owner: refuse pre-Noise, no session starts
 	}
 	ownerPub, err := ownerPubFromBinding(string(bindingJSON), sb.Wallet)
 	if err != nil {
 		return
 	}
-	_ = rt.serveAuthenticated(ctx, conn, ownerPub)
+	_ = rt.serveAuthenticated(ctx, conn, ownerPub, releaseHS)
 }

@@ -132,6 +132,106 @@ func TestPairingExchangesAndPinsKeys(t *testing.T) {
 	}
 }
 
+// TestResponderBindingAvailableBeforeMsg3 is the QR compare gate: after msg2 both
+// sides must have a matching SAS, and the initiator must not have sent msg3 yet.
+// The web client withholds msg3 until "Safety number matches"; the agent CLI
+// prints SAS from StartResponder before Finish Recvs msg3.
+func TestResponderBindingAvailableBeforeMsg3(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+
+	token := testToken(t)
+	wallet := testWallet(t, 0x44)
+	_, hostPub, _ := noise.GenerateStatic()
+	info := AgentInfo{HostPubHex: hex.EncodeToString(hostPub), MachineID: "m", Name: "box"}
+
+	clientMC, agentMC := peer.Pipe()
+	initMC := &countingConn{MsgConn: clientMC}
+	respMC := &hookConn{MsgConn: agentMC}
+
+	type startedRes struct {
+		s   *StartedResponder
+		err error
+	}
+	resCh := make(chan startedRes, 1)
+	go func() {
+		s, err := StartResponder(ctx, respMC, token, info)
+		resCh <- startedRes{s: s, err: err}
+	}()
+
+	init, err := StartInitiator(ctx, initMC, token, wallet)
+	if err != nil {
+		t.Fatalf("StartInitiator: %v", err)
+	}
+	res := <-resCh
+	if res.err != nil {
+		t.Fatalf("StartResponder: %v", res.err)
+	}
+	// StartResponder already Recv'd msg1; further Recvs are Finish/msg3.
+	finishRecv := make(chan struct{})
+	respMC.onRecv = func() {
+		select {
+		case <-finishRecv:
+		default:
+			close(finishRecv)
+		}
+	}
+
+	wantSAS := sas.FromBinding(init.Binding)
+	if wantSAS == "" || wantSAS != sas.FromBinding(res.s.Binding) {
+		t.Fatalf("SAS after msg2: initiator %q responder %q", wantSAS, sas.FromBinding(res.s.Binding))
+	}
+	if initMC.sends != 1 {
+		t.Fatalf("initiator sends after StartInitiator = %d, want 1 (msg1 only; msg3 must wait for Finish)", initMC.sends)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := res.s.Finish(ctx)
+		done <- err
+	}()
+	select {
+	case <-finishRecv:
+	case err := <-done:
+		t.Fatalf("responder Finish returned before Recv(msg3): %v", err)
+	}
+	if initMC.sends != 1 {
+		t.Fatalf("initiator sent msg3 before Finish: sends=%d", initMC.sends)
+	}
+
+	if err := init.Finish(nil); err != nil {
+		t.Fatalf("initiator Finish: %v", err)
+	}
+	if initMC.sends != 2 {
+		t.Fatalf("initiator sends after Finish = %d, want 2 (msg1+msg3)", initMC.sends)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("responder Finish: %v", err)
+	}
+}
+
+type countingConn struct {
+	peer.MsgConn
+	sends int
+}
+
+func (c *countingConn) Send(b []byte) error {
+	c.sends++
+	return c.MsgConn.Send(b)
+}
+
+type hookConn struct {
+	peer.MsgConn
+	onRecv func()
+}
+
+func (c *hookConn) Recv(ctx context.Context) ([]byte, error) {
+	if c.onRecv != nil {
+		c.onRecv()
+	}
+	return c.MsgConn.Recv(ctx)
+}
+
 func TestPairingFailsWithWrongToken(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()

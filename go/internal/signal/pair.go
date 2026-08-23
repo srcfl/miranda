@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -28,6 +29,25 @@ type pairWaiter struct {
 type pairRooms struct {
 	mu      sync.Mutex
 	waiting map[string]*pairWaiter
+	active  int
+}
+
+func (p *pairRooms) beginBridge(max int) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if max > 0 && p.active >= max {
+		return false
+	}
+	p.active++
+	return true
+}
+
+func (p *pairRooms) endBridge() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.active > 0 {
+		p.active--
+	}
 }
 
 func newPairRooms() *pairRooms { return &pairRooms{waiting: map[string]*pairWaiter{}} }
@@ -76,14 +96,15 @@ func (p *pairRooms) rendezvous(room string, c *websocket.Conn, maxRooms int) (*w
 // the server — only roomID = H(token) and ciphertext.
 func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 	room := r.URL.Query().Get("room")
-	if room == "" {
-		http.Error(w, "missing room", http.StatusBadRequest)
+	if room == "" || len(room) > maxPairRoomIDLen {
+		http.Error(w, "missing or invalid room", http.StatusBadRequest)
 		return
 	}
 	c, err := websocket.Accept(w, r, acceptOpts)
 	if err != nil {
 		return
 	}
+	c.SetReadLimit(maxPairFrameBytes)
 	other, done, drive, err := s.pair.rendezvous(room, c, s.maxPairRooms)
 	if err != nil {
 		c.Close(websocket.StatusTryAgainLater, err.Error())
@@ -94,33 +115,48 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !drive {
-		// The partner drives the bridge. Wait on the shared done signal — NOT
-		// r.Context(), which after a websocket hijack only fires once this very
-		// handler returns. When the driver tears the bridge down it closes done
-		// AND closes this conn (other, from the driver's perspective), so this
-		// handler returns promptly and releases its hijacked socket.
 		<-done
 		return
 	}
-	ctx, cancel := context.WithCancel(r.Context())
-	// On bridge end, release BOTH conns: cancel our copy loops, close the
-	// non-driving partner's socket, and close done so the non-driving handler
-	// returns. close(done) must run exactly once.
+	if !s.pair.beginBridge(s.maxPairBridges) {
+		c.Close(websocket.StatusTryAgainLater, "pair bridge capacity reached")
+		other.Close(websocket.StatusTryAgainLater, "pair bridge capacity reached")
+		close(done)
+		return
+	}
+	defer s.pair.endBridge()
+	other.SetReadLimit(maxPairFrameBytes)
+	ttl := s.pairBridgeTTL
+	if ttl <= 0 {
+		ttl = defaultPairBridgeTTL
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), ttl)
+	budget := s.pairBridgeMaxBytes
+	if budget <= 0 {
+		budget = defaultPairBridgeBytes
+	}
+	var used atomic.Int64
 	defer func() {
 		cancel()
 		other.Close(websocket.StatusNormalClosure, "pair complete")
 		close(done)
 	}()
-	go pairCopy(ctx, c, other, cancel)
-	pairCopy(ctx, other, c, cancel)
+	go pairCopy(ctx, c, other, cancel, &used, budget)
+	pairCopy(ctx, other, c, cancel, &used, budget)
 }
 
-func pairCopy(ctx context.Context, src, dst *websocket.Conn, done func()) {
+func pairCopy(ctx context.Context, src, dst *websocket.Conn, done func(), used *atomic.Int64, budget int64) {
 	for {
 		_, data, err := src.Read(ctx)
 		if err != nil {
 			done()
 			return
+		}
+		if budget > 0 && used != nil {
+			if used.Add(int64(len(data))) > budget {
+				done()
+				return
+			}
 		}
 		if err := dst.Write(ctx, websocket.MessageBinary, data); err != nil {
 			done()

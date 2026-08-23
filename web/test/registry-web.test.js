@@ -34,13 +34,19 @@ test('decodeRegistry falls back to the fetch origin when a record has no signal_
   assert.equal(out[0].signal, 'https://origin.example');
 });
 
-test('mergeMachines: local wins, discovered-only appended', () => {
-  const local = [{ machine_id: 'm1', name: 'local-laptop' }];
-  const disc = [{ machine_id: 'm1', name: 'reg-laptop' }, { machine_id: 'm2', name: 'desktop' }];
+test('mergeMachines: verified registry host_pub/signal beat local cache', () => {
+  const local = [{ machine_id: 'm1', name: 'local-laptop', host_pub: 'aa'.repeat(32), signal: 'https://old.example' }];
+  const disc = [
+    { machine_id: 'm1', name: 'reg-laptop', host_pub: 'bb'.repeat(32), signal: 'https://relay.example' },
+    { machine_id: 'm2', name: 'desktop', host_pub: 'cc'.repeat(32), signal: 'https://relay.example' },
+  ];
   const merged = mergeMachines(local, disc);
   assert.equal(merged.length, 2);
-  assert.equal(merged[0].name, 'local-laptop', 'local entry wins');
-  assert.equal(merged[1].machine_id, 'm2');
+  const m1 = merged.find((m) => m.machine_id === 'm1');
+  assert.equal(m1.host_pub, 'bb'.repeat(32), 'registry host_pub is canonical');
+  assert.equal(m1.signal, 'https://relay.example', 'registry signal is canonical');
+  assert.equal(m1.name, 'local-laptop', 'local display name may stay');
+  assert.equal(merged.find((m) => m.machine_id === 'm2').name, 'desktop');
 });
 
 test('freshDevices flags only unseen machine_ids', () => {
