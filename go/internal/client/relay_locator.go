@@ -51,7 +51,7 @@ func (relayLocator) Dial(ctx context.Context, m Machine, id *Identity, ice []pee
 	}
 	cleanup := func() { _ = off.Close(); closeWS() }
 
-	offerSDP, err := peer.CreateOffer(off)
+	offerSDP, err := peer.CreateOfferContext(ctx, off)
 	if err != nil {
 		cleanup()
 		return nil, nil, err

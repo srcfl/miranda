@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/srcful/terminal-relay/go/internal/client"
+	"github.com/srcful/terminal-relay/go/internal/identity"
 	"github.com/srcful/terminal-relay/go/internal/peer"
 	"github.com/srcful/terminal-relay/go/internal/version"
 )
@@ -203,11 +204,20 @@ func TestPairDevPinsOwner(t *testing.T) {
 		t.Fatalf("enroll exit = %d", code)
 	}
 	out.Reset()
-	owner := "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
-	if code := Run([]string{"pair-dev", "--dir", dir, "--owner-pub", owner}, &out, &errb); code != 0 {
+	hexKey := "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+	if code := Run([]string{"pair-dev", "--dir", dir, "--owner-pub", hexKey}, &out, &errb); code == 0 {
+		t.Fatalf("pair-dev must refuse X25519 hex, stderr = %q", errb.String())
+	}
+	out.Reset()
+	errb.Reset()
+	signer, err := identity.DeriveSigner(bytes.Repeat([]byte{0x11}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := Run([]string{"pair-dev", "--dir", dir, "--owner-id", signer.Address}, &out, &errb); code != 0 {
 		t.Fatalf("pair-dev exit = %d, stderr = %q", code, errb.String())
 	}
-	if !strings.Contains(out.String(), "pinned owner") {
+	if !strings.Contains(out.String(), "pinned owner") || !strings.Contains(out.String(), signer.Address) {
 		t.Fatalf("pair-dev output = %q", out.String())
 	}
 }

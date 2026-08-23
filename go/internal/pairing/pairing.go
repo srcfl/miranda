@@ -79,48 +79,59 @@ func RunInitiatorProvisioned(ctx context.Context, mc peer.MsgConn, token []byte,
 	return runInitiator(ctx, mc, token, signer, provision)
 }
 
-func runInitiator(ctx context.Context, mc peer.MsgConn, token []byte, signer *identity.Signer, provision Provisioner) (*AgentInfo, []byte, error) {
+// StartedInitiator is the client pairing handshake after msg2: the SAS is
+// available and msg3 has not been sent. Finish sends the owner proof.
+type StartedInitiator struct {
+	Info    *AgentInfo
+	Binding []byte
+	mc      peer.MsgConn
+	signer  *identity.Signer
+}
+
+// StartInitiator sends msg1 and reads msg2. The binding is ready for a safety
+// number; Finish must be called to send msg3.
+func StartInitiator(ctx context.Context, mc peer.MsgConn, token []byte, signer *identity.Signer) (*StartedInitiator, error) {
 	hs, err := newHandshake(true, token)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	claim, _ := json.Marshal(PairClaim{Wallet: signer.Address})
 	msg1, _, _, err := hs.WriteMessage(nil, claim)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if err := mc.Send(msg1); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	msg2, err := mc.Recv(ctx)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	payload, _, _, err := hs.ReadMessage(nil, msg2)
 	if err != nil {
-		return nil, nil, fmt.Errorf("pairing handshake failed (wrong code?): %w", err)
+		return nil, fmt.Errorf("pairing handshake failed (wrong code?): %w", err)
 	}
 	var info AgentInfo
 	if err := json.Unmarshal(payload, &info); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	// msg3: prove owner control and optionally provision an opaque record.
-	binding := hs.ChannelBinding()
-	sig := signer.SignAuth(binding)
+	return &StartedInitiator{Info: &info, Binding: hs.ChannelBinding(), mc: mc, signer: signer}, nil
+}
+
+// Finish sends msg3 (owner signature and optional provision). Call only after
+// the human has compared the safety number derived from Binding.
+func (s *StartedInitiator) Finish(provision Provisioner) error {
+	sig := s.signer.SignAuth(s.Binding)
 	if provision == nil {
-		// Compatibility with v0.6 responders.
-		if err := mc.Send(sig); err != nil {
-			return nil, nil, err
-		}
-		return &info, binding, nil
+		return s.mc.Send(sig)
 	}
-	registry, err := provision(&info)
+	registry, err := provision(s.Info)
 	if err != nil {
-		return nil, nil, err
+		return err
 	}
 	registrationAuth := ""
-	if info.RegistrationCommitment != "" {
-		registrationAuth = base64.StdEncoding.EncodeToString(signer.SignAuth(identity.RegistrationChallenge(info.MachineID, info.RegistrationCommitment)))
+	if s.Info.RegistrationCommitment != "" {
+		registrationAuth = base64.StdEncoding.EncodeToString(s.signer.SignAuth(identity.RegistrationChallenge(s.Info.MachineID, s.Info.RegistrationCommitment)))
 	}
 	proof, err := json.Marshal(PairProof{
 		Signature:        base64.StdEncoding.EncodeToString(sig),
@@ -128,12 +139,20 @@ func runInitiator(ctx context.Context, mc peer.MsgConn, token []byte, signer *id
 		RegistrationAuth: registrationAuth,
 	})
 	if err != nil {
+		return err
+	}
+	return s.mc.Send(proof)
+}
+
+func runInitiator(ctx context.Context, mc peer.MsgConn, token []byte, signer *identity.Signer, provision Provisioner) (*AgentInfo, []byte, error) {
+	started, err := StartInitiator(ctx, mc, token, signer)
+	if err != nil {
 		return nil, nil, err
 	}
-	if err := mc.Send(proof); err != nil {
+	if err := started.Finish(provision); err != nil {
 		return nil, nil, err
 	}
-	return &info, binding, nil
+	return started.Info, started.Binding, nil
 }
 
 // RunResponder is the agent side: it reads the client's PairClaim (msg1), sends
@@ -151,61 +170,89 @@ func RunResponderProvisioned(ctx context.Context, mc peer.MsgConn, token []byte,
 	return runResponder(ctx, mc, token, info)
 }
 
-func runResponder(ctx context.Context, mc peer.MsgConn, token []byte, info AgentInfo) (string, Provision, []byte, error) {
+// StartedResponder is the agent pairing handshake after msg2: the SAS is
+// available and msg3 has not been read. Finish receives and verifies msg3.
+type StartedResponder struct {
+	Binding []byte
+	mc      peer.MsgConn
+	claim   PairClaim
+	info    AgentInfo
+}
+
+// StartResponder reads msg1 and sends msg2. The binding is ready for a safety
+// number; Finish must be called to receive msg3 and prove the owner.
+func StartResponder(ctx context.Context, mc peer.MsgConn, token []byte, info AgentInfo) (*StartedResponder, error) {
 	hs, err := newHandshake(false, token)
 	if err != nil {
-		return "", Provision{}, nil, err
+		return nil, err
 	}
 	msg1, err := mc.Recv(ctx)
 	if err != nil {
-		return "", Provision{}, nil, err
+		return nil, err
 	}
 	payload, _, _, err := hs.ReadMessage(nil, msg1)
 	if err != nil {
-		return "", Provision{}, nil, fmt.Errorf("pairing handshake failed (wrong code?): %w", err)
+		return nil, fmt.Errorf("pairing handshake failed (wrong code?): %w", err)
 	}
 	var claim PairClaim
 	if err := json.Unmarshal(payload, &claim); err != nil {
-		return "", Provision{}, nil, fmt.Errorf("pairing: bad claim: %w", err)
+		return nil, fmt.Errorf("pairing: bad claim: %w", err)
 	}
 	if pk, derr := base58.Decode(claim.Wallet); derr != nil || len(pk) != 32 {
-		return "", Provision{}, nil, fmt.Errorf("pairing: bad owner id")
+		return nil, fmt.Errorf("pairing: bad owner id")
 	}
 	infoJSON, _ := json.Marshal(info)
 	msg2, _, _, err := hs.WriteMessage(nil, infoJSON)
 	if err != nil {
-		return "", Provision{}, nil, err
+		return nil, err
 	}
 	if err := mc.Send(msg2); err != nil {
-		return "", Provision{}, nil, err
+		return nil, err
 	}
-	binding := hs.ChannelBinding()
-	proofBytes, err := mc.Recv(ctx)
+	return &StartedResponder{Binding: hs.ChannelBinding(), mc: mc, claim: claim, info: info}, nil
+}
+
+// Finish reads msg3 and returns the proven owner id. Call after showing the
+// safety number derived from Binding so a QR client can compare it.
+func (s *StartedResponder) Finish(ctx context.Context) (string, Provision, error) {
+	proofBytes, err := s.mc.Recv(ctx)
 	if err != nil {
-		return "", Provision{}, nil, err
+		return "", Provision{}, err
 	}
 	sig := proofBytes
 	provision := Provision{}
 	if len(proofBytes) != 64 {
 		var proof PairProof
 		if err := json.Unmarshal(proofBytes, &proof); err != nil {
-			return "", Provision{}, nil, fmt.Errorf("pairing: bad owner proof")
+			return "", Provision{}, fmt.Errorf("pairing: bad owner proof")
 		}
 		sig, err = base64.StdEncoding.DecodeString(proof.Signature)
 		if err != nil {
-			return "", Provision{}, nil, fmt.Errorf("pairing: bad owner signature encoding")
+			return "", Provision{}, fmt.Errorf("pairing: bad owner signature encoding")
 		}
 		provision.Registry = proof.Registry
 		provision.RegistrationAuth = proof.RegistrationAuth
 	}
-	if err := identity.VerifyAuth(claim.Wallet, binding, sig); err != nil {
-		return "", Provision{}, nil, fmt.Errorf("pairing: owner auth failed: %w", err)
+	if err := identity.VerifyAuth(s.claim.Wallet, s.Binding, sig); err != nil {
+		return "", Provision{}, fmt.Errorf("pairing: owner auth failed: %w", err)
 	}
-	if info.RegistrationCommitment != "" {
+	if s.info.RegistrationCommitment != "" {
 		registrationSig, err := base64.StdEncoding.DecodeString(provision.RegistrationAuth)
-		if err != nil || identity.VerifyAuth(claim.Wallet, identity.RegistrationChallenge(info.MachineID, info.RegistrationCommitment), registrationSig) != nil {
-			return "", Provision{}, nil, fmt.Errorf("pairing: invalid agent registration authorization")
+		if err != nil || identity.VerifyAuth(s.claim.Wallet, identity.RegistrationChallenge(s.info.MachineID, s.info.RegistrationCommitment), registrationSig) != nil {
+			return "", Provision{}, fmt.Errorf("pairing: invalid agent registration authorization")
 		}
 	}
-	return claim.Wallet, provision, binding, nil
+	return s.claim.Wallet, provision, nil
+}
+
+func runResponder(ctx context.Context, mc peer.MsgConn, token []byte, info AgentInfo) (string, Provision, []byte, error) {
+	started, err := StartResponder(ctx, mc, token, info)
+	if err != nil {
+		return "", Provision{}, nil, err
+	}
+	ownerID, provision, err := started.Finish(ctx)
+	if err != nil {
+		return "", Provision{}, started.Binding, err
+	}
+	return ownerID, provision, started.Binding, nil
 }

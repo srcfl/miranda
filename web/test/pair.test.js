@@ -178,15 +178,54 @@ test('completes the handshake and returns the machine + safety number', async ()
     await Promise.resolve();
     sock[0].fireOpen();
     const result = await p;
-    const resp = await responderP;
 
     assert.equal(result.machine.machine_id, 'm42');
     assert.equal(result.machine.name, 'box');
     assert.equal(result.machine.host_pub, info.host_pub);
     assert.equal(result.machine.signal, 'https://relay.example.test');
     assert.match(result.safetyNumber, /^[0-9a-f]{4}(-[0-9a-f]{4}){5}$/, 'well-formed SAS');
+    assert.equal(typeof result.commit, 'function');
+    assert.equal(sock[0].sent.length, 1, 'msg3 must not be sent before SAS confirm');
+    assert.ok(!sock[0].closed, 'socket stays open until commit or abort');
+
+    const commitP = result.commit();
+    const resp = await responderP;
+    await commitP;
     assert.equal(result.safetyNumber, safetyNumber(resp.binding), 'both peers derive the SAME safety number');
-    assert.ok(sock[0].closed, 'socket closed after a successful pairing');
+    assert.ok(sock[0].sent.length >= 2, 'msg3 is sent only after commit');
+    assert.ok(sock[0].closed, 'socket closed after commit');
+  } finally {
+    ws.restore();
+  }
+});
+
+test('abort does not send provision/msg3', async () => {
+  const ws = installFakeWS();
+  try {
+    const token = hexToBytes(vec.token);
+    const vecWallet = deriveSigner(hexToBytes(vec.wallet_prf));
+    const goodCode = encodeCode('https://relay.example.test', token);
+    const info = JSON.parse(vec.info_json);
+    const sock = ws.created;
+    let sentIdx = 0;
+    const responderMC = {
+      recv: async () => {
+        for (let i = 0; i < 200; i++) {
+          if (sock[0] && sock[0].sent.length > sentIdx) return sock[0].sent[sentIdx++];
+          await new Promise((r) => setTimeout(r, 1));
+        }
+        throw new Error('responder recv timeout');
+      },
+      send: async (m) => { sock[0].fireMessage(m); },
+    };
+    const responderP = runResponder(responderMC, token, info, hexToBytes('2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40'));
+    const p = pairWithCode(goodCode, vecWallet);
+    await Promise.resolve();
+    sock[0].fireOpen();
+    const pending = await p;
+    pending.abort();
+    assert.equal(sock[0].sent.length, 1, 'abort must not send msg3');
+    await assert.rejects(responderP);
   } finally {
     ws.restore();
   }

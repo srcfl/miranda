@@ -51,11 +51,29 @@ export async function fetchMachines(origin, signer, secret) {
   }
 }
 
-// mergeMachines unions local and discovered machines by machine_id; a machine the
-// user already stored locally wins, discovered-only machines are appended.
+// mergeMachines unions local and discovered machines by machine_id. A verified
+// registry record is canonical for host_pub and signal; local-only rows stay.
 export function mergeMachines(local, discovered) {
-  const seen = new Set(local.map((m) => m.machine_id));
-  return local.concat(discovered.filter((m) => !seen.has(m.machine_id)));
+  const byId = new Map();
+  for (const m of local || []) {
+    if (m && m.machine_id) byId.set(m.machine_id, { ...m });
+  }
+  for (const m of discovered || []) {
+    if (!m || !m.machine_id) continue;
+    const prev = byId.get(m.machine_id);
+    if (!prev) {
+      byId.set(m.machine_id, { ...m });
+      continue;
+    }
+    byId.set(m.machine_id, {
+      ...prev,
+      ...m,
+      name: prev.name || m.name,
+      host_pub: m.host_pub || prev.host_pub,
+      signal: m.signal || prev.signal,
+    });
+  }
+  return [...byId.values()];
 }
 
 // freshDevices returns the discovered machines whose machine_id is not in seenIds

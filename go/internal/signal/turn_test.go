@@ -30,15 +30,32 @@ func TestTURNCredentials(t *testing.T) {
 	if resp2.StatusCode != http.StatusOK {
 		t.Fatalf("configured: want 200, got %d", resp2.StatusCode)
 	}
-	if resp2.Header.Get("Access-Control-Allow-Origin") != "*" {
-		t.Fatal("missing CORS header (browser fetch is cross-origin)")
+	if resp2.Header.Get("Access-Control-Allow-Origin") == "*" {
+		t.Fatal("TURN credentials must not be CORS-*")
+	}
+	spa := httptest.NewRequest(http.MethodGet, "/turn-credentials", nil)
+	spa.Header.Set("Origin", "https://term.sourceful-labs.net")
+	spaRR := httptest.NewRecorder()
+	s.Handler().ServeHTTP(spaRR, spa)
+	if got := spaRR.Header().Get("Access-Control-Allow-Origin"); got != "https://term.sourceful-labs.net" {
+		t.Fatalf("SPA Origin ACAO = %q, want the Miranda web origin", got)
+	}
+	if spaRR.Header().Get("Access-Control-Allow-Origin") == "*" {
+		t.Fatal("SPA CORS must not be *")
+	}
+	evil := httptest.NewRequest(http.MethodGet, "/turn-credentials", nil)
+	evil.Header.Set("Origin", "https://evil.example")
+	evilRR := httptest.NewRecorder()
+	s.Handler().ServeHTTP(evilRR, evil)
+	if got := evilRR.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("unlisted Origin ACAO = %q, want empty", got)
 	}
 	var c TURNCreds
 	if err := json.NewDecoder(resp2.Body).Decode(&c); err != nil {
 		t.Fatal(err)
 	}
-	if turnTTL != 12*time.Hour {
-		t.Fatalf("turnTTL: want 12h (must outlast a session), got %v", turnTTL)
+	if turnTTL > 15*time.Minute {
+		t.Fatalf("turnTTL: want at most 15m, got %v", turnTTL)
 	}
 	if c.TTL != int(turnTTL.Seconds()) {
 		t.Fatalf("json ttl: want %d, got %d", int(turnTTL.Seconds()), c.TTL)

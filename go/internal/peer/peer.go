@@ -50,10 +50,9 @@ type DataChannel struct {
 func wrap(dc *webrtc.DataChannel) *DataChannel {
 	d := &DataChannel{dc: dc, recv: make(chan []byte, 64), closed: make(chan struct{})}
 	dc.OnMessage(func(m webrtc.DataChannelMessage) {
-		select {
-		case d.recv <- m.Data:
-		case <-d.closed:
-		}
+		// Copy: Pion may reuse the buffer. Never block the SCTP read loop —
+		// a full recv chan drops the frame instead of parking OnMessage.
+		d.offerRecv(append([]byte(nil), m.Data...))
 	})
 	// On remote close (or error), signal Recv so it unblocks instead of parking
 	// forever. Without this a remote PeerConnection/DataChannel close would leave
@@ -65,6 +64,38 @@ func wrap(dc *webrtc.DataChannel) *DataChannel {
 
 func (d *DataChannel) signalClosed() {
 	d.closeOnce.Do(func() { close(d.closed) })
+}
+
+func (d *DataChannel) offerRecv(buf []byte) {
+	select {
+	case d.recv <- buf:
+	case <-d.closed:
+	default:
+	}
+}
+
+// ICESessionDead reports whether the PeerConnection state should tear down an
+// established attach. disconnected is recoverable (Wi-Fi/cellular flip); failed
+// and closed are not.
+func ICESessionDead(s webrtc.PeerConnectionState) bool {
+	switch s {
+	case webrtc.PeerConnectionStateFailed, webrtc.PeerConnectionStateClosed:
+		return true
+	default:
+		return false
+	}
+}
+
+func waitGather(ctx context.Context, done <-chan struct{}, abort func()) error {
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		if abort != nil {
+			abort()
+		}
+		return ctx.Err()
+	}
 }
 
 func (d *DataChannel) Send(b []byte) error { return d.dc.Send(b) }
@@ -143,6 +174,10 @@ func NewAnswerer(servers []ICEServer) (*webrtc.PeerConnection, <-chan *DataChann
 // CreateOffer / CreateAnswer / AcceptAnswer use non-trickle ICE: gather all
 // candidates, then return the SDP with them embedded.
 func CreateOffer(pc *webrtc.PeerConnection) (string, error) {
+	return CreateOfferContext(context.Background(), pc)
+}
+
+func CreateOfferContext(ctx context.Context, pc *webrtc.PeerConnection) (string, error) {
 	offer, err := pc.CreateOffer(nil)
 	if err != nil {
 		return "", err
@@ -151,11 +186,17 @@ func CreateOffer(pc *webrtc.PeerConnection) (string, error) {
 	if err := pc.SetLocalDescription(offer); err != nil {
 		return "", err
 	}
-	<-done
+	if err := waitGather(ctx, done, func() { _ = pc.Close() }); err != nil {
+		return "", err
+	}
 	return pc.LocalDescription().SDP, nil
 }
 
 func CreateAnswer(pc *webrtc.PeerConnection, offerSDP string) (string, error) {
+	return CreateAnswerContext(context.Background(), pc, offerSDP)
+}
+
+func CreateAnswerContext(ctx context.Context, pc *webrtc.PeerConnection, offerSDP string) (string, error) {
 	if err := pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: offerSDP}); err != nil {
 		return "", err
 	}
@@ -167,7 +208,9 @@ func CreateAnswer(pc *webrtc.PeerConnection, offerSDP string) (string, error) {
 	if err := pc.SetLocalDescription(answer); err != nil {
 		return "", err
 	}
-	<-done
+	if err := waitGather(ctx, done, func() { _ = pc.Close() }); err != nil {
+		return "", err
+	}
 	return pc.LocalDescription().SDP, nil
 }
 

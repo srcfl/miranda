@@ -73,6 +73,9 @@ type Runtime struct {
 	seenMu       sync.Mutex
 	seenAttaches map[string]time.Time // valid signed session ids; replay guard
 
+	pinMu    sync.Mutex
+	ownerRun map[string]context.CancelFunc // live serveOwner loops; cancelled on unpin
+
 	active int64 // count of authenticated, serving sessions (atomic); gates auto-update
 
 	baseBackoff    time.Duration        // first reconnect delay (grows on repeated dial failures)
@@ -105,7 +108,34 @@ func (rt *Runtime) sessionEnded()   { atomic.AddInt64(&rt.active, -1) }
 func (rt *Runtime) ActiveSessions() int { return int(atomic.LoadInt64(&rt.active)) }
 
 func NewRuntime(cfg *Config, launch []string, ice []peer.ICEServer) *Runtime {
-	return &Runtime{cfg: cfg, launch: launch, ice: ice, sem: make(chan struct{}, defaultMaxConcurrentAttaches), seenAttaches: make(map[string]time.Time), baseBackoff: time.Second, maxBackoff: 30 * time.Second, reloadInterval: 3 * time.Second}
+	return &Runtime{cfg: cfg, launch: launch, ice: ice, sem: make(chan struct{}, defaultMaxConcurrentAttaches), seenAttaches: make(map[string]time.Time), ownerRun: map[string]context.CancelFunc{}, baseBackoff: time.Second, maxBackoff: 30 * time.Second, reloadInterval: 3 * time.Second}
+}
+
+func (rt *Runtime) ownerPinned(owner string) bool {
+	rt.pinMu.Lock()
+	defer rt.pinMu.Unlock()
+	return rt.cfg.IsOwnerPinned(owner)
+}
+
+func (rt *Runtime) replacePins(owners []string) {
+	rt.pinMu.Lock()
+	defer rt.pinMu.Unlock()
+	rt.cfg.PairedOwners = append([]string(nil), owners...)
+}
+
+type connWriter interface {
+	Write(ctx context.Context, typ websocket.MessageType, p []byte) error
+}
+
+type signalWriter struct {
+	mu sync.Mutex
+	c  connWriter
+}
+
+func (w *signalWriter) write(ctx context.Context, data []byte) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.c.Write(ctx, websocket.MessageText, data)
 }
 
 func (rt *Runtime) acceptAttachSession(owner, session string) bool {
@@ -146,25 +176,7 @@ func (rt *Runtime) Up(ctx context.Context) error {
 			rt.Logf("LAN-direct disabled: %v", err)
 		}
 	}
-	var mu sync.Mutex
-	served := map[string]bool{}
-	start := func(owner string) {
-		mu.Lock()
-		defer mu.Unlock()
-		if served[owner] {
-			return
-		}
-		served[owner] = true
-		if rt.Logf != nil {
-			rt.Logf("serving owner %s", short(owner))
-		}
-		go rt.serveOwner(ctx, owner)
-	}
-	for _, o := range rt.cfg.PairedOwners {
-		start(o)
-	}
-	// Hot-reload: pick up owners added by `mir pair` WITHOUT a restart, so
-	// pairing a new device (or a new passkey identity) just works.
+	rt.reconcileOwners(ctx, append([]string(nil), rt.cfg.PairedOwners...))
 	t := time.NewTicker(rt.reloadInterval)
 	defer t.Stop()
 	for {
@@ -176,11 +188,45 @@ func (rt *Runtime) Up(ctx context.Context) error {
 				continue
 			}
 			if owners, err := ReloadOwners(rt.cfg.Dir); err == nil {
-				for _, o := range owners {
-					start(o)
-				}
+				rt.reconcileOwners(ctx, owners)
 			}
 		}
+	}
+}
+
+func (rt *Runtime) reconcileOwners(ctx context.Context, owners []string) {
+	want := map[string]bool{}
+	for _, o := range owners {
+		if o != "" {
+			want[o] = true
+		}
+	}
+	rt.replacePins(owners)
+
+	rt.pinMu.Lock()
+	defer rt.pinMu.Unlock()
+	if rt.ownerRun == nil {
+		rt.ownerRun = map[string]context.CancelFunc{}
+	}
+	for owner, stop := range rt.ownerRun {
+		if !want[owner] {
+			stop()
+			delete(rt.ownerRun, owner)
+			if rt.Logf != nil {
+				rt.Logf("stopped owner %s", short(owner))
+			}
+		}
+	}
+	for owner := range want {
+		if _, live := rt.ownerRun[owner]; live {
+			continue
+		}
+		octx, stop := context.WithCancel(ctx)
+		rt.ownerRun[owner] = stop
+		if rt.Logf != nil {
+			rt.Logf("serving owner %s", short(owner))
+		}
+		go rt.serveOwner(octx, owner)
 	}
 }
 
@@ -275,6 +321,7 @@ func (rt *Runtime) serveOnce(ctx context.Context, owner string) (dialed bool, up
 		return false, 0, err
 	}
 	defer c.CloseNow()
+	w := &signalWriter{c: c}
 
 	// Mark the start of the healthy read loop: uptime is measured from here so a
 	// relay that accepts-then-immediately-closes reports a tiny uptime (a flap),
@@ -288,7 +335,7 @@ func (rt *Runtime) serveOnce(ctx context.Context, owner string) (dialed bool, up
 	// has no key capable of opening or forging it.
 	if blob := RegistryForOwner(rt.cfg.Dir, owner); blob != "" {
 		if msg, err := json.Marshal(signal.SignalMsg{Type: signal.TypeRegistry, Registry: blob}); err == nil {
-			_ = c.Write(ctx, websocket.MessageText, msg)
+			_ = w.write(ctx, msg)
 		}
 	}
 
@@ -302,19 +349,8 @@ func (rt *Runtime) serveOnce(ctx context.Context, owner string) (dialed bool, up
 			continue
 		}
 		if m.Type == signal.TypeOffer {
-			if !rt.admit() {
-				// Too many attach handshakes in flight: drop this offer rather than
-				// allocate another PeerConnection. The peer will simply fail to
-				// connect and can retry; an authenticated owner is unaffected in
-				// steady state. This is the pre-auth DoS guard.
-				if rt.Logf != nil {
-					rt.Logf("owner %s: dropping offer, %d concurrent attaches in flight", short(owner), cap(rt.sem))
-				}
-				continue
-			}
 			go func() {
-				defer rt.release()
-				rt.handleOffer(ctx, c, m, owner)
+				rt.handleOffer(ctx, w, m, owner)
 			}()
 		}
 	}
@@ -356,33 +392,32 @@ func closeCodeReason(err error) (code int, reason string) {
 	return -1, err.Error()
 }
 
-// iceFor returns the agent's static ICE servers plus ephemeral TURN creds
-// fetched from the signaling server (for symmetric-NAT / cellular reachability).
+// iceFor returns ICE servers for an answer. Ephemeral TURN from the signal URL
+// wins when offered — a TURN allocation already yields a server-reflexive
+// candidate, so a third-party STUN server is omitted (matches client ResolveICE).
 func (rt *Runtime) iceFor(ctx context.Context) []peer.ICEServer {
 	if turn, err := peer.FetchTURN(ctx, rt.cfg.SignalURL); err == nil && len(turn) > 0 {
-		return append(append([]peer.ICEServer{}, rt.ice...), turn...)
+		return turn
 	}
 	return rt.ice
 }
 
-func (rt *Runtime) handleOffer(ctx context.Context, c *websocket.Conn, m signal.SignalMsg, owner string) {
-	// Verify owner control before allocating ICE, TURN, file descriptors, or a
-	// Pion PeerConnection. The stable binding selects the Noise key; the fresh
-	// signature binds this exact SDP to the relay-issued one-shot session.
-	if !rt.cfg.IsOwnerPinned(owner) || m.Session == "" || m.Auth == "" {
-		return
-	}
-	ownerPub, err := ownerPubFromBinding(m.Binding, owner)
+func (rt *Runtime) handleOffer(ctx context.Context, w *signalWriter, m signal.SignalMsg, owner string) {
+	ownerPub, err := rt.authorizeOffer(owner, m)
 	if err != nil {
 		return
 	}
-	auth, err := base64.StdEncoding.DecodeString(m.Auth)
-	if err != nil || identity.VerifyAuth(owner, identity.AttachChallenge(m.Session, rt.cfg.MachineID, m.SDP), auth) != nil {
+	if !rt.admit() {
 		return
 	}
-	if !rt.acceptAttachSession(owner, m.Session) {
-		return
+	held := true
+	releaseHS := func() {
+		if held {
+			held = false
+			rt.release()
+		}
 	}
+	defer releaseHS()
 
 	ans, opened, err := peer.NewAnswerer(rt.iceFor(ctx))
 	if err != nil {
@@ -397,28 +432,20 @@ func (rt *Runtime) handleOffer(ctx context.Context, c *websocket.Conn, m signal.
 	}
 	defer closeOnce()
 
-	// Per-attach context tied to PeerConnection liveness. When the remote
-	// disconnects (the dominant steady-state path), the state handler cancels
-	// attachCtx, which unblocks RunResponder/RunAgentSession so the deferred
-	// closeOnce()/pty.Close() actually run and reclaim the PC, shell, and
-	// goroutines while the agent's long-lived ctx stays alive.
 	attachCtx, attachCancel := context.WithCancel(ctx)
 	defer attachCancel()
 	ans.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
-		switch s {
-		case webrtc.PeerConnectionStateDisconnected,
-			webrtc.PeerConnectionStateFailed,
-			webrtc.PeerConnectionStateClosed:
+		if peer.ICESessionDead(s) {
 			attachCancel()
 		}
 	})
 
-	answerSDP, err := peer.CreateAnswer(ans, m.SDP)
+	answerSDP, err := peer.CreateAnswerContext(attachCtx, ans, m.SDP)
 	if err != nil {
 		return
 	}
 	reply, _ := json.Marshal(signal.SignalMsg{Type: signal.TypeAnswer, Session: m.Session, SDP: answerSDP})
-	if err := c.Write(ctx, websocket.MessageText, reply); err != nil {
+	if err := w.write(ctx, reply); err != nil {
 		return
 	}
 
@@ -428,10 +455,31 @@ func (rt *Runtime) handleOffer(ctx context.Context, c *websocket.Conn, m signal.
 	select {
 	case dc = <-opened:
 	case <-octx.Done():
-		return // no P2P path (strict P2P) — give up this attach
+		return
 	}
 
-	_ = rt.serveAuthenticated(attachCtx, dc, ownerPub)
+	_ = rt.serveAuthenticated(attachCtx, dc, ownerPub, releaseHS)
+}
+
+// authorizeOffer verifies pin, binding, SDP-bound owner signature, and session
+// replay before any ICE/Pion allocation. Exported-to-package so tests can drive
+// the live pin set without a full WebRTC handshake.
+func (rt *Runtime) authorizeOffer(owner string, m signal.SignalMsg) ([]byte, error) {
+	if !rt.ownerPinned(owner) || m.Session == "" || m.Auth == "" {
+		return nil, fmt.Errorf("attach: not authorized")
+	}
+	ownerPub, err := ownerPubFromBinding(m.Binding, owner)
+	if err != nil {
+		return nil, err
+	}
+	auth, err := base64.StdEncoding.DecodeString(m.Auth)
+	if err != nil || identity.VerifyAuth(owner, identity.AttachChallenge(m.Session, rt.cfg.MachineID, m.SDP), auth) != nil {
+		return nil, fmt.Errorf("attach: bad auth")
+	}
+	if !rt.acceptAttachSession(owner, m.Session) {
+		return nil, fmt.Errorf("attach: replay")
+	}
+	return ownerPub, nil
 }
 
 // serveAuthenticated runs the Noise-KK responder against the pinned owner X25519 key
@@ -440,10 +488,13 @@ func (rt *Runtime) handleOffer(ctx context.Context, c *websocket.Conn, m signal.
 // The active-session bracket lives HERE — after auth — not at the transport accept:
 // pre-auth handshakes (already bounded by admit()) must not inflate the active count
 // and starve opt-in auto-update, which defers binary swaps until the agent is idle.
-func (rt *Runtime) serveAuthenticated(ctx context.Context, mc peer.MsgConn, ownerPub []byte) error {
+func (rt *Runtime) serveAuthenticated(ctx context.Context, mc peer.MsgConn, ownerPub []byte, handshakeDone func()) error {
 	sess, err := peer.RunResponder(ctx, mc, rt.cfg.HostPriv(), ownerPub)
 	if err != nil {
 		return err
+	}
+	if handshakeDone != nil {
+		handshakeDone()
 	}
 	rt.sessionStarted()
 	defer rt.sessionEnded()

@@ -3,9 +3,11 @@ package peer
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/pion/webrtc/v4"
 	"github.com/srcful/terminal-relay/go/internal/noise"
 )
 
@@ -102,5 +104,77 @@ func TestPionPeersEstablishDataChannelWithNoise(t *testing.T) {
 	}
 	if string(pt) != "hello over p2p" {
 		t.Fatalf("echo mismatch: %q", pt)
+	}
+}
+
+func TestICESessionDead(t *testing.T) {
+	if ICESessionDead(webrtc.PeerConnectionStateDisconnected) {
+		t.Fatal("disconnected must not tear down an established session")
+	}
+	if ICESessionDead(webrtc.PeerConnectionStateConnected) {
+		t.Fatal("connected is not dead")
+	}
+	if !ICESessionDead(webrtc.PeerConnectionStateFailed) {
+		t.Fatal("failed must tear down")
+	}
+	if !ICESessionDead(webrtc.PeerConnectionStateClosed) {
+		t.Fatal("closed must tear down")
+	}
+}
+
+func TestCreateOfferContextReturnsOnCancel(t *testing.T) {
+	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	if _, err := pc.CreateDataChannel("data", nil); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := CreateOfferContext(ctx, pc)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("CreateOfferContext after cancel: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("CreateOfferContext hung after ctx cancel")
+	}
+}
+
+func TestWaitGatherHonorsCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan struct{})
+	aborted := false
+	err := waitGather(ctx, done, func() { aborted = true })
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("want canceled, got %v", err)
+	}
+	if !aborted {
+		t.Fatal("abort must run when ctx is cancelled")
+	}
+}
+
+func TestDataChannelOfferRecvDoesNotBlockWhenFull(t *testing.T) {
+	d := &DataChannel{recv: make(chan []byte, 64), closed: make(chan struct{})}
+	for i := 0; i < 64; i++ {
+		d.offerRecv([]byte{byte(i)})
+	}
+	finished := make(chan struct{})
+	go func() {
+		d.offerRecv([]byte{255})
+		close(finished)
+	}()
+	select {
+	case <-finished:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("offerRecv blocked Pion's read loop when the recv buffer was full")
 	}
 }

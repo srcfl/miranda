@@ -110,6 +110,85 @@ func TestOversizedRegistryBlobDropped(t *testing.T) {
 // replay: after the first POST persists the file, the store directory is made
 // unwritable so any real persist would fail with 500. A byte-identical replay
 // must still return 204 — which is only possible if it never touches disk.
+func TestRevocationPersistFailureRollsBackAndDoesNot204(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "revocations.json")
+	s := New()
+	if err := s.LoadRevocations(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(dir, 0o700)
+
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+	record := signedRevocation(t, bytes.Repeat([]byte{0x72}, 32), "machine-fail")
+
+	resp := postRevocation(t, srv.URL, record)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("first persist failure status = %d, want 500", resp.StatusCode)
+	}
+	dup := postRevocation(t, srv.URL, record)
+	io.Copy(io.Discard, dup.Body)
+	dup.Body.Close()
+	if dup.StatusCode == http.StatusNoContent {
+		t.Fatal("retry after failed persist must not 204-skip; tombstone was never durable")
+	}
+
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	reloaded := New()
+	if err := reloaded.LoadRevocations(path); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	reloaded.mu.Lock()
+	_, ok := reloaded.revoked[key(record.OwnerID, record.MachineID)]
+	reloaded.mu.Unlock()
+	if ok {
+		t.Fatal("tombstone must be absent after restart when persist never succeeded")
+	}
+}
+
+func TestLoadedRevocationIsDurableAfterRestart(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "revocations.json")
+	s := New()
+	if err := s.LoadRevocations(path); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+	record := signedRevocation(t, bytes.Repeat([]byte{0x73}, 32), "machine-restart")
+	resp := postRevocation(t, srv.URL, record)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("first POST status = %d, want 204", resp.StatusCode)
+	}
+
+	reloaded := New()
+	if err := reloaded.LoadRevocations(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(dir, 0o700)
+	rsrv := httptest.NewServer(reloaded.Handler())
+	defer rsrv.Close()
+	dup := postRevocation(t, rsrv.URL, record)
+	io.Copy(io.Discard, dup.Body)
+	dup.Body.Close()
+	if dup.StatusCode != http.StatusNoContent {
+		t.Fatalf("POST after restart status = %d, want 204 (tombstone is already on disk)", dup.StatusCode)
+	}
+}
+
 func TestDuplicateRevocationSkipsPersist(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "revocations.json")

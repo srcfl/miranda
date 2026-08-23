@@ -19,6 +19,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/srcful/terminal-relay/go/internal/base58"
+	"github.com/srcful/terminal-relay/go/internal/defaults"
 	"github.com/srcful/terminal-relay/go/internal/identity"
 )
 
@@ -45,6 +46,11 @@ const (
 	maxSignalMessageBytes   = 256 << 10
 	defaultMaxAgentSessions = 128
 	defaultMaxPairRooms     = 1024
+	defaultMaxPairBridges   = 64
+	defaultPairBridgeTTL    = 60 * time.Second
+	defaultPairBridgeBytes  = 64 << 10
+	maxPairRoomIDLen        = 64
+	maxPairFrameBytes       = 8 << 10
 	defaultMaxRateEntries   = 8192
 	defaultMaxRevocations   = 100000
 	capacityReason          = "server capacity reached"
@@ -129,6 +135,11 @@ type Server struct {
 	persistMu    sync.Mutex
 	revVersion   uint64
 	revPersisted uint64
+	revDurable   map[string]bool // slot reached disk; duplicate 204 only if true
+
+	maxPairBridges     int
+	pairBridgeTTL      time.Duration
+	pairBridgeMaxBytes int64
 
 	// Logf records one structured line per relay event (register, replace,
 	// reject, gone, attach, flap, stats). It is never nil at runtime: New()
@@ -141,6 +152,11 @@ type Server struct {
 	// creds for this URL. The secret is shared with coturn only — never shipped.
 	TURNSecret string
 	TURNURL    string
+
+	// CORSAllowOrigins is the allowlist for GET /turn-credentials. The SPA is
+	// hosted on a different origin than the relay, so the browser fetch needs
+	// ACAO — never "*". Empty means New()'s default (the Miranda web origin).
+	CORSAllowOrigins []string
 
 	maxAgentSessions int
 	maxPairRooms     int
@@ -280,17 +296,22 @@ func (bc *browserConn) close() { bc.once.Do(func() { close(bc.done) }) }
 
 func New() *Server {
 	return &Server{
-		agents:           map[string]*agentConn{},
-		proofs:           newProofStore(defaultMaxAgentProofs),
-		pair:             newPairRooms(),
-		flaps:            newFlapCounter(flapThreshold, flapWindow, defaultMaxAgentProofs),
-		revoked:          map[string]identity.Revocation{},
-		Logf:             func(string, ...any) {}, // no-op until the binary wires a real logger
-		maxAgentSessions: defaultMaxAgentSessions,
-		maxPairRooms:     defaultMaxPairRooms,
-		limiter:          newRequestLimiter(defaultMaxRateEntries),
-		maxRevocations:   defaultMaxRevocations,
-		maxAgents:        defaultMaxAgents,
+		agents:             map[string]*agentConn{},
+		proofs:             newProofStore(defaultMaxAgentProofs),
+		pair:               newPairRooms(),
+		flaps:              newFlapCounter(flapThreshold, flapWindow, defaultMaxAgentProofs),
+		revoked:            map[string]identity.Revocation{},
+		Logf:               func(string, ...any) {}, // no-op until the binary wires a real logger
+		maxAgentSessions:   defaultMaxAgentSessions,
+		maxPairRooms:       defaultMaxPairRooms,
+		maxPairBridges:     defaultMaxPairBridges,
+		pairBridgeTTL:      defaultPairBridgeTTL,
+		pairBridgeMaxBytes: defaultPairBridgeBytes,
+		revDurable:         map[string]bool{},
+		CORSAllowOrigins:   []string{defaults.WebURL()},
+		limiter:            newRequestLimiter(defaultMaxRateEntries),
+		maxRevocations:     defaultMaxRevocations,
+		maxAgents:          defaultMaxAgents,
 	}
 }
 

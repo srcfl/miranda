@@ -1,7 +1,7 @@
 // web/src/pair.js — pair a machine from the browser: decode the code, rendezvous
 // in the /pair room, run the NNpsk0 initiator, and return the machine + safety
 // number to compare with the agent's. Mirrors the Go `mir pair`.
-import { runInitiator } from './pairing/nnpsk0.js';
+import { startInitiator } from './pairing/nnpsk0.js';
 import { decodeCode, roomID } from './pairing/code.js';
 import { safetyNumber } from './pairing/sas.js';
 import { registryKey, sealRecord } from './identity/registry.js';
@@ -77,13 +77,31 @@ export async function pairWithCode(code, signer, secret = null) {
       for (const b of blob) binary += String.fromCharCode(b);
       return btoa(binary);
     } : null;
-    const { info, binding } = await runInitiator(mc, token, signer, null, provisioner);
-    return {
-      machine: { machine_id: info.machine_id, host_pub: info.host_pub, name: info.name, signal: signalURL },
-      safetyNumber: safetyNumber(binding),
+    const started = await startInitiator(mc, token, signer);
+    let finished = false;
+    const abort = () => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      fail(new Error('pairing cancelled'));
+      try { ws.close(); } catch {}
     };
-  } finally {
+    const commit = async () => {
+      if (finished) throw new Error('pairing already finished');
+      await started.finish(provisioner);
+      finished = true;
+      clearTimeout(timer);
+      try { ws.close(); } catch {}
+    };
+    return {
+      machine: { machine_id: started.info.machine_id, host_pub: started.info.host_pub, name: started.info.name, signal: signalURL },
+      safetyNumber: safetyNumber(started.binding),
+      commit,
+      abort,
+    };
+  } catch (e) {
     clearTimeout(timer);
     try { ws.close(); } catch {}
+    throw e;
   }
 }

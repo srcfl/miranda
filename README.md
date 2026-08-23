@@ -173,7 +173,7 @@ The longer positioning decision is in [`docs/product.md`](docs/product.md).
 
 ## Status
 
-Miranda is a working **v0.7 security release candidate**. The CLI and browser can pair,
+Miranda is **v0.7.0**. The CLI and browser can pair,
 discover, attach, reconnect, multiplex machines, and resume real tmux sessions over
 the P2P/LAN data plane. Machine revocation, native OS-keychain storage, bounded
 relay rate limits, diagnostics, signed releases, and reproducible binary checks are

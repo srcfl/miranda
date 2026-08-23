@@ -20,34 +20,52 @@ import (
 // than the full LAN budget. See dialStaggered.
 const relayHeadStart = 200 * time.Millisecond
 
+// kkHandshakeTimeout bounds Noise KK on one locator so a silent or wrong-key
+// peer cannot stall attach; the race then continues to the next locator.
+const kkHandshakeTimeout = 2 * time.Second
+
+// postDialAuth runs after a locator returns a live MsgConn. A nil session with a
+// nil error is a transport-only win (unit tests of the race). Any error,
+// including KK failure or timeout, is treated as unreachable so a later locator
+// can still win.
+type postDialAuth func(ctx context.Context, mc peer.MsgConn, m Machine, id *Identity) (*noise.Session, error)
+
 // Attach connects to the named machine's agent over the first locator that can
-// reach it, runs the Noise KK initiator over that MsgConn, and returns the
-// established session. Call cleanup when done.
-//
-// By default it tries LAN-direct (mDNS + QUIC) first, then falls back to the
-// relay; the LAN attempt is bounded (see lanLocator.Dial) so a remote attach
-// drops to the relay fast. relayOnly skips LAN entirely.
+// complete transport AND Noise KK against the pinned host key. A locator that
+// only opens a socket (spoofed LAN, wrong host key) is not a win: KK failure or
+// timeout is unreachable and a later locator is still attempted.
 func Attach(ctx context.Context, m Machine, id *Identity, ice []peer.ICEServer, relayOnly bool) (mc peer.MsgConn, sess *noise.Session, cleanup func(), err error) {
 	if !id.HasRootedIdentity() {
 		return nil, nil, nil, fmt.Errorf("this identity predates Miranda identity v2; run `mir identity rotate --yes` and re-pair")
 	}
-
-	mc, cleanup, err = dialStaggered(ctx, attachLocators(relayOnly), relayHeadStart, m, id, ice)
+	hostPub, err := decodeHostPub(m.HostPubHex)
 	if err != nil {
-		return nil, nil, nil, err
-	}
-
-	hostPub, err := hex.DecodeString(m.HostPubHex)
-	if err != nil {
-		cleanup()
 		return nil, nil, nil, fmt.Errorf("bad host pubkey for %q: %w", m.Name, err)
 	}
-	sess, err = peer.RunInitiator(ctx, mc, id.OwnerPriv(), hostPub)
+	return dialStaggered(ctx, attachLocators(relayOnly), relayHeadStart, m, id, ice, kkAuth(hostPub))
+}
+
+func decodeHostPub(hexKey string) ([]byte, error) {
+	pub, err := hex.DecodeString(hexKey)
 	if err != nil {
-		cleanup()
-		return nil, nil, nil, fmt.Errorf("noise handshake (wrong key / not paired?): %w", err)
+		return nil, err
 	}
-	return mc, sess, cleanup, nil
+	if len(pub) != 32 {
+		return nil, fmt.Errorf("host pubkey must be 32 bytes, got %d", len(pub))
+	}
+	return pub, nil
+}
+
+func kkAuth(hostPub []byte) postDialAuth {
+	return func(ctx context.Context, mc peer.MsgConn, m Machine, id *Identity) (*noise.Session, error) {
+		hctx, cancel := context.WithTimeout(ctx, kkHandshakeTimeout)
+		defer cancel()
+		sess, err := peer.RunInitiator(hctx, mc, id.OwnerPriv(), hostPub)
+		if err != nil {
+			return nil, fmt.Errorf("%w: noise handshake: %v", ErrUnreachable, err)
+		}
+		return sess, nil
+	}
 }
 
 // attachLocators is the ordered locator list Attach tries: LAN-direct first (a
@@ -59,22 +77,21 @@ func attachLocators(relayOnly bool) []Locator {
 	return []Locator{lanLocator{res: newMDNSResolver()}, relayLocator{}}
 }
 
-// dialStaggered races the locators "happy-eyeballs" style: locator[0] starts
-// immediately and each later locator starts after an additional headStart, so a
-// LAN that answers wins before the relay is ever contacted. The FIRST locator to
-// return a live MsgConn wins; the others are cancelled and any that also connected
-// is cleaned up. If all fail it returns the most informative error (a real failure
-// in preference to ErrUnreachable). A single locator (relay-only) dials directly.
-func dialStaggered(parent context.Context, locators []Locator, headStart time.Duration, m Machine, id *Identity, ice []peer.ICEServer) (peer.MsgConn, func(), error) {
+// dialStaggered races locators "happy-eyeballs" style. A live MsgConn is not a
+// win until postDialAuth succeeds (production: Noise KK against the pinned host
+// key). Auth failure or timeout is unreachable: the conn is cleaned up and a
+// later locator can still win. nil auth means transport-only (unit tests).
+func dialStaggered(parent context.Context, locators []Locator, headStart time.Duration, m Machine, id *Identity, ice []peer.ICEServer, auth postDialAuth) (peer.MsgConn, *noise.Session, func(), error) {
 	if len(locators) == 0 {
-		return nil, nil, fmt.Errorf("machine %q: no locators", m.Name)
+		return nil, nil, nil, fmt.Errorf("machine %q: no locators", m.Name)
 	}
 	if len(locators) == 1 {
-		return locators[0].Dial(parent, m, id, ice)
+		return completeLocator(parent, locators[0], m, id, ice, auth)
 	}
 
 	type dialResult struct {
 		mc      peer.MsgConn
+		sess    *noise.Session
 		cleanup func()
 		err     error
 		i       int
@@ -85,7 +102,7 @@ func dialStaggered(parent context.Context, locators []Locator, headStart time.Du
 		cctx, cancel := context.WithCancel(parent)
 		cancels[i] = cancel
 		go func(i int, loc Locator, cctx context.Context) {
-			if i > 0 { // stagger later locators; cancellation pre-empts the wait
+			if i > 0 {
 				select {
 				case <-time.After(time.Duration(i) * headStart):
 				case <-cctx.Done():
@@ -93,8 +110,8 @@ func dialStaggered(parent context.Context, locators []Locator, headStart time.Du
 					return
 				}
 			}
-			mc, cleanup, err := loc.Dial(cctx, m, id, ice)
-			results <- dialResult{mc, cleanup, err, i}
+			mc, sess, cleanup, err := completeLocator(cctx, loc, m, id, ice, auth)
+			results <- dialResult{mc, sess, cleanup, err, i}
 		}(i, loc, cctx)
 	}
 
@@ -102,8 +119,6 @@ func dialStaggered(parent context.Context, locators []Locator, headStart time.Du
 	for pending := len(locators); pending > 0; pending-- {
 		r := <-results
 		if r.err == nil && r.mc != nil {
-			// Winner. Cancel the losers (keep the winner's ctx alive until its
-			// session ends), and drain+close any loser that also connected.
 			for j := range cancels {
 				if j != r.i {
 					cancels[j]()
@@ -119,14 +134,13 @@ func dialStaggered(parent context.Context, locators []Locator, headStart time.Du
 				}
 			}()
 			winnerCancel := cancels[r.i]
-			return r.mc, func() {
+			return r.mc, r.sess, func() {
 				if r.cleanup != nil {
 					r.cleanup()
 				}
 				winnerCancel()
 			}, nil
 		}
-		// Track the best error: a real failure beats ErrUnreachable / cancellation.
 		if r.err != nil && !errors.Is(r.err, context.Canceled) {
 			if bestErr == nil || (errors.Is(bestErr, ErrUnreachable) && !errors.Is(r.err, ErrUnreachable)) {
 				bestErr = r.err
@@ -138,9 +152,30 @@ func dialStaggered(parent context.Context, locators []Locator, headStart time.Du
 	}
 	if bestErr == nil {
 		if parent.Err() != nil {
-			return nil, nil, parent.Err()
+			return nil, nil, nil, parent.Err()
 		}
 		bestErr = fmt.Errorf("machine %q unreachable", m.Name)
 	}
-	return nil, nil, bestErr
+	return nil, nil, nil, bestErr
+}
+
+func completeLocator(ctx context.Context, loc Locator, m Machine, id *Identity, ice []peer.ICEServer, auth postDialAuth) (peer.MsgConn, *noise.Session, func(), error) {
+	mc, cleanup, err := loc.Dial(ctx, m, id, ice)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if auth == nil {
+		return mc, nil, cleanup, nil
+	}
+	sess, err := auth(ctx, mc, m, id)
+	if err != nil {
+		if cleanup != nil {
+			cleanup()
+		}
+		if errors.Is(err, ErrUnreachable) {
+			return nil, nil, nil, err
+		}
+		return nil, nil, nil, fmt.Errorf("%w: %v", ErrUnreachable, err)
+	}
+	return mc, sess, cleanup, nil
 }

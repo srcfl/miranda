@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 )
@@ -16,7 +17,7 @@ import (
 // TTL drops TURN mid-session ("CreatePermission 401" on cross-network/cellular).
 // The cred is fetched per-attach and only grants relay bandwidth (Noise keeps
 // content E2E; coturn quotas bound abuse), so a generous TTL is acceptable.
-const turnTTL = 12 * time.Hour
+const turnTTL = 15 * time.Minute
 
 // TURNCreds is the ephemeral TURN credential issued to a client. It follows the
 // coturn "TURN REST API" scheme: username = expiry-unix, password =
@@ -30,11 +31,11 @@ type TURNCreds struct {
 }
 
 // handleTURN issues an ephemeral TURN credential. 404 when TURN isn't configured
-// (clients then fall back to STUN-only). Public + CORS-open: the credential is
-// short-lived and grants only relay bandwidth (Noise keeps content E2E).
+// (clients then fall back to STUN-only). Credentials are short-lived; Noise keeps
+// content E2E. CORS is not wildcard — this is not an open browser forwarder.
 func (s *Server) handleTURN(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Cache-Control", "no-store")
+	s.setTURNCORS(w, r)
 	if s.TURNSecret == "" || s.TURNURL == "" {
 		http.Error(w, "turn not configured", http.StatusNotFound)
 		return
@@ -50,4 +51,35 @@ func (s *Server) handleTURN(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(creds)
+}
+
+// setTURNCORS reflects an allowlisted Origin so the SPA (hosted off the
+// relay origin) can fetch credentials. Never "*".
+func (s *Server) setTURNCORS(w http.ResponseWriter, r *http.Request) {
+	allowed := s.allowCORSOrigin(r.Header.Get("Origin"))
+	if allowed == "" {
+		return
+	}
+	w.Header().Set("Access-Control-Allow-Origin", allowed)
+	w.Header().Set("Vary", "Origin")
+}
+
+func (s *Server) allowCORSOrigin(origin string) string {
+	if origin == "" || origin == "*" {
+		return ""
+	}
+	for _, allowed := range s.CORSAllowOrigins {
+		if origin == allowed {
+			return origin
+		}
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return ""
+	}
+	host := u.Hostname()
+	if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+		return origin
+	}
+	return ""
 }

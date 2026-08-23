@@ -35,7 +35,7 @@ func (a *app) cmdEnroll(args []string) error {
 	fmt.Fprintf(a.out, "enrolled %q\n  machine_id: %s\n  host_pub:   %s\n  signal:     %s\n",
 		cfg.MachineName, cfg.MachineID, cfg.HostPubHex, cfg.SignalURL)
 	fmt.Fprintln(a.out, "\nNext: pair an owner. For local dev:")
-	fmt.Fprintf(a.out, "  mir pair-dev --owner-pub <hex>\n")
+	fmt.Fprintf(a.out, "  mir pair-dev --owner-id <base58 owner id from mir identity>\n")
 	if !agent.TmuxInstalled() {
 		fmt.Fprintln(a.out, "\nwarning: tmux is not installed (needed for persistent sessions): brew install tmux")
 	}
@@ -45,18 +45,26 @@ func (a *app) cmdEnroll(args []string) error {
 func (a *app) cmdPairDev(args []string) error {
 	fs := flag.NewFlagSet("pair-dev", flag.ExitOnError)
 	dir := fs.String("dir", defaultAgentDir(), "agent state directory")
-	ownerPub := fs.String("owner-pub", "", "owner X25519 public key (hex) to trust")
+	ownerID := fs.String("owner-id", "", "Miranda owner id (base58 from `mir identity`)")
+	ownerPub := fs.String("owner-pub", "", "deprecated alias for --owner-id (must be the owner id, not X25519 hex)")
 	_ = fs.Parse(args)
 	if err := ensureAgentOnlyDir(*dir); err != nil {
 		return err
 	}
-	if *ownerPub == "" {
-		return fmt.Errorf("--owner-pub is required")
+	id := strings.TrimSpace(*ownerID)
+	if id == "" {
+		id = strings.TrimSpace(*ownerPub)
 	}
-	if err := agent.PinOwner(*dir, strings.ToLower(*ownerPub)); err != nil {
+	if id == "" {
+		return fmt.Errorf("--owner-id is required (base58 from `mir identity show`)")
+	}
+	if looksLikeX25519Hex(id) {
+		return fmt.Errorf("pair-dev takes the Miranda owner id (base58), not the X25519 hex; run `mir identity show`")
+	}
+	if err := agent.PinOwner(*dir, id); err != nil {
 		return err
 	}
-	fmt.Fprintf(a.out, "pinned owner %s\n", *ownerPub)
+	fmt.Fprintf(a.out, "pinned owner %s\n", id)
 	return nil
 }
 

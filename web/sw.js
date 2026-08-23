@@ -33,6 +33,7 @@ const SHELL = [
   '/src/identity/registry.js',
   '/src/identity/signer.js',
   '/src/net/backoff.js',
+  '/src/net/ice-state.js',
   '/src/net/reconnect.js',
   '/src/net/ws-open.js',
   '/src/noise/frame.js',

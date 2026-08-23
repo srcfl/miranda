@@ -128,38 +128,64 @@ func FetchRegistry(ctx context.Context, hc *http.Client, signalURL string, id *I
 	return machines, nil
 }
 
-// MergeMachines unions local and discovered machines by MachineID. A machine
-// present locally keeps its local entry (local wins) — the user's pinned
-// machines.json is authoritative; discovered-only machines are appended. Order is
-// local-first, then the discovered newcomers, so existing list output is stable.
+// MergeMachines unions local and discovered machines by MachineID. A verified
+// registry record is canonical for HostPubHex and SignalURL (unsigned
+// machines.json must not win a pin); the local display name may stay.
+// Discovered-only machines are appended. Order is local-first, then newcomers.
 func MergeMachines(local, discovered []Machine) []Machine {
-	seen := make(map[string]bool, len(local))
-	out := make([]Machine, 0, len(local)+len(discovered))
+	byID := make(map[string]Machine, len(local)+len(discovered))
+	order := make([]string, 0, len(local)+len(discovered))
 	for _, m := range local {
-		seen[m.MachineID] = true
-		out = append(out, m)
+		if m.MachineID == "" {
+			continue
+		}
+		if _, ok := byID[m.MachineID]; !ok {
+			order = append(order, m.MachineID)
+		}
+		byID[m.MachineID] = m
 	}
 	for _, m := range discovered {
-		if seen[m.MachineID] {
-			continue // local wins
+		if m.MachineID == "" {
+			continue
 		}
-		seen[m.MachineID] = true
-		out = append(out, m)
+		prev, ok := byID[m.MachineID]
+		if !ok {
+			order = append(order, m.MachineID)
+			byID[m.MachineID] = m
+			continue
+		}
+		if m.HostPubHex != "" {
+			prev.HostPubHex = m.HostPubHex
+		}
+		if m.SignalURL != "" {
+			prev.SignalURL = m.SignalURL
+		}
+		if prev.Name == "" {
+			prev.Name = m.Name
+		}
+		byID[m.MachineID] = prev
+	}
+	out := make([]Machine, 0, len(order))
+	for _, id := range order {
+		out = append(out, byID[id])
 	}
 	return out
 }
 
-// ResolveMachine finds a machine by name, preferring the local store, then the
-// discovered registry. It returns a copy and whether it came from discovery.
+// ResolveMachine finds a machine by name on the merged list (registry host_pub
+// and signal beat the unsigned local cache). The third result is true when the
+// name was not in the local pin set.
 func ResolveMachine(local, discovered []Machine, name string) (Machine, bool, bool) {
+	fromLocal := false
 	for _, m := range local {
 		if m.Name == name {
-			return m, true, false
+			fromLocal = true
+			break
 		}
 	}
-	for _, m := range discovered {
+	for _, m := range MergeMachines(local, discovered) {
 		if m.Name == name {
-			return m, true, true
+			return m, true, !fromLocal
 		}
 	}
 	return Machine{}, false, false

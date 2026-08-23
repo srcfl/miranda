@@ -12,6 +12,41 @@
 set -euo pipefail
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 
+sha256_of() { # macOS has shasum; Linux has sha256sum
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
+  else shasum -a 256 "$1" | awk '{print $1}'; fi
+}
+
+# Refuse a dirty or digest-mismatched SPA. Used by a full deploy and by
+# `redeploy.sh --check-spa` (no SSH) so the gate can be exercised on a fixture.
+check_spa() {
+  if git -C "$REPO" status --porcelain -- web/ 2>/dev/null | grep -q .; then
+    echo "FATAL: web/ is dirty; refusing unsigned SPA tarball" >&2
+    exit 1
+  fi
+  echo "== package SPA (index.html + manifest + sw + icons + src + vendor) =="
+  # Strip macOS metadata: without COPYFILE_DISABLE + --no-xattrs the bsdtar on a
+  # Mac packs AppleDouble `._*` sidecar files (and xattr headers), which then land
+  # in /opt/mir-web and get served as bogus assets. --exclude drops any that exist.
+  # manifest.json/sw.js/icons are the PWA app-shell — sw.js MUST land at the webroot
+  # root (served at /sw.js) so its scope covers the whole origin.
+  COPYFILE_DISABLE=1 tar --no-xattrs --exclude='._*' \
+    -C "$REPO/web" -czf /tmp/mir-web.tgz index.html manifest.json sw.js icons src vendor
+  WEB_SHA="$(sha256_of /tmp/mir-web.tgz)"
+  if ! "$REPO/scripts/verify-web-integrity.sh" /tmp/mir-web.tgz "${MIR_WEB_SHA256:-}"; then
+    echo "       set MIR_WEB_SHA256 to the sha256 of the packed web tarball" >&2
+    echo "       computed $WEB_SHA" >&2
+    exit 1
+  fi
+  echo "   sha256(mir-web.tgz)=$WEB_SHA"
+}
+
+if [ "${1:-}" = "--check-spa" ]; then
+  check_spa
+  echo "spa deploy check ok $WEB_SHA"
+  exit 0
+fi
+
 if [ -n "${HOST:-}" ]; then
   DEST="${USER_:-ubuntu}@${HOST}"
   SSH=(ssh -i "${KEY:?set KEY when using HOST}" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15)
@@ -33,21 +68,10 @@ echo "== build mir-signal (linux/amd64, static) =="
 # verify this digest on the far end BEFORE installing anything as root — and the
 # remote heredoc closes the residual check->install race by moving the upload
 # into a root-only staging dir first, then hashing *that* copy (#23).
-sha256_of() { # macOS has shasum; Linux has sha256sum
-  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
-  else shasum -a 256 "$1" | awk '{print $1}'; fi
-}
 SIG_SHA="$(sha256_of /tmp/mir-signal-linux)"
 echo "   sha256(mir-signal)=$SIG_SHA"
 
-echo "== package SPA (index.html + manifest + sw + icons + src + vendor) =="
-# Strip macOS metadata: without COPYFILE_DISABLE + --no-xattrs the bsdtar on a
-# Mac packs AppleDouble `._*` sidecar files (and xattr headers), which then land
-# in /opt/mir-web and get served as bogus assets. --exclude drops any that exist.
-# manifest.json/sw.js/icons are the PWA app-shell — sw.js MUST land at the webroot
-# root (served at /sw.js) so its scope covers the whole origin.
-COPYFILE_DISABLE=1 tar --no-xattrs --exclude='._*' \
-  -C "$REPO/web" -czf /tmp/mir-web.tgz index.html manifest.json sw.js icons src vendor
+check_spa
 
 echo "== upload to $DEST =="
 "${SCP[@]}" /tmp/mir-signal-linux "$DEST:/tmp/mir-signal"
@@ -57,9 +81,10 @@ echo "== upload to $DEST =="
 echo "== install + restart =="
 # Pass the expected digest as $1 so the remote script stays a quoted heredoc
 # (no host-side interpolation of our local variables).
-"${SSH[@]}" "$DEST" 'sudo bash -s' "$SIG_SHA" <<'EOF'
+"${SSH[@]}" "$DEST" 'sudo bash -s' "$SIG_SHA" "$WEB_SHA" <<'EOF'
 set -e
 EXPECT_SHA="$1"
+EXPECT_WEB="$2"
 
 # --- TOCTOU-safe staging (#23) ----------------------------------------------
 # /tmp on the relay is world-writable, so a local user (or a race between scp
@@ -78,6 +103,13 @@ if [ "$EXPECT_SHA" != "$GOT_SHA" ]; then
   echo "FATAL: mir-signal checksum mismatch — refusing to install" >&2
   echo "       expected $EXPECT_SHA" >&2
   echo "       got      $GOT_SHA" >&2
+  exit 1
+fi
+GOT_WEB="$(sha256sum "$STAGE/mir-web.tgz" | awk '{print $1}')"
+if [ -z "$EXPECT_WEB" ] || [ "$EXPECT_WEB" != "$GOT_WEB" ]; then
+  echo "FATAL: SPA tarball checksum mismatch — refusing to install" >&2
+  echo "       expected $EXPECT_WEB" >&2
+  echo "       got      $GOT_WEB" >&2
   exit 1
 fi
 

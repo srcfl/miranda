@@ -46,6 +46,103 @@ func TestPairBridgeForwardsBothWays(t *testing.T) {
 	}
 }
 
+func TestPairBridgeHitsByteCap(t *testing.T) {
+	s := New()
+	s.pairBridgeMaxBytes = 4
+	s.pairBridgeTTL = time.Minute
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+
+	ctx := context.Background()
+	dial := func() *websocket.Conn {
+		c, _, err := websocket.Dial(ctx, wsURL(srv.URL, "/pair", map[string]string{"room": "bytes"}), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	a := dial()
+	b := dial()
+	if err := a.Write(ctx, websocket.MessageBinary, []byte("12345678")); err != nil {
+		t.Fatal(err)
+	}
+	rctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	_, _, err := b.Read(rctx)
+	if err == nil {
+		t.Fatal("expected byte-capped pair bridge to close")
+	}
+}
+
+func TestPairBridgeHitsDurationCap(t *testing.T) {
+	s := New()
+	s.pairBridgeTTL = 50 * time.Millisecond
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+
+	ctx := context.Background()
+	dial := func() *websocket.Conn {
+		c, _, err := websocket.Dial(ctx, wsURL(srv.URL, "/pair", map[string]string{"room": "ttl"}), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	a := dial()
+	b := dial()
+	time.Sleep(200 * time.Millisecond)
+	wctx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	if err := a.Write(wctx, websocket.MessageBinary, []byte("late")); err == nil {
+		_, _, rerr := b.Read(wctx)
+		if rerr == nil {
+			t.Fatal("expected duration-capped pair bridge to close")
+		}
+	}
+}
+
+func TestPairBridgeHitsActiveCap(t *testing.T) {
+	s := New()
+	s.maxPairBridges = 1
+	s.pairBridgeTTL = time.Minute
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+
+	ctx := context.Background()
+	dial := func(room string) *websocket.Conn {
+		c, _, err := websocket.Dial(ctx, wsURL(srv.URL, "/pair", map[string]string{"room": room}), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	a := dial("one")
+	defer a.CloseNow()
+	b := dial("one")
+	defer b.CloseNow()
+	if err := a.Write(ctx, websocket.MessageBinary, []byte("hold")); err != nil {
+		t.Fatal(err)
+	}
+	rctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if _, _, err := b.Read(rctx); err != nil {
+		t.Fatalf("first bridge should forward: %v", err)
+	}
+
+	c := dial("two")
+	defer c.CloseNow()
+	d := dial("two")
+	defer d.CloseNow()
+	cctx, ccancel := context.WithTimeout(ctx, 2*time.Second)
+	defer ccancel()
+	if _, _, err := c.Read(cctx); err == nil {
+		t.Fatal("expected active-bridge cap to refuse the second pair")
+	}
+	if _, _, err := d.Read(cctx); err == nil {
+		t.Fatal("expected active-bridge cap to close both second-pair sockets")
+	}
+}
+
 func TestPairRoomCapacityRejectsNewRooms(t *testing.T) {
 	p := newPairRooms()
 	p.waiting["full"] = &pairWaiter{partner: make(chan *websocket.Conn, 1), done: make(chan struct{})}
