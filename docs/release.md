@@ -24,7 +24,7 @@ GitHub OIDC/cosign, and only then publishes through GoReleaser.
 
 ## Independent binary reproduction
 
-Use the exact Go toolchain from `go/go.mod` (currently Go 1.26.5), a clean clone,
+Use the exact Go toolchain from `go/go.mod` (currently Go 1.26.6), a clean clone,
 and the tagged commit:
 
 ```bash
