@@ -174,3 +174,35 @@ test('defaults: now and minHealthyMs are optional (real Date.now path)', async (
   assert.ok(states.some(([s]) => s === 'failed'), 'reaches failed with default clock');
   ctl.stop();
 });
+
+// R1: after a HEALTHY session drops (e.g. the disconnect-grace watchdog killed a
+// flapped link), the loop must start the next attempt after at most backoff(0)'s
+// ceiling — the client-side share of the <3 s resume budget. Virtual clock: sleep
+// advances now() by the requested ms, so `elapsed` is exactly the loop's own delay.
+test('a healthy drop resumes after at most the prompt backoff (<3s budget share)', async () => {
+  const states = [];
+  const clk = clock(0);
+  const sessions = [deferred(), deferred()];
+  let i = 0;
+  let dropAt = null;
+  let resumedAt = null;
+  const connectOnce = (onConnected) => { onConnected(); if (i === 1) resumedAt = clk.now(); return sessions[i++].promise; };
+  const ctl = runSession({
+    connectOnce,
+    onState: (s, a) => states.push([s, a]),
+    sleep: (ms) => { clk.advance(ms); return Promise.resolve(); },
+    backoffFor: (a) => (a === 0 ? 500 : 99999), // healthy drop must take the a=0 branch
+    now: clk.now,
+    minHealthyMs: 5000,
+  });
+  await flush();
+  clk.set(10000); // uptime 10s: a healthy drop
+  dropAt = clk.now();
+  sessions[0].resolve();
+  await flush();
+  assert.ok(resumedAt !== null, 'second connect attempt ran');
+  assert.ok(resumedAt - dropAt <= 500, `loop delay ${resumedAt - dropAt}ms exceeds the 500ms prompt backoff`);
+  ctl.stop();
+  sessions[1].resolve();
+  await flush();
+});
