@@ -7,9 +7,75 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/pion/webrtc/v4"
 )
+
+// Pion's ICE liveness defaults (disconnected 5s / failed 25s / keepalive 2s)
+// are tuned for media, not a terminal: after a network flip an attach sat
+// frozen for up to half a minute before `failed` finally tore it down. A
+// terminal session should notice a dead path in ~2s and give up on it in ~10s.
+// Both ends share these: the client redials sooner, and the agent's per-attach
+// cleanup rides the same faster `failed` (tmux keeps the shell either way).
+const (
+	iceDisconnectedTimeout = 2 * time.Second
+	iceFailedTimeout       = 10 * time.Second
+	iceKeepAlive           = 500 * time.Millisecond
+)
+
+func newPeerConnection(servers []ICEServer) (*webrtc.PeerConnection, error) {
+	se := webrtc.SettingEngine{}
+	se.SetICETimeouts(iceDisconnectedTimeout, iceFailedTimeout, iceKeepAlive)
+	return webrtc.NewAPI(webrtc.WithSettingEngine(se)).NewPeerConnection(config(servers))
+}
+
+// LinkGrace is how long an established attach may sit in `disconnected` before
+// LinkWatch tears it down for a prompt redial. With iceDisconnectedTimeout this
+// puts client reaction at ~3s after a flip instead of the failed timeout.
+const LinkGrace = time.Second
+
+// LinkWatch enforces the early-reaction policy on one PeerConnection: feed it
+// every connection-state change. `disconnected` arms a grace timer; expiry runs
+// kill (normally pc.Close — idempotent, closes the DataChannel and unblocks
+// Recv so the reconnect loop redials). `connected` inside the window disarms
+// (a blip that healed costs nothing). failed/closed disarm too: that teardown
+// belongs to ICESessionDead's handler.
+type LinkWatch struct {
+	grace time.Duration
+	kill  func()
+	mu    sync.Mutex
+	timer *time.Timer
+}
+
+func NewLinkWatch(grace time.Duration, kill func()) *LinkWatch {
+	return &LinkWatch{grace: grace, kill: kill}
+}
+
+func (w *LinkWatch) State(s webrtc.PeerConnectionState) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if s == webrtc.PeerConnectionStateDisconnected {
+		if w.timer == nil {
+			// Fire outside the lock: kill usually closes the pc, and that close
+			// re-enters State with `closed`.
+			w.timer = time.AfterFunc(w.grace, func() {
+				w.mu.Lock()
+				w.timer = nil
+				w.mu.Unlock()
+				w.kill()
+			})
+		}
+		return
+	}
+	if w.timer != nil {
+		w.timer.Stop()
+		w.timer = nil
+	}
+}
+
+// Stop disarms any pending grace timer (session teardown).
+func (w *LinkWatch) Stop() { w.State(webrtc.PeerConnectionStateClosed) }
 
 // attachICEDebug logs gathered ICE candidates and connection-state changes to
 // stderr when MIR_ICE_DEBUG is set. Useful to confirm srflx (NAT-traversal)
@@ -140,7 +206,7 @@ func config(servers []ICEServer) webrtc.Configuration {
 // NewOfferer creates a peer that initiates the DataChannel. opened fires when the
 // channel is ready to use.
 func NewOfferer(servers []ICEServer) (*webrtc.PeerConnection, <-chan *DataChannel, error) {
-	pc, err := webrtc.NewPeerConnection(config(servers))
+	pc, err := newPeerConnection(servers)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -158,7 +224,7 @@ func NewOfferer(servers []ICEServer) (*webrtc.PeerConnection, <-chan *DataChanne
 
 // NewAnswerer creates a peer that accepts the offered DataChannel.
 func NewAnswerer(servers []ICEServer) (*webrtc.PeerConnection, <-chan *DataChannel, error) {
-	pc, err := webrtc.NewPeerConnection(config(servers))
+	pc, err := newPeerConnection(servers)
 	if err != nil {
 		return nil, nil, err
 	}
