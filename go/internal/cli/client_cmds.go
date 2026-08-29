@@ -484,7 +484,25 @@ func (a *app) cmdAttach(args []string) error {
 	}
 	if len(resolved) == 1 {
 		m := resolved[0]
-		err := client.ReconnectLoop(ctx, func(ctx context.Context) (peer.MsgConn, *noise.Session, func(), error) {
+		// One clear line per state change; \r\n because the terminal may still be
+		// settling out of raw mode. The reconnected line carries the measured
+		// outage — the number the NAT-matrix work (P2) reads from real runs.
+		notify := client.ReconnectNotify{
+			OnReconnecting: func(attempt int) {
+				if attempt == 1 {
+					fmt.Fprintf(a.errOut, "\r\n[mir] connection lost — reconnecting…\r\n")
+				} else {
+					fmt.Fprintf(a.errOut, "[mir] still reconnecting (attempt %d)…\r\n", attempt)
+				}
+			},
+			OnResumed: func(outage time.Duration) {
+				fmt.Fprintf(a.errOut, "[mir] reconnected in %.1fs\r\n", outage.Seconds())
+			},
+			OnGaveUp: func(failures int, lastErr error) {
+				fmt.Fprintf(a.errOut, "\r\n[mir] is the machine up? Check `%s list`, then rerun `%s attach %s`.\r\n", a.binary, a.binary, m.Name)
+			},
+		}
+		err := client.ReconnectLoopWith(ctx, client.ReconnectPolicy{Notify: notify}, func(ctx context.Context) (peer.MsgConn, *noise.Session, func(), error) {
 			return client.Attach(ctx, m, idn, iceList, *relayOnly)
 		}, func(ctx context.Context, mc peer.MsgConn, sess *noise.Session) error {
 			return client.RunInteractive(ctx, mc, sess, m.Name)

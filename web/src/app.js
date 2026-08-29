@@ -6,6 +6,7 @@ import { awaitSocketOpen } from './net/ws-open.js';
 import { runSession } from './net/reconnect.js';
 import { backoff } from './net/backoff.js';
 import { iceSessionDead } from './net/ice-state.js';
+import { makeDisconnectGrace } from './net/disconnect-grace.js';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -94,8 +95,13 @@ const wsBase = (signalURL) => 'ws' + signalURL.slice(4); // http->ws, https->wss
 // signal socket closing, or a 15s connect timeout — so a dead/absent agent fails the
 // attempt FAST and runSession retries, instead of hanging at 'awaiting-datachannel'.
 // onConnected() fires once the Noise channel is ready; onWindows(snapshot) gets each
-// tmux FrameWindows snapshot. The caller (makeTerminal) owns the terminal + teardown.
-export async function connectOnce(machine, term, current, onConnected, onWindows, onHello) {
+// tmux FrameWindows snapshot. onLink('degraded'|'up'), optional, reports ICE link
+// health on the LIVE session (a flip seen, a flip healed) so the pill stays honest
+// before any teardown. onHello(meta), optional, gets late HELLOs — the agent
+// re-announcing itself, today a machine rename (ours: the acknowledgement;
+// another device's: a live update). The caller (makeTerminal) owns the terminal
+// + teardown.
+export async function connectOnce(machine, term, current, onConnected, onWindows, onLink, onHello) {
   const owner = ownerKey();
   const signer = signerKey();
 	if (isMachineRevoked(machine.machine_id, signer.address)) throw new Error('machine revoked');
@@ -130,7 +136,21 @@ export async function connectOnce(machine, term, current, onConnected, onWindows
   // recv() so the read loop unwinds and connectOnce resolves (-> prompt reconnect).
   let endSession;
   const ended = new Promise((res) => { endSession = res; });
-  pc.onconnectionstatechange = () => { diag.conn = pc.connectionState; if (iceSessionDead(pc.connectionState)) endSession(); };
+  let connected = false;
+  // Early reaction (R1): `disconnected` gets a short grace to heal, then the
+  // session is ended so runSession redials promptly — instead of freezing until
+  // the browser escalates to `failed`. Link events surface only once live: a
+  // setup-phase wobble is the connect timeout's problem, not the pill's.
+  const grace = makeDisconnectGrace({
+    kill: () => endSession(),
+    onDegraded: () => { if (connected) onLink && onLink('degraded'); },
+    onRecovered: () => { if (connected) onLink && onLink('up'); },
+  });
+  pc.onconnectionstatechange = () => {
+    diag.conn = pc.connectionState;
+    grace.onState(pc.connectionState);
+    if (iceSessionDead(pc.connectionState)) endSession();
+  };
   dc.onclose = () => endSession();
 
   // Abort handle for the caller: close the transports (which triggers endSession via
@@ -147,7 +167,6 @@ export async function connectOnce(machine, term, current, onConnected, onWindows
   // timeout). Racing it below makes a missing agent fail fast (reject -> backoff + retry)
   // rather than hang. Guarded so a late call (after the intentional ws.close on connect)
   // can't become an unhandled rejection.
-  let connected = false;
   let failSetup;
   const setupFail = new Promise((_, rej) => { failSetup = rej; });
   setupFail.catch(() => {});
@@ -231,6 +250,7 @@ export async function connectOnce(machine, term, current, onConnected, onWindows
     // else: an established session dropped -> swallow so connectOnce RESOLVES (prompt reconnect)
   } finally {
     clearTimeout(connectTimeout);
+    grace.dispose();
     current.send = null;
     current.abort = null; // this connection's transports are gone; drop the stale handle
     try { dc.close(); } catch {}
@@ -806,14 +826,33 @@ function viewTerminal(root, machine) {
     close: () => { session && session.stop(); try { current.abort && current.abort(); } catch {} try { current.send = null; } catch {} dispose(); },
   };
 
+  // dropAt stamps the moment the link degraded or the session dropped (whichever
+  // came first), so the reconnected line can carry the real outage length — the
+  // number the NAT-matrix work (P2) reads. 0 = healthy.
+  let dropAt = 0;
+  const outageSecs = () => { const s = (performance.now() - dropAt) / 1000; dropAt = 0; return s.toFixed(1); };
   session = runSession({
-    connectOnce: (onConnected) => connectOnce(machine, term, current, onConnected, (s) => { snap = s; renderStrip(); },
+    connectOnce: (onConnected) => connectOnce(machine, term, current, onConnected, (s) => { snap = s; renderStrip(); }, (link) => {
+      // Link honesty on the LIVE session: ICE `disconnected` shows the moment it
+      // happens — before any teardown — and a self-healed link (no teardown, so
+      // no onState transition) goes straight back to live. No terminal line for
+      // a blip that healed by itself: the pill carries it, the scrollback stays clean.
+      if (link === 'degraded') { if (!dropAt) dropAt = performance.now(); setPill('⟳ resuming', 'wait'); }
+      else if (link === 'up' && dropAt) { console.debug('[mir] link healed in ' + outageSecs() + 's'); setPill('● live', 'ok'); }
+    },
       // A late HELLO is a rename: ours (the ack) or another device's (live
       // update). The store is only written on OUR rename (we know its sealed
       // ts); here the title just follows the machine.
       (meta) => { if (meta && meta.name) { machine = { ...machine, name: meta.name }; titleEl.textContent = meta.name; } }),
     onState: (state, attempt) => {
-      if (state === 'connected') { setPill('● live', 'ok'); window.__attached = true; term.focus(); if (reconnecting) { reconnecting = false; term.write('\r\n[mir] reconnected\r\n'); } }
+      if (state === 'connected') {
+        setPill('● live', 'ok'); window.__attached = true; term.focus();
+        if (reconnecting) {
+          reconnecting = false;
+          if (dropAt) { const s = outageSecs(); console.debug('[mir] resumed in ' + s + 's'); term.write('\r\n[mir] reconnected (' + s + 's)\r\n'); }
+          else term.write('\r\n[mir] reconnected\r\n');
+        }
+      }
       else if (state === 'connecting') setPill('⟳ connecting', 'wait');
       else if (state === 'reconnecting') {
         // Edge-trigger the terminal line on the connected -> reconnecting transition
@@ -821,10 +860,11 @@ function viewTerminal(root, machine) {
         // every retry; writing per-emit (the old attempt===0 check) floods the terminal.
         const firstLossLine = !reconnecting;
         reconnecting = true;
+        if (!dropAt) dropAt = performance.now();
         setPill('⟳ reconnecting' + (attempt ? ' (' + attempt + ')' : ''), 'wait');
         if (firstLossLine) term.write('\r\n[mir] connection lost — reconnecting…\r\n');
       }
-      else if (state === 'failed') { setPill('⊘ tap to retry', 'failed'); term.write('\r\n[mir] couldn\'t reconnect — tap ⊘ to retry\r\n'); }
+      else if (state === 'failed') { dropAt = 0; setPill('⊘ tap to retry', 'failed'); term.write('\r\n[mir] couldn\'t reconnect — tap ⊘ to retry\r\n'); }
     },
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
     backoffFor: (attempt) => backoff(attempt),

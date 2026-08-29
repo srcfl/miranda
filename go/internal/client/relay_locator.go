@@ -96,5 +96,11 @@ func (relayLocator) Dial(ctx context.Context, m Machine, id *Identity, ice []pee
 		return nil, nil, fmt.Errorf("no direct P2P path to %q (strict P2P, no relay fallback)", m.Name)
 	}
 
-	return dc, cleanup, nil
+	// Early reaction (R1): a link stuck in `disconnected` past the grace gets the
+	// pc closed, which closes the DataChannel and unblocks Recv — so the
+	// reconnect loop redials in ~3s after a network flip instead of waiting out
+	// the ICE failed timeout with a frozen terminal.
+	watch := peer.NewLinkWatch(peer.LinkGrace, func() { _ = off.Close() })
+	off.OnConnectionStateChange(watch.State)
+	return dc, func() { watch.Stop(); cleanup() }, nil
 }
