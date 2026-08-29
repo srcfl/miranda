@@ -3,6 +3,7 @@ package cli
 import (
 	"bufio"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -83,6 +84,13 @@ func (g sasGate) confirm(sas string, promptOut io.Writer) (ok bool, reason strin
 	return false, "safety number not confirmed: pass --confirm-sas <value> (must match) or --yes in a non-interactive run"
 }
 
+// pairingCancelledError marks a deliberate trust refusal (operator answered no,
+// or --confirm-sas mismatched). Callers that retry transport failures with a
+// fresh code (mir up's first run) must NOT retry past a refusal.
+type pairingCancelledError struct{ reason string }
+
+func (e pairingCancelledError) Error() string { return "pairing cancelled: " + e.reason }
+
 type pairMode int
 
 const (
@@ -136,7 +144,7 @@ func (a *app) cmdPair(args []string) error {
 	if err := ensureAgentOnlyDir(*dir); err != nil {
 		return err
 	}
-	return a.pairRespond(*dir, *name, *signalURL, *webURL, gate)
+	return a.pairRespond(context.Background(), *dir, *name, *signalURL, *webURL, gate, true)
 }
 
 // pairInitiate is the body of the old client `mir pair <code>`: pair TO a machine
@@ -177,7 +185,7 @@ func (a *app) pairInitiate(dir, codeStr string, gate sasGate) error {
 	safety := sas.FromBinding(started.Binding)
 	fmt.Fprintf(a.out, "  safety number: %s  (must match the machine's)\n", safety)
 	if ok, reason := gate.confirm(safety, a.out); !ok {
-		return fmt.Errorf("pairing cancelled: %s", reason)
+		return pairingCancelledError{reason}
 	}
 	if err := started.Finish(func(info *pairing.AgentInfo) (string, error) {
 		return client.SealRegistryMachine(idn, client.Machine{
@@ -197,7 +205,8 @@ func (a *app) pairInitiate(dir, codeStr string, gate sasGate) error {
 // pairable — print a code + QR and wait for an owner to pair, then pin them. The
 // safety number is printed after msg2 so a QR client can compare it; msg3 is
 // received next, and the owner is pinned only after the operator confirms.
-func (a *app) pairRespond(dir, name, signalURL, webURL string, gate sasGate) error {
+// showQR=false prints the code and URL as plain text (non-TTY output).
+func (a *app) pairRespond(parent context.Context, dir, name, signalURL, webURL string, gate sasGate, showQR bool) error {
 	cfg, err := agent.LoadOrInit(dir, name, signalURL)
 	if err != nil {
 		return err
@@ -210,13 +219,18 @@ func (a *app) pairRespond(dir, name, signalURL, webURL string, gate sasGate) err
 	pairURL := strings.TrimRight(webURL, "/") + "/#" + code
 
 	fmt.Fprintln(a.out, "Pair this machine:")
-	fmt.Fprint(a.out, "\n  📱 Scan with your phone's camera — it opens the app ready to pair:\n\n")
-	qrterminal.GenerateHalfBlock(pairURL, qrterminal.L, a.out)
-	fmt.Fprintf(a.out, "\n  …or open: %s\n", pairURL)
-	fmt.Fprintf(a.out, "  …or on the CLI:  mir pair %s\n", code)
+	if showQR {
+		fmt.Fprint(a.out, "\n  📱 Scan with your phone's camera — it opens the app ready to pair:\n\n")
+		qrterminal.GenerateHalfBlock(pairURL, qrterminal.L, a.out)
+		fmt.Fprintf(a.out, "\n  …or open: %s\n", pairURL)
+		fmt.Fprintf(a.out, "  …or on the CLI:  mir pair %s\n", code)
+	} else {
+		fmt.Fprintf(a.out, "  open: %s\n", pairURL)
+		fmt.Fprintf(a.out, "  or on the CLI:  mir pair %s\n", code)
+	}
 	fmt.Fprintf(a.out, "\nwaiting for pairing (5 min)…\n")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(parent, 5*time.Minute)
 	defer cancel()
 	mc, closeConn, err := pairing.DialPair(ctx, signalURL, pairing.RoomID(token))
 	if err != nil {
@@ -245,11 +259,44 @@ func (a *app) pairRespond(dir, name, signalURL, webURL string, gate sasGate) err
 		return err
 	}
 	if ok, reason := gate.confirm(safety, a.out); !ok {
-		return fmt.Errorf("pairing cancelled: %s", reason)
+		return pairingCancelledError{reason}
 	}
 	if err := agent.ProvisionOwner(dir, ownerID, provision.Registry, provision.RegistrationAuth); err != nil {
 		return err
 	}
 	fmt.Fprintf(a.out, "✓ paired — trusting Miranda identity %s…\n", ownerID[:16])
 	return nil
+}
+
+// pairOnFirstRun makes a fresh machine pairable directly from `mir up`, so the
+// first run is: install → `mir up` → scan → terminal, with no second command.
+// A closed window (5 min) or a transport failure reopens with a fresh code and
+// backoff; a deliberate refusal (answered no, --confirm-sas mismatch) aborts.
+// Fail closed up front: a run that could never commit trust (no TTY, no
+// --confirm-sas/--yes) refuses instead of printing a dead-end code.
+func (a *app) pairOnFirstRun(ctx context.Context, dir, name, signalURL, webURL string, gate sasGate) error {
+	if !gate.isTTY && gate.confirmSAS == "" && !gate.skip {
+		return fmt.Errorf("no owner paired, and a non-interactive run cannot confirm a safety number: run `%s up` from a terminal to pair, or pair separately with `%s pair`", a.binary, a.binary)
+	}
+	fmt.Fprintf(a.out, "First run: no owner is paired with this machine yet.\n\n")
+	delay := 2 * time.Second
+	for {
+		err := a.pairRespond(ctx, dir, name, signalURL, webURL, gate, gate.isTTY)
+		if err == nil {
+			return nil
+		}
+		var cancelled pairingCancelledError
+		if errors.As(err, &cancelled) || ctx.Err() != nil {
+			return err
+		}
+		fmt.Fprintf(a.out, "pairing did not complete (%v) — reopening with a fresh code…\n\n", err)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+		if delay < 30*time.Second {
+			delay *= 2
+		}
+	}
 }
