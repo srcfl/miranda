@@ -21,6 +21,12 @@ multi-user access platform.
     alt="Miranda reconnecting to a persistent terminal session on another machine">
 </p>
 
+## Beta
+
+Miranda is in public beta. Read [BETA.md](BETA.md) for what works today, the
+known gaps (passkey/browser matrix, NAT numbers, external audit — none
+published yet), and how to report a problem.
+
 ## Is it “P2P tmux”?
 
 Close, but the useful boundary is:

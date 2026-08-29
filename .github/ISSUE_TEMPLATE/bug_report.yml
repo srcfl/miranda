@@ -1,0 +1,77 @@
+name: Bug report
+description: Something in Miranda is broken.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing the beta. See [BETA.md](https://github.com/srcfl/miranda/blob/main/BETA.md)
+        for what's expected to work and known gaps before you file.
+
+        Security issues go to security@sourceful-labs.net instead of a public
+        issue — see [SECURITY.md](https://github.com/srcfl/miranda/blob/main/SECURITY.md).
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      description: The OS on the machine where the problem happened.
+      options:
+        - macOS
+        - Linux
+        - Other / not sure
+    validations:
+      required: true
+
+  - type: input
+    id: platform-version
+    attributes:
+      label: Platform version
+      description: e.g. macOS 15.1, Ubuntu 24.04.
+    validations:
+      required: false
+
+  - type: input
+    id: browser-cli
+    attributes:
+      label: Browser or CLI version
+      description: >
+        If you used the web app, name and version of the browser. If you used
+        the `mir` CLI, its version (`mir version`).
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: mir doctor output
+      description: >
+        Run `mir doctor` on the affected machine and paste the output. It
+        checks state permissions, keychain reference, tmux, signed
+        revocations, and relay health, and does not print private material.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: attempted
+    attributes:
+      label: What you attempted
+      description: The exact steps or commands you ran.
+    validations:
+      required: true
+
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened
+      description: Include exact error text if there was any.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+    validations:
+      required: true
