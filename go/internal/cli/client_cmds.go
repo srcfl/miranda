@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"golang.org/x/term"
 
 	"github.com/srcful/terminal-relay/go/internal/agent"
 	"github.com/srcful/terminal-relay/go/internal/client"
@@ -289,7 +292,7 @@ func (a *app) syncRevocations(ctx context.Context, dir string, idn *client.Ident
 
 func (a *app) cmdMachine(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: mir machine rename <name> <new-name> | mir machine revoke <name> --yes")
+		return fmt.Errorf("usage: mir machine rename <name> <new-name> | mir machine revoke <name> [--yes]")
 	}
 	switch args[0] {
 	case "revoke":
@@ -363,10 +366,34 @@ func (a *app) cmdMachineRename(args []string) error {
 	return nil
 }
 
+// machineRevokeIsTTY is a seam for tests; retirement asks before acting only
+// when a person is there to answer.
+var machineRevokeIsTTY = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
+
+// confirmRetire spells out what retiring a machine does and asks. Default is
+// no — this is the client's one deliberately heavy trust decision.
+func (a *app) confirmRetire(name string) bool {
+	if a.in == nil {
+		return false
+	}
+	fmt.Fprintf(a.out, "Retiring %q:\n", name)
+	fmt.Fprintln(a.out, "  - it disappears from your machine list on every device")
+	fmt.Fprintln(a.out, "  - your identity can no longer reach it")
+	fmt.Fprintln(a.out, "  - the machine keeps running; tmux sessions on it are untouched")
+	fmt.Fprintln(a.out, "  - to use it again: run `mir up` on it and pair fresh")
+	fmt.Fprintf(a.out, "Retire %q? [y/N] ", name)
+	line, _ := bufio.NewReader(a.in).ReadString('\n')
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "y", "yes":
+		return true
+	}
+	return false
+}
+
 func (a *app) cmdMachineRevoke(args []string) error {
 	fs := flag.NewFlagSet("machine revoke", flag.ExitOnError)
 	dir := fs.String("dir", defaultClientDir(), "client state directory")
-	yes := fs.Bool("yes", false, "confirm permanent machine revocation")
+	yes := fs.Bool("yes", false, "skip the interactive confirmation (scripts)")
 	// Accept the human-friendly documented form `revoke box --yes` as well as
 	// Go flag's native `revoke --yes box` ordering.
 	name := ""
@@ -379,13 +406,21 @@ func (a *app) cmdMachineRevoke(args []string) error {
 			name = fs.Args()[0]
 		}
 	} else if len(fs.Args()) != 0 {
-		return fmt.Errorf("usage: mir machine revoke <name> --yes")
+		return fmt.Errorf("usage: mir machine revoke <name> [--yes]")
 	}
 	if name == "" || len(fs.Args()) > 1 {
-		return fmt.Errorf("usage: mir machine revoke <name> --yes")
+		return fmt.Errorf("usage: mir machine revoke <name> [--yes]")
 	}
+	// Consent before any identity or network work. Interactive runs get the
+	// plain-words prompt; scripted runs must state --yes (fail closed).
 	if !*yes {
-		return fmt.Errorf("machine revocation is permanent for this owner id; re-run with --yes")
+		if !machineRevokeIsTTY() {
+			return fmt.Errorf("retiring a machine is permanent for this owner id; re-run with --yes, or run from a terminal to confirm interactively")
+		}
+		if !a.confirmRetire(name) {
+			fmt.Fprintln(a.out, "nothing changed")
+			return nil
+		}
 	}
 	idn, err := a.identity(*dir)
 	if err != nil {
@@ -439,6 +474,9 @@ func (a *app) cmdMachineRevoke(args []string) error {
 	if len(publishErrors) > 0 {
 		return fmt.Errorf("machine is blocked locally, but relay publication failed (%s); retry the command when online", strings.Join(publishErrors, "; "))
 	}
+	fmt.Fprintf(a.out, "\n✓ retired %q — your identity can no longer reach it, on any device.\n", machine.Name)
+	fmt.Fprintln(a.out, "The machine itself keeps running; nothing on it was touched.")
+	fmt.Fprintln(a.out, "To use it again: run `mir up` on it and pair fresh.")
 	return nil
 }
 

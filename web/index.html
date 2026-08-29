@@ -108,7 +108,12 @@
     background: #0d121b; color: var(--fg); font: 13px ui-monospace, monospace; margin-bottom: 12px; }
   .btn { background: var(--acc); color: #052e16; border: 0; border-radius: 10px; padding: 10px 18px;
     font: inherit; font-weight: 650; cursor: pointer; }
+  /* Retirement (N2): the one destructive confirm gets the one red button. */
+  .btn.danger { background: #f87171; color: #450a0a; margin-top: 6px; }
+  .btn:disabled { opacity: .7; cursor: default; }
   .link { background: none; border: 0; color: var(--mut); cursor: pointer; font: inherit; padding: 8px 0; display: inline-block; margin-top: 16px; }
+  .card .link.retire { margin: 8px 0 0; padding: 2px 0; font-size: 12px; }
+  .card .link.retire:hover { color: #f87171; }
   .link.back { align-self: flex-start; margin: 0 0 6px; }
   .status { margin-top: 16px; font-size: 14px; }
   .ok { color: var(--acc); font-weight: 600; }
