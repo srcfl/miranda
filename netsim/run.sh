@@ -33,13 +33,19 @@ EOF
 
 # configure sets everything docker-compose.yml and the driver read for one
 # scenario. AGENT_SVC picks which agent container runs.
+# A NETSIM_REPS exported by the caller wins over the per-scenario default, so
+# `NETSIM_REPS=9 ./run.sh flip-turn` samples a tail properly. Captured once,
+# before configure() starts overwriting the variable.
+REPS_OVERRIDE="${NETSIM_REPS:-}"
+
 configure() {
 	# Defaults; each scenario overrides what it needs.
 	AGENT_SVC=agent
 	export NETSIM_SCENARIO="$1"
 	export NETSIM_AGENT_NAT_MODE=prc NETSIM_CLIENT_NAT_MODE=prc
 	export NETSIM_BLOCK_PEER_UDP=0 NETSIM_TURN=0 NETSIM_FLIP=0
-	export NETSIM_EXPECT=pass NETSIM_REPS=3 NETSIM_MAX_FAILURES=0 NETSIM_REP_BUDGET=90s
+	export NETSIM_EXPECT=pass NETSIM_MAX_FAILURES=0 NETSIM_REP_BUDGET=90s
+	export NETSIM_REPS="${REPS_OVERRIDE:-3}"
 	export NETSIM_NOTE=""
 
 	case "$1" in
@@ -55,7 +61,8 @@ configure() {
 	sym-sym-stun)
 		export NETSIM_AGENT_NAT_MODE=sym NETSIM_CLIENT_NAT_MODE=sym
 		export NETSIM_ORDER=3 NETSIM_AGENT_NAT="symmetric" NETSIM_CLIENT_NAT="symmetric" NETSIM_ICE="STUN"
-		export NETSIM_EXPECT=fail NETSIM_REPS=1 NETSIM_MAX_FAILURES=1 NETSIM_REP_BUDGET=60s
+		export NETSIM_EXPECT=fail NETSIM_MAX_FAILURES=1 NETSIM_REP_BUDGET=60s
+		export NETSIM_REPS="${REPS_OVERRIDE:-1}"
 		export NETSIM_NOTE="The case STUN cannot solve: each mapping is per-destination, so the port a peer learns is never the port it is contacted on. This is why TURN exists."
 		;;
 	sym-sym-turn)

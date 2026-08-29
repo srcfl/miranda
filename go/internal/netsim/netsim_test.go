@@ -136,6 +136,7 @@ type sample struct {
 	DetectMS  int64  `json:"detect_ms,omitempty"` // link flip -> client noticed the drop
 	RedialMS  int64  `json:"redial_ms,omitempty"` // drop -> next session up (ReconnectNotify.OnResumed)
 	ResumeMS  int64  `json:"resume_ms,omitempty"` // link flip -> session carries bytes again
+	Attempts  int    `json:"attempts,omitempty"`  // redials the outage needed; >1 means one of them failed
 	Continued bool   `json:"continued"`           // the pre-flip tmux job was still running after
 	OK        bool   `json:"ok"`
 	Err       string `json:"error,omitempty"`
@@ -261,7 +262,7 @@ func runOnce(t *testing.T, rep int, m client.Machine, id *client.Identity, ice [
 	policy := client.ReconnectPolicy{
 		MaxFailures: envInt("NETSIM_MAX_FAILURES", 0),
 		Notify: client.ReconnectNotify{
-			OnReconnecting: func(attempt int) { t.Logf("  reconnecting (attempt %d)", attempt) },
+			OnReconnecting: func(attempt int) { st.noteAttempt(attempt); t.Logf("  reconnecting (attempt %d)", attempt) },
 			OnResumed:      func(outage time.Duration) { st.noteRedial(outage) },
 			OnGaveUp:       func(failures int, lastErr error) { t.Logf("  gave up after %d: %v", failures, lastErr) },
 		},
@@ -297,6 +298,7 @@ type runState struct {
 	snd      *sender
 	dialMS   int64
 	redialMS int64
+	attempts int
 
 	firstProbe time.Time // shell echoed the attach probe
 	dialStart  time.Time
@@ -348,6 +350,17 @@ func (s *runState) noteRedial(outage time.Duration) {
 	}
 }
 
+// noteAttempt records how many redials this outage needed. One is the healthy
+// path — a prompt redial straight after the drop. More than one means a redial
+// failed and the loop backed off, which is what a marginal link looks like.
+func (s *runState) noteAttempt(attempt int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if attempt > s.attempts {
+		s.attempts = attempt
+	}
+}
+
 func (s *runState) lastErr() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -365,6 +378,7 @@ func (s *runState) fill(out *sample) {
 	defer s.mu.Unlock()
 	out.DialMS = s.dialMS
 	out.RedialMS = s.redialMS
+	out.Attempts = s.attempts
 	out.Continued = s.continued
 	if !s.dialStart.IsZero() && !s.firstProbe.IsZero() {
 		out.AttachMS = ms(s.firstProbe.Sub(s.dialStart))
@@ -772,6 +786,24 @@ func renderReport(all []scenarioResult) string {
 			fmt.Fprintf(&b, "- `%s` — %s\n", r.Scenario, r.Note)
 		}
 	}
+	// A redial that needed a second attempt is the signal to watch after any
+	// retune of the detection timers: it means the loop tore down and then could
+	// not immediately get back, which is what a too-eager teardown looks like.
+	var retried []string
+	for _, r := range all {
+		for _, s := range r.Samples {
+			if s.Attempts > 1 {
+				retried = append(retried, fmt.Sprintf("`%s` rep %d needed %d redials", r.Scenario, s.Rep, s.Attempts))
+			}
+		}
+	}
+	if len(retried) > 0 {
+		b.WriteString("\n## Retried redials\n\n")
+		for _, line := range retried {
+			b.WriteString("- " + line + "\n")
+		}
+	}
+
 	b.WriteString("\n## Failures\n\n")
 	failures := 0
 	for _, r := range all {
