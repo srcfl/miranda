@@ -538,6 +538,7 @@ function commandBlock(text) {
 // the machine registers.
 function emptyMachinesView(root) {
   return el('div', { className: 'view' },
+    ...retiredNotice(), // retiring your last machine lands here — keep the way back visible
     el('h1', { className: 'live-heading' }, el('span', { className: 'live-dot' }), 'Waiting for your first machine…'),
     el('p', { className: 'muted' }, 'Install Miranda on the machine you want to keep reachable:'),
     commandBlock(INSTALL_CMD),
@@ -569,9 +570,57 @@ function pollForMachine(root) {
   }, EMPTY_POLL_MS);
 }
 
+// --- machine retirement (N2) ----------------------------------------------
+// Retiring = the existing signed revocation, wrapped in words a person can act
+// on: what changes, what does not, and the way back. Only the sheet's confirm
+// button signs or records anything; a warm session (R2) closes first so
+// nothing keeps typing into a machine the owner just retired. revokeMachine
+// persists the signed record locally BEFORE any network — so a relay failure
+// still leaves the machine retired on this device, and the notice says so.
+let lastRetired = null; // {name, warn} — one gentle re-pair pointer on the next list render
+
+function retireSheet(host, machine, onDone) {
+  const name = machine.name || machine.machine_id;
+  const confirm = el('button', { className: 'btn danger', onclick: async () => {
+    confirm.disabled = true;
+    closeSession(machine.machine_id);
+    let warn = null;
+    try {
+      await revokeMachine([machine.signal, location.origin], signerKey(), machine.machine_id);
+    } catch (e) {
+      warn = (e && e.message) || String(e); // retired locally; only publication failed
+    }
+    lastRetired = { name, warn };
+    sheet.remove();
+    onDone();
+  } }, 'Retire this machine');
+  const sheet = el('div', { className: 'sheet', onclick: (e) => { if (e.target === sheet) sheet.remove(); } },
+    el('div', { className: 'sheet-card' },
+      el('div', { className: 'sheet-title' }, 'retire ' + name + '?'),
+      el('p', { className: 'muted' }, 'It disappears from your machine list on every device, and your identity can no longer reach it.'),
+      el('p', { className: 'muted' }, 'The machine itself keeps running — tmux sessions and everything on it stay untouched.'),
+      el('p', { className: 'muted' }, 'Want it back later? Run `mir up` on it and pair fresh.'),
+      confirm,
+      el('button', { className: 'link', onclick: () => sheet.remove() }, 'cancel')));
+  host.append(sheet);
+}
+
+// retiredNotice renders (and clears) the one-time pointer after a retirement,
+// so the next thing the user reads is how to come back if they expected the
+// machine to still be there.
+function retiredNotice() {
+  if (!lastRetired) return [];
+  const r = lastRetired;
+  lastRetired = null;
+  const out = [el('p', { className: 'muted' }, '⊘ Retired ' + r.name + '. To use it again: run `mir up` on it and pair fresh.')];
+  if (r.warn) out.push(el('p', { className: 'muted' }, 'Heads-up: ' + r.warn));
+  return out;
+}
+
 function renderMachines(root, machines, fresh) {
 	visibleMachines = machines;
   if (!machines.length) { mount(root, emptyMachinesView(root)); return; }
+  const viewEl = el('div', { className: 'view' });
   const grid = el('div', { className: 'grid' });
   for (const m of machines) {
     // A machine that is warm in the session pool (R2) shows its live state on
@@ -581,6 +630,10 @@ function renderMachines(root, machines, fresh) {
       el('div', { className: 'name' }, (warm && warm.machine.name) || m.name || m.machine_id),
       el('div', { className: 'sub' }, m.machine_id.slice(0, 12) + '…'));
     if (warm) card.append(el('div', { className: 'sub' }, el('span', { className: 'dot ' + stateView(warm).chip }), ' live'));
+    card.append(el('span', { className: 'link retire', onclick: (e) => {
+      e.stopPropagation();
+      retireSheet(viewEl, m, () => viewMachines(root));
+    } }, 'retire'));
     grid.append(card);
   }
   grid.append(el('button', { className: 'card add', onclick: () => viewPair(root) },
@@ -588,12 +641,14 @@ function renderMachines(root, machines, fresh) {
   const kids = [
     el('h1', {}, 'your machines'),
     el('p', { className: 'muted' }, 'Your live terminals. Leave one device, continue on another.'),
+    ...retiredNotice(),
   ];
   if (fresh && fresh.length) {
     kids.push(el('p', { className: 'muted' }, '📣 new device joined: ' + fresh.map((m) => m.name || m.machine_id).join(', ')));
   }
   kids.push(grid);
-  mount(root, el('div', { className: 'view' }, ...kids));
+  viewEl.append(...kids);
+  mount(root, viewEl);
 }
 
 // viewMachines renders the locally-stored machines immediately, then enriches the
@@ -760,17 +815,10 @@ function viewTerminal(root, machineToOpen) {
   openSession(machineToOpen);
   const m = () => activeSession().machine;
   const focus = () => { const s = activeSession(); s && s.term.focus(); };
-	const revoke = async () => {
-		const mm = m();
-		if (!window.confirm('Permanently revoke ' + (mm.name || mm.machine_id) + '? It must be paired again under a new owner identity to return.')) return;
-		closeSession(mm.machine_id);
-		try {
-			await revokeMachine([mm.signal, location.origin], signerKey(), mm.machine_id);
-		} catch (e) {
-			window.alert(e && e.message || String(e));
-		}
-		viewMachines(root);
-	};
+  // Retire (N2): the same confirmation sheet as the machine list — plain words,
+  // and the signed revocation only on the confirm button. The sheet closes this
+  // machine's warm session itself; Back to the list shows the way-back notice.
+  const retire = () => retireSheet(view, m(), () => viewMachines(root));
 
   // tmux control: the AGENT runs the command directly (robust — no prefix
   // dependence, no command-prompt/Enter fragility, no keystroke timing). Target
@@ -804,7 +852,7 @@ function viewTerminal(root, machineToOpen) {
   const termHost = el('div', { className: 'termhost' });
   const back = el('button', { className: 'tb-btn', onclick: () => viewMachines(root) }, '‹ Machines');
   const sw = el('button', { className: 'tb-btn', title: 'switch machine', onclick: () => openSwitcher() }, '⇄');
-	const revokeBtn = el('button', { className: 'tb-btn', title: 'revoke machine', onclick: revoke }, '⊘');
+  const revokeBtn = el('button', { className: 'tb-btn', title: 'retire machine', onclick: retire }, '⊘');
   const titleEl = el('div', { className: 'tb-title' }, m().name || m().machine_id);
   const renameBtn = el('button', { className: 'tb-btn', title: 'rename machine', onclick: () => renameMachineUI() }, '✎');
   // machbar: one chip per warm machine (name + state dot), shown only when two

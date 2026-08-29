@@ -130,7 +130,7 @@ func (a *app) guide() {
 	p("    " + b + " identity export-recovery   emergency recovery phrase")
 	p("    " + b + " list              machines you've paired")
 	p("    " + b + " machine rename <name> <new-name>   rename it on every device")
-	p("    " + b + " machine revoke <name> --yes   permanently block a lost target")
+	p("    " + b + " machine revoke <name>   retire a machine — asks first (--yes for scripts)")
 	p("    " + b + " doctor            verify local state, keychain, tmux and relay")
 	p("")
 	p("On the same network, " + b + " attach connects directly over the LAN (no relay) and")
