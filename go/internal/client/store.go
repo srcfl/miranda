@@ -37,6 +37,10 @@ type Machine struct {
 	MachineID  string `json:"machine_id"`
 	HostPubHex string `json:"host_pub"`
 	SignalURL  string `json:"signal_url"`
+	// NameTS is when Name was last set (unix seconds; 0 = unknown/legacy).
+	// Registry merge is last-writer-wins on it, so a rename made on one device
+	// beats every stale name without ever letting a stale one bounce back.
+	NameTS int64 `json:"name_ts,omitempty"`
 }
 
 type IdentityStorageInfo struct {
@@ -441,12 +445,16 @@ func AddMachine(dir string, m Machine) error {
 	if !updated {
 		list = append(list, m)
 	}
+	return writeMachines(dir, list)
+}
+
+// writeMachines writes machines.json atomically (temp file + rename) so a crash
+// mid-write can't truncate the pin store.
+func writeMachines(dir string, list []Machine) error {
 	data, err := json.MarshalIndent(list, "", "  ")
 	if err != nil {
 		return err
 	}
-	// Write atomically (temp file + rename) so a crash mid-write can't truncate
-	// the real machines.json into the corrupt state this guards against.
 	tmp, err := os.CreateTemp(dir, "machines-*.json.tmp")
 	if err != nil {
 		return err
@@ -471,6 +479,36 @@ func AddMachine(dir string, m Machine) error {
 		return err
 	}
 	return nil
+}
+
+// RenameLocalMachine sets a machine's display name (keyed by machine_id, the
+// stable identifier — names are exactly what rename changes) with the rename
+// timestamp the registry record was sealed at. A machine known only from the
+// registry (not yet in machines.json) is added, so the rename survives the
+// registry entry going away when the machine powers off.
+func RenameLocalMachine(dir string, m Machine, name string, ts int64) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	list, err := ListMachines(dir)
+	if err != nil {
+		return err // never overwrite a pin store we couldn't read
+	}
+	found := false
+	for i := range list {
+		if list[i].MachineID == m.MachineID {
+			list[i].Name = name
+			list[i].NameTS = ts
+			found = true
+			break
+		}
+	}
+	if !found {
+		m.Name = name
+		m.NameTS = ts
+		list = append(list, m)
+	}
+	return writeMachines(dir, list)
 }
 
 func ListMachines(dir string) ([]Machine, error) {

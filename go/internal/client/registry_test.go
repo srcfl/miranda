@@ -174,8 +174,8 @@ func TestMergeMachines(t *testing.T) {
 		{Name: "laptop", MachineID: "m2", HostPubHex: "local22", SignalURL: "wss://local"},
 	}
 	discovered := []Machine{
-		{Name: "box-renamed", MachineID: "m1", HostPubHex: "disc11", SignalURL: "wss://disc"}, // same id -> registry host_pub/signal
-		{Name: "kitchen", MachineID: "m3", HostPubHex: "disc33", SignalURL: "wss://disc"},     // new -> added
+		{Name: "box-renamed", MachineID: "m1", HostPubHex: "disc11", SignalURL: "wss://disc", NameTS: 100}, // same id -> registry host_pub/signal + newer name (N1 rename)
+		{Name: "kitchen", MachineID: "m3", HostPubHex: "disc33", SignalURL: "wss://disc"},                  // new -> added
 	}
 
 	merged := MergeMachines(local, discovered)
@@ -186,12 +186,12 @@ func TestMergeMachines(t *testing.T) {
 	for _, m := range merged {
 		byID[m.MachineID] = m
 	}
-	if byID["m1"].Name != "box" || byID["m1"].HostPubHex != "disc11" || byID["m1"].SignalURL != "wss://disc" {
-		t.Fatalf("m1 registry host_pub/signal must beat local cache, got %+v", byID["m1"])
+	if byID["m1"].Name != "box-renamed" || byID["m1"].HostPubHex != "disc11" || byID["m1"].SignalURL != "wss://disc" {
+		t.Fatalf("m1 registry host_pub/signal AND newer name must beat local cache, got %+v", byID["m1"])
 	}
-	m, ok, fromDisc := ResolveMachine(local, discovered, "box")
-	if !ok || fromDisc || m.HostPubHex != "disc11" || m.SignalURL != "wss://disc" {
-		t.Fatalf("ResolveMachine(box) = %+v ok=%v fromDisc=%v; want registry pin", m, ok, fromDisc)
+	m, ok, fromDisc := ResolveMachine(local, discovered, "box-renamed")
+	if !ok || m.HostPubHex != "disc11" || m.SignalURL != "wss://disc" {
+		t.Fatalf("ResolveMachine(box-renamed) = %+v ok=%v fromDisc=%v; want registry pin under the renamed name", m, ok, fromDisc)
 	}
 	// Discovered-only added.
 	if byID["m3"].Name != "kitchen" || byID["m3"].HostPubHex != "disc33" {

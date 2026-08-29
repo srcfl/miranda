@@ -85,6 +85,7 @@ type Runtime struct {
 
 	DisableLAN bool // when set, mir up serves the relay only (no QUIC listener / mDNS advertise)
 
+	rename renameState // live display name + signaling writers for mid-run rename (see rename.go)
 }
 
 // admit reserves a slot for a new attach handshake, returning false immediately
@@ -322,6 +323,9 @@ func (rt *Runtime) serveOnce(ctx context.Context, owner string) (dialed bool, up
 	}
 	defer c.CloseNow()
 	w := &signalWriter{c: c}
+	// Reachable for mid-run registry republish (machine rename) while this
+	// connection lives.
+	defer rt.registerSignaling(owner, w, ctx)()
 
 	// Mark the start of the healthy read loop: uptime is measured from here so a
 	// relay that accepts-then-immediately-closes reports a tiny uptime (a flap),
@@ -458,7 +462,7 @@ func (rt *Runtime) handleOffer(ctx context.Context, w *signalWriter, m signal.Si
 		return
 	}
 
-	_ = rt.serveAuthenticated(attachCtx, dc, ownerPub, releaseHS)
+	_ = rt.serveAuthenticated(attachCtx, dc, owner, ownerPub, releaseHS)
 }
 
 // authorizeOffer verifies pin, binding, SDP-bound owner signature, and session
@@ -488,7 +492,7 @@ func (rt *Runtime) authorizeOffer(owner string, m signal.SignalMsg) ([]byte, err
 // The active-session bracket lives HERE — after auth — not at the transport accept:
 // pre-auth handshakes (already bounded by admit()) must not inflate the active count
 // and starve opt-in auto-update, which defers binary swaps until the agent is idle.
-func (rt *Runtime) serveAuthenticated(ctx context.Context, mc peer.MsgConn, ownerPub []byte, handshakeDone func()) error {
+func (rt *Runtime) serveAuthenticated(ctx context.Context, mc peer.MsgConn, owner string, ownerPub []byte, handshakeDone func()) error {
 	sess, err := peer.RunResponder(ctx, mc, rt.cfg.HostPriv(), ownerPub)
 	if err != nil {
 		return err
@@ -515,7 +519,7 @@ func (rt *Runtime) serveAuthenticated(ctx context.Context, mc peer.MsgConn, owne
 	if pid > 0 {
 		windows = func() []byte { return tmuxSessionsJSON(pid) }
 	}
-	return RunAgentSession(ctx, mc, sess, pty, rt.cfg.MachineName, windows, pid)
+	return RunAgentSession(ctx, mc, sess, pty, rt.machineName(), windows, pid, rt.renameHandler(owner))
 }
 
 // agentSignalURL builds ws(s)://host/agent/signal?owner_id=..&machine_id=..

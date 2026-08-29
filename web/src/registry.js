@@ -3,7 +3,7 @@
 // blobs keyed by owner id; only an owner-root holder (registryKey) can open them, so a
 // forged/garbage blob fails to open and is silently dropped. Discovery only — the
 // Noise data plane and attach path are unchanged.
-import { registryKey, openRecord } from './identity/registry.js';
+import { registryKey, openRecord, sealRecord } from './identity/registry.js';
 
 const td = new TextDecoder();
 
@@ -12,6 +12,30 @@ function b64ToBytes(s) {
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
+}
+
+function bytesToB64(bytes) {
+  let bin = '';
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin);
+}
+
+// sealMachineRecord seals a discovery record for one machine under the owner
+// root (same shape pairing provisions): the returned ts is the name's
+// last-writer-wins timestamp (see mergeMachines). Used by machine rename — the
+// agent cannot seal records itself, so the renaming client re-seals and
+// delivers the blob over the authenticated session.
+export function sealMachineRecord(secret, m) {
+  const ts = Math.floor(Date.now() / 1000);
+  const record = new TextEncoder().encode(JSON.stringify({
+    v: 1,
+    name: m.name,
+    host_pub: m.host_pub,
+    signal_url: m.signal_url || '',
+    ts,
+  }));
+  const blob = sealRecord(registryKey(secret), crypto.getRandomValues(new Uint8Array(12)), record, m.machine_id);
+  return { blob: bytesToB64(blob), ts };
 }
 
 // decodeRegistry turns the relay's `[{machine_id, blob}]` into machines, dropping
@@ -32,6 +56,7 @@ export function decodeRegistry(entries, secret, fallbackSignal) {
       name: rec.name,
       host_pub: rec.host_pub,
       signal: rec.signal_url || fallbackSignal,
+      name_ts: rec.ts || 0,
     });
   }
   return out;
@@ -53,6 +78,10 @@ export async function fetchMachines(origin, signer, secret) {
 
 // mergeMachines unions local and discovered machines by machine_id. A verified
 // registry record is canonical for host_pub and signal; local-only rows stay.
+// The display name is last-writer-wins on name_ts (mirrors Go MergeMachines): a
+// registry record sealed after the local name was set carries a rename made on
+// another device, so it wins; a local rename not yet delivered to the machine
+// keeps winning until the machine republishes.
 export function mergeMachines(local, discovered) {
   const byId = new Map();
   for (const m of local || []) {
@@ -65,10 +94,12 @@ export function mergeMachines(local, discovered) {
       byId.set(m.machine_id, { ...m });
       continue;
     }
+    const registryNameWins = m.name && (!prev.name || (m.name_ts || 0) >= (prev.name_ts || 0));
     byId.set(m.machine_id, {
       ...prev,
       ...m,
-      name: prev.name || m.name,
+      name: registryNameWins ? m.name : prev.name,
+      name_ts: registryNameWins ? (m.name_ts || 0) : (prev.name_ts || 0),
       host_pub: m.host_pub || prev.host_pub,
       signal: m.signal || prev.signal,
     });

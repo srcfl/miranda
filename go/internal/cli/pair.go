@@ -188,9 +188,10 @@ func (a *app) pairInitiate(dir, codeStr string, gate sasGate) error {
 		return pairingCancelledError{reason}
 	}
 	if err := started.Finish(func(info *pairing.AgentInfo) (string, error) {
-		return client.SealRegistryMachine(idn, client.Machine{
+		blob, _, err := client.SealRegistryMachine(idn, client.Machine{
 			Name: info.Name, MachineID: info.MachineID, HostPubHex: info.HostPubHex, SignalURL: signalURL,
 		})
+		return blob, err
 	}); err != nil {
 		return err
 	}

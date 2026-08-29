@@ -129,6 +129,7 @@ func (a *app) guide() {
 	p("    " + b + " identity show     your Miranda owner id")
 	p("    " + b + " identity export-recovery   emergency recovery phrase")
 	p("    " + b + " list              machines you've paired")
+	p("    " + b + " machine rename <name> <new-name>   rename it on every device")
 	p("    " + b + " machine revoke <name> --yes   permanently block a lost target")
 	p("    " + b + " doctor            verify local state, keychain, tmux and relay")
 	p("")

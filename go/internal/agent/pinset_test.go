@@ -85,7 +85,7 @@ func TestHandshakeSlotFreedWhileSessionActive(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- rt.serveAuthenticated(ctx, agentMC, ownerPub, releaseHS)
+		done <- rt.serveAuthenticated(ctx, agentMC, "owner-test", ownerPub, releaseHS)
 	}()
 	if _, err := peer.RunInitiator(ctx, clientMC, ownerPriv, hostPub); err != nil {
 		t.Fatalf("initiator KK: %v", err)
