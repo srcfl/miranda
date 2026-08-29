@@ -386,9 +386,9 @@ function emptyMachinesView(root) {
 const EMPTY_POLL_MS = 4000;
 
 // pollForMachine keeps the empty state resolving live: refetches the owner's
-// registry every EMPTY_POLL_MS and re-renders while this is still the mounted
-// view (see mountGen above). Stops silently on navigation, and for good once a
-// machine shows up — it does not reschedule itself in that case.
+// registry every EMPTY_POLL_MS while this is still the mounted view (see
+// mountGen above), re-rendering only once a machine appears. Stops silently on
+// navigation, and for good once it has rendered a machine.
 function pollForMachine(root) {
   const myGen = mountGen;
   setTimeout(async () => {
@@ -399,8 +399,8 @@ function pollForMachine(root) {
       const visibleDiscovered = filterRevoked(discovered, revocations);
       const merged = filterRevoked(mergeMachines(listMachines(), visibleDiscovered), revocations);
       if (mountGen !== myGen) return; // navigated away mid-fetch — drop this result, don't stomp
+      if (!merged.length) { pollForMachine(root); return; } // still empty — keep the view untouched (a re-mount would eat a Copy tap) and wait
       renderMachines(root, merged, newDevices(visibleDiscovered));
-      if (!merged.length) pollForMachine(root); // still empty — keep waiting
     } catch {
       if (mountGen === myGen) pollForMachine(root); // relay hiccup — retry, same view still up
     }
