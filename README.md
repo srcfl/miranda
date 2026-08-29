@@ -157,6 +157,13 @@ make build
 
 Deployment examples live under [`deploy/`](deploy/).
 
+To see how attach and reconnect behave behind real NATs without leaving your
+laptop, `make netsim` puts an agent and a client behind separate simulated NATs
+in Docker and measures attach, TURN fallback and resume after a network flip. The
+current numbers are in
+[`netsim/results/results.md`](netsim/results/results.md); the topology and what
+each NAT approximates are in [`netsim/README.md`](netsim/README.md).
+
 ## What Miranda intentionally does not do
 
 - route IP packets, subnets, databases, or arbitrary TCP services;
@@ -225,6 +232,7 @@ The cryptographic wire domains and Go module path retain their historical
 | [`go/internal/signal`](go/internal/signal) | blind rendezvous and encrypted registry |
 | [`go/internal/agent`](go/internal/agent) | attach authorization, PTY, tmux, runtime |
 | [`web`](web) | passkey browser client and xterm.js UI |
+| [`netsim`](netsim) | Docker NAT matrix: measured attach, TURN fallback, resume |
 | [`testdata`](testdata) | stable cross-language cryptographic vectors |
 
 ```bash

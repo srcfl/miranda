@@ -1,0 +1,14 @@
+# The netsim image needs go/ and netsim/scripts/ and nothing else. Keeping the
+# build context small keeps `make netsim` in the seconds it should be.
+.git
+.github
+.claude
+bin
+dist
+docs
+deploy
+web
+testdata
+netsim/results
+scripts
+*.md

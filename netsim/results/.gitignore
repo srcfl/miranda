@@ -1,0 +1,3 @@
+# Per-run sample sets. The committed table (results.md) is the record; the raw
+# JSON is scratch that every run overwrites.
+raw/

@@ -1,0 +1,245 @@
+name: miranda-netsim
+
+# Topology (see README.md):
+#
+#   lan_agent 10.88.10.0/24        pub 10.88.0.0/24        lan_wifi 10.88.20.0/24
+#   ┌───────────────┐        ┌──────────────────────┐      ┌───────────────┐
+#   │ agent .10.5   ├─nat────┤ relay .0.10          ├──nat─┤ client .20.5  │
+#   └───────────────┘  .0.2  │ coturn .0.20         │ .0.3 │       .30.5   │
+#                            └──────────────────────┘      └──────┬────────┘
+#                                                            nat .0.4
+#                                                     lan_cell 10.88.30.0/24
+#
+# The LANs are `internal`, so nothing routes between them behind the operators'
+# backs: agent and client share no network and their host candidates are
+# mutually unroutable. Every path they can find goes out through a NAT router.
+
+x-mir: &mir
+  image: miranda-netsim:dev
+  build:
+    context: ..
+    dockerfile: netsim/Dockerfile
+
+x-node-env: &node-env
+  MIR_SIGNAL: http://10.88.0.10:8443
+  MIR_STUN: stun:10.88.0.20:3478
+  MIR_ICE_DEBUG: ${NETSIM_ICE_DEBUG:-}
+
+networks:
+  pub:
+    ipam:
+      config: [{ subnet: 10.88.0.0/24 }]
+  lan_agent:
+    internal: true
+    ipam:
+      config: [{ subnet: 10.88.10.0/24 }]
+  lan_wifi:
+    internal: true
+    ipam:
+      config: [{ subnet: 10.88.20.0/24 }]
+  lan_cell:
+    internal: true
+    ipam:
+      config: [{ subnet: 10.88.30.0/24 }]
+
+volumes:
+  state:
+
+services:
+  relay:
+    <<: *mir
+    entrypoint: ["/usr/local/bin/netsim-relay.sh"]
+    environment:
+      MIR_TURN_SECRET: ${NETSIM_TURN_SECRET:-netsim-shared-turn-secret}
+      NETSIM_TURN: ${NETSIM_TURN:-0}
+      NETSIM_TURN_URL: turn:10.88.0.20:3478
+    networks:
+      pub: { ipv4_address: 10.88.0.10 }
+
+  coturn:
+    image: coturn/coturn:4.6
+    command:
+      - -n
+      - --listening-port=3478
+      - --listening-ip=0.0.0.0
+      - --relay-ip=10.88.0.20
+      - --external-ip=10.88.0.20
+      - --realm=netsim
+      - --use-auth-secret
+      - --static-auth-secret=${NETSIM_TURN_SECRET:-netsim-shared-turn-secret}
+      - --min-port=49160
+      - --max-port=49200
+      - --no-tls
+      - --no-dtls
+      - --no-cli
+      - --log-file=stdout
+      - --simple-log
+    networks:
+      pub: { ipv4_address: 10.88.0.20 }
+
+  nat-agent:
+    <<: *mir
+    entrypoint: ["/usr/local/bin/netsim-router.sh"]
+    cap_add: [NET_ADMIN]
+    sysctls: ["net.ipv4.ip_forward=1"]
+    environment:
+      PUB_PREFIX: "10.88.0."
+      LAN_PREFIX: "10.88.10."
+      NODE_IP: "10.88.10.5"
+      BLOCK_NETS: "10.88.20.0/24 10.88.30.0/24"
+      NAT_MODE: ${NETSIM_AGENT_NAT_MODE:-prc}
+      BLOCK_PEER_UDP: ${NETSIM_BLOCK_PEER_UDP:-0}
+      TURN_IP: "10.88.0.20"
+    networks:
+      pub: { ipv4_address: 10.88.0.2 }
+      lan_agent: { ipv4_address: 10.88.10.2 }
+
+  nat-wifi:
+    <<: *mir
+    entrypoint: ["/usr/local/bin/netsim-router.sh"]
+    cap_add: [NET_ADMIN]
+    sysctls: ["net.ipv4.ip_forward=1"]
+    environment:
+      PUB_PREFIX: "10.88.0."
+      LAN_PREFIX: "10.88.20."
+      NODE_IP: "10.88.20.5"
+      BLOCK_NETS: "10.88.10.0/24 10.88.30.0/24"
+      NAT_MODE: ${NETSIM_CLIENT_NAT_MODE:-prc}
+      BLOCK_PEER_UDP: ${NETSIM_BLOCK_PEER_UDP:-0}
+      TURN_IP: "10.88.0.20"
+    networks:
+      pub: { ipv4_address: 10.88.0.3 }
+      lan_wifi: { ipv4_address: 10.88.20.2 }
+
+  nat-cell:
+    <<: *mir
+    entrypoint: ["/usr/local/bin/netsim-router.sh"]
+    cap_add: [NET_ADMIN]
+    sysctls: ["net.ipv4.ip_forward=1"]
+    environment:
+      PUB_PREFIX: "10.88.0."
+      LAN_PREFIX: "10.88.30."
+      NODE_IP: "10.88.30.5"
+      BLOCK_NETS: "10.88.10.0/24 10.88.20.0/24"
+      NAT_MODE: ${NETSIM_CLIENT_NAT_MODE:-prc}
+      BLOCK_PEER_UDP: ${NETSIM_BLOCK_PEER_UDP:-0}
+      TURN_IP: "10.88.0.20"
+    networks:
+      pub: { ipv4_address: 10.88.0.4 }
+      lan_cell: { ipv4_address: 10.88.30.2 }
+
+  # Mints the owner identity and the agent keystore, pins each to the other, and
+  # writes the owner-signed registration authorization the relay requires. One
+  # shot, before anything else starts.
+  provision:
+    <<: *mir
+    profiles: ["tools"]
+    command:
+      - /usr/local/bin/netsim-driver.test
+      - -test.run
+      - TestNetsimProvision
+      - -test.v
+    environment:
+      <<: *node-env
+      MIR_NETSIM: "1"
+      MIR_TEST_KEYCHAIN_DIR: /state/keychain
+      NETSIM_CLIENT_DIR: /state/client
+      NETSIM_AGENT_DIR: /state/agent
+      NETSIM_SIGNAL_URL: http://10.88.0.10:8443
+      NETSIM_MACHINE_NAME: netsim-box
+    volumes:
+      - state:/state
+    networks:
+      pub: {}
+
+  # The agent behind its own NAT — the default target.
+  agent:
+    <<: *mir
+    cap_add: [NET_ADMIN]
+    command: &agent-cmd
+      - mir
+      - up
+      - --dir=/state/agent
+      - --name=netsim-box
+      - --no-pair
+      - --allow-root
+      - --shell=tmux:new:-A:-s:main
+    environment:
+      <<: *node-env
+      NETSIM_UPLINK_PREFIX: "10.88.10."
+      NETSIM_UPLINK_GW: "10.88.10.2"
+    volumes:
+      - state:/state
+    depends_on: [relay, coturn, nat-agent]
+    networks:
+      lan_agent: { ipv4_address: 10.88.10.5 }
+
+  # The same agent with a routable address on pub: our stand-in for a host with
+  # no NAT in front of it (or a full-cone mapping that is always open).
+  agent-open:
+    <<: *mir
+    profiles: ["open"]
+    command: *agent-cmd
+    environment:
+      <<: *node-env
+    volumes:
+      - state:/state
+    depends_on: [relay, coturn]
+    networks:
+      pub: { ipv4_address: 10.88.0.5 }
+
+  # The measuring client: two uplinks, the second down until the flip.
+  client:
+    <<: *mir
+    profiles: ["tools"]
+    cap_add: [NET_ADMIN]
+    command:
+      - /usr/local/bin/netsim-driver.test
+      - -test.run
+      - TestNetsimScenario
+      - -test.v
+      - -test.timeout=25m
+    environment:
+      <<: *node-env
+      NETSIM_UPLINK_PREFIX: "10.88.20."
+      NETSIM_UPLINK_GW: "10.88.20.2"
+      NETSIM_ALT_PREFIX: "10.88.30."
+      NETSIM_ALT_GW: "10.88.30.2"
+      MIR_NETSIM: "1"
+      MIR_TEST_KEYCHAIN_DIR: /state/keychain
+      NETSIM_CLIENT_DIR: /state/client
+      NETSIM_RESULTS_DIR: /results
+      NETSIM_SCENARIO: ${NETSIM_SCENARIO:-unnamed}
+      NETSIM_ORDER: ${NETSIM_ORDER:-0}
+      NETSIM_AGENT_NAT: ${NETSIM_AGENT_NAT:-?}
+      NETSIM_CLIENT_NAT: ${NETSIM_CLIENT_NAT:-?}
+      NETSIM_ICE: ${NETSIM_ICE:-?}
+      NETSIM_NOTE: ${NETSIM_NOTE:-}
+      NETSIM_FLIP: ${NETSIM_FLIP:-0}
+      NETSIM_EXPECT: ${NETSIM_EXPECT:-pass}
+      NETSIM_REPS: ${NETSIM_REPS:-3}
+      NETSIM_MAX_FAILURES: ${NETSIM_MAX_FAILURES:-0}
+      NETSIM_REP_BUDGET: ${NETSIM_REP_BUDGET:-90s}
+    volumes:
+      - state:/state
+      - ./results:/results
+    networks:
+      lan_wifi: { ipv4_address: 10.88.20.5 }
+      lan_cell: { ipv4_address: 10.88.30.5 }
+
+  # Folds every raw sample set into results/results.md.
+  report:
+    <<: *mir
+    profiles: ["tools"]
+    command:
+      - /usr/local/bin/netsim-driver.test
+      - -test.run
+      - TestNetsimReport
+      - -test.v
+    environment:
+      MIR_NETSIM: "1"
+      NETSIM_RESULTS_DIR: /results
+    volumes:
+      - ./results:/results
+    networks:
+      pub: {}

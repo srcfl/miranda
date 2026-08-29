@@ -1,0 +1,55 @@
+name: netsim
+
+# The NAT matrix. Never a PR gate: it needs Docker networking, NET_ADMIN and
+# several minutes, and a UDP hole-punch that flakes must not block a merge. Run
+# it by hand from the Actions tab, or let the weekly cron catch a regression.
+on:
+  workflow_dispatch:
+    inputs:
+      scenarios:
+        description: "Scenarios to run (space-separated; empty = the whole matrix)"
+        required: false
+        default: ""
+  schedule:
+    - cron: "17 5 * * 1" # Mondays, 05:17 UTC
+
+permissions:
+  contents: read
+
+concurrency:
+  group: netsim-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  matrix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: docker and kernel facts
+        run: |
+          docker version
+          docker compose version
+          uname -a
+
+      # run.sh exits non-zero only when a scenario that should connect did not.
+      # sym-sym-stun is expected to fail and does not count.
+      - name: run the matrix
+        run: ./netsim/run.sh ${{ inputs.scenarios }}
+
+      - name: publish the table
+        if: always()
+        run: |
+          if [ -f netsim/results/results.md ]; then
+            cat netsim/results/results.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "netsim produced no results table." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: netsim-results
+          path: netsim/results/
+          if-no-files-found: warn
