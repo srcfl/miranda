@@ -84,6 +84,19 @@
   .card .sub { color: var(--mut); font-size: 12px; margin-top: 4px; font-family: ui-monospace, monospace; }
   .card.add { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; border-style: dashed; }
   .card.add .plus { font-size: 24px; color: var(--acc); }
+  /* Empty state (no machines yet): a pulsing dot next to the heading signals it
+     resolves live, and a copyable install one-liner mirrors README.md's Install. */
+  .live-heading { display: flex; align-items: center; gap: 10px; }
+  .live-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--acc); flex: 0 0 auto;
+    box-shadow: 0 0 0 4px rgba(74, 222, 128, .15); animation: mir-pulse 1.4s ease-in-out infinite; }
+  .cmdblock { display: flex; align-items: center; gap: 10px; background: #0d121b; border: 1px solid var(--line);
+    border-radius: 10px; padding: 10px 10px 10px 14px; margin: 10px 0 20px; }
+  .cmdblock-text { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; -webkit-overflow-scrolling: touch;
+    font: 13px ui-monospace, monospace; color: var(--fg); scrollbar-width: none; }
+  .cmdblock-text::-webkit-scrollbar { display: none; }
+  .cmdblock-copy { flex: 0 0 auto; background: var(--acc); color: #052e16; border: 0; border-radius: 8px;
+    padding: 8px 14px; font: inherit; font-weight: 650; cursor: pointer; min-height: 36px; }
+  .cmdblock-copy:disabled { opacity: .8; cursor: default; }
   .code { width: 100%; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--line);
     background: #0d121b; color: var(--fg); font: 13px ui-monospace, monospace; margin-bottom: 12px; }
   .btn { background: var(--acc); color: #052e16; border: 0; border-radius: 10px; padding: 10px 18px;
