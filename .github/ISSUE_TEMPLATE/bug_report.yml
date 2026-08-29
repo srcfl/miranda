@@ -44,11 +44,12 @@ body:
   - type: textarea
     id: doctor
     attributes:
-      label: mir doctor output
+      label: mir doctor --share output
       description: >
-        Run `mir doctor` on the affected machine and paste the output. It
-        checks state permissions, keychain reference, tmux, signed
-        revocations, and relay health, and does not print private material.
+        Run `mir doctor --share` on the affected machine and paste the output.
+        It runs the same checks as `mir doctor` but prints a paste-safe
+        report: no identities, machine names, file paths, or custom relay
+        URLs.
       render: text
     validations:
       required: true

@@ -132,6 +132,7 @@ func (a *app) guide() {
 	p("    " + b + " machine rename <name> <new-name>   rename it on every device")
 	p("    " + b + " machine revoke <name>   retire a machine — asks first (--yes for scripts)")
 	p("    " + b + " doctor            verify local state, keychain, tmux and relay")
+	p("    " + b + " doctor --share    the same checks as a paste-safe report for an issue")
 	p("")
 	p("On the same network, " + b + " attach connects directly over the LAN (no relay) and")
 	p("falls back to the relay automatically. Full help for any command: " + b + " <command> -h")
