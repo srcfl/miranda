@@ -104,7 +104,7 @@ func (d *doctorReport) checkClient(dir string) {
 	}
 	storage, err := client.InspectIdentityStorage(dir)
 	if err != nil {
-		d.fail("owner identity/keychain verification failed: %v", err)
+		d.fail("owner identity/keychain verification failed — if your keychain is locked, unlock it and re-run (cause: %v)", err)
 	} else if storage.LegacyPlaintext {
 		d.fail("owner identity uses legacy plaintext private material")
 	} else {
@@ -237,7 +237,30 @@ func (d *doctorReport) checkRelay(rawURL string) {
 		d.fail("relay health returned %s", response.Status)
 		return
 	}
+	// Renames and revocations resolve by timestamp (last writer wins), so a
+	// machine with a badly skewed clock silently loses every merge.
+	if skew, ok := clockSkew(response.Header.Get("Date"), time.Now()); ok && skew > maxClockSkew {
+		d.warn("this machine's clock is off by about %s — renames and revocations resolve by timestamp, so fix the system clock", skew.Round(time.Minute))
+	}
 	d.ok("relay is healthy over %s", strings.ToUpper(u.Scheme))
+}
+
+// maxClockSkew is how far the local clock may drift from the relay's Date
+// header before doctor warns.
+const maxClockSkew = 5 * time.Minute
+
+// clockSkew compares an HTTP Date header with local time; ok=false when the
+// header is absent or unparseable.
+func clockSkew(dateHeader string, now time.Time) (time.Duration, bool) {
+	t, err := http.ParseTime(dateHeader)
+	if err != nil {
+		return 0, false
+	}
+	skew := now.Sub(t)
+	if skew < 0 {
+		skew = -skew
+	}
+	return skew, true
 }
 
 func isLoopbackHost(host string) bool {
