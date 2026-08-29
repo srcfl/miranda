@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/term"
+
 	"github.com/srcful/terminal-relay/go/internal/agent"
 	"github.com/srcful/terminal-relay/go/internal/defaults"
 	"github.com/srcful/terminal-relay/go/internal/selfupdate"
@@ -34,7 +36,7 @@ func (a *app) cmdEnroll(args []string) error {
 	}
 	fmt.Fprintf(a.out, "enrolled %q\n  machine_id: %s\n  host_pub:   %s\n  signal:     %s\n",
 		cfg.MachineName, cfg.MachineID, cfg.HostPubHex, cfg.SignalURL)
-	fmt.Fprintln(a.out, "\nNext: pair an owner. For local dev:")
+	fmt.Fprintln(a.out, "\nNext: run `mir up` — the first run shows a pairing QR. For local dev:")
 	fmt.Fprintf(a.out, "  mir pair-dev --owner-id <base58 owner id from mir identity>\n")
 	if !agent.TmuxInstalled() {
 		fmt.Fprintln(a.out, "\nwarning: tmux is not installed (needed for persistent sessions): brew install tmux")
@@ -73,11 +75,15 @@ func (a *app) cmdUp(args []string) error {
 	dir := fs.String("dir", defaultAgentDir(), "agent state directory")
 	name := fs.String("name", hostname(), "machine display name")
 	signalURL := fs.String("signal", defaults.SignalURL(), "signaling server base URL")
+	webURL := fs.String("web", defaults.WebURL(), "browser SPA base URL the first-run pairing QR opens")
 	shell := fs.String("shell", "tmux:new:-A:-s:main", "launch command, ':'-separated")
 	ice := iceFlags(fs)
 	autoUpdate := fs.Bool("auto-update", os.Getenv("MIR_AUTO_UPDATE") == "1", "opt-in: automatically self-update when idle")
 	noLAN := fs.Bool("no-lan", false, "disable LAN-direct (no QUIC listener, no mDNS advertise); serve the relay only")
 	allowRoot := fs.Bool("allow-root", false, "unsafe override: allow the terminal agent to run as root")
+	noPair := fs.Bool("no-pair", false, "first run: do not offer inline pairing; fail if no owner is paired")
+	confirmSAS := fs.String("confirm-sas", "", "first-run pairing, non-interactive: the expected safety number")
+	yes := fs.Bool("yes", false, "first-run pairing, non-interactive: commit without comparing the safety number")
 	_ = fs.Parse(args)
 	if err := ensureAgentOnlyDir(*dir); err != nil {
 		return err
@@ -97,6 +103,27 @@ func (a *app) cmdUp(args []string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// First run: nothing can attach before an owner is paired (the runtime would
+	// refuse to start), so pair right here — QR on the same screen the user is
+	// already looking at — then serve. `mir pair` stays for adding owners later.
+	if len(cfg.PairedOwners) == 0 && !*noPair {
+		gate := sasGate{
+			confirmSAS: *confirmSAS,
+			skip:       *yes,
+			isTTY:      term.IsTerminal(int(os.Stdin.Fd())),
+			in:         os.Stdin,
+		}
+		if err := a.pairOnFirstRun(ctx, *dir, *name, *signalURL, *webURL, gate); err != nil {
+			if ctx.Err() != nil {
+				return nil // interrupted while waiting to pair: a clean shutdown
+			}
+			return err
+		}
+		if cfg, err = agent.LoadOrInit(*dir, *name, *signalURL); err != nil {
+			return err
+		}
+	}
 
 	rt := agent.NewRuntime(cfg, launch, ice())
 	rt.DisableLAN = *noLAN

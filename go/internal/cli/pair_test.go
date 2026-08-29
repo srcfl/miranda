@@ -113,7 +113,7 @@ func TestPairRespondPrintsSASBeforeMsg3(t *testing.T) {
 	a := &app{out: out, errOut: io.Discard}
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- a.pairRespond(dir, "box", srv.URL, "http://127.0.0.1", sasGate{skip: true})
+		errCh <- a.pairRespond(context.Background(), dir, "box", srv.URL, "http://127.0.0.1", sasGate{skip: true}, true)
 	}()
 
 	deadline := time.Now().Add(8 * time.Second)
