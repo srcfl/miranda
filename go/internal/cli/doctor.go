@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -21,10 +22,12 @@ import (
 	"github.com/srcful/terminal-relay/go/internal/defaults"
 	"github.com/srcful/terminal-relay/go/internal/identity"
 	"github.com/srcful/terminal-relay/go/internal/noise"
+	"github.com/srcful/terminal-relay/go/internal/version"
 )
 
 type doctorReport struct {
 	w     func(string, ...any)
+	share bool
 	fails int
 	warns int
 }
@@ -45,8 +48,21 @@ func (a *app) cmdDoctor(args []string) error {
 	agentDir := fs.String("agent-dir", defaultAgentDir(), "agent state directory")
 	signalURL := fs.String("signal", defaults.SignalURL(), "signaling relay base URL")
 	offline := fs.Bool("offline", false, "skip relay health check")
+	share := fs.Bool("share", false, "print a paste-safe report for a public issue (no identities, names, paths, or custom URLs)")
 	_ = fs.Parse(args)
-	d := &doctorReport{w: func(format string, values ...any) { fmt.Fprintf(a.out, format, values...) }}
+	d := &doctorReport{
+		share: *share,
+		w:     func(format string, values ...any) { fmt.Fprintf(a.out, format, values...) },
+	}
+	if *share {
+		// Belt and suspenders: known-sensitive values go through id/dir/url
+		// below, and every line is additionally scrubbed of the home directory
+		// so an OS error that embeds a path cannot leak the username.
+		d.w = func(format string, values ...any) {
+			fmt.Fprint(a.out, scrubHome(fmt.Sprintf(format, values...)))
+		}
+		d.shareHeader()
+	}
 
 	d.checkClient(*clientDir)
 	d.checkAgent(*agentDir)
@@ -70,7 +86,7 @@ func (a *app) cmdDoctor(args []string) error {
 func (d *doctorReport) checkClient(dir string) {
 	info, err := os.Stat(dir)
 	if os.IsNotExist(err) {
-		d.warn("client identity is not initialized (%s)", dir)
+		d.warn("client identity is not initialized (%s)", d.dir(dir))
 		return
 	}
 	if err != nil {
@@ -108,7 +124,7 @@ func (d *doctorReport) checkClient(dir string) {
 	} else if storage.LegacyPlaintext {
 		d.fail("owner identity uses legacy plaintext private material")
 	} else {
-		d.ok("owner root is available from %s and matches %s", storage.Backend, shortDoctorID(storage.OwnerID))
+		d.ok("owner root is available from %s and matches %s", storage.Backend, d.id(storage.OwnerID))
 	}
 	if _, err := client.ListRevocations(dir); err != nil {
 		d.fail("local revocation store failed signature verification: %v", err)
@@ -120,7 +136,7 @@ func (d *doctorReport) checkClient(dir string) {
 func (d *doctorReport) checkAgent(dir string) {
 	info, err := os.Stat(dir)
 	if os.IsNotExist(err) {
-		d.warn("agent is not initialized (%s)", dir)
+		d.warn("agent is not initialized (%s)", d.dir(dir))
 		return
 	}
 	if err != nil {
@@ -172,7 +188,7 @@ func (d *doctorReport) checkAgent(dir string) {
 	if !validDoctorMachineID(cfg.MachineID) {
 		d.fail("agent machine id is missing or malformed")
 	} else {
-		d.ok("agent machine identity is structurally valid (%s)", shortDoctorID(cfg.MachineID))
+		d.ok("agent machine identity is structurally valid (%s)", d.id(cfg.MachineID))
 	}
 	commitment, commitmentErr := cfg.RegistrationCommitment()
 	authFailed := false
@@ -180,7 +196,7 @@ func (d *doctorReport) checkAgent(dir string) {
 		auth := cfg.OwnerRegistrationAuth[owner]
 		signature, err := base64.StdEncoding.DecodeString(auth)
 		if commitmentErr != nil || err != nil || identity.VerifyAuth(owner, identity.RegistrationChallenge(cfg.MachineID, commitment), signature) != nil {
-			d.fail("agent owner %s lacks a valid registration authorization", shortDoctorID(owner))
+			d.fail("agent owner %s lacks a valid registration authorization", d.id(owner))
 			authFailed = true
 		}
 	}
@@ -190,7 +206,7 @@ func (d *doctorReport) checkAgent(dir string) {
 	if cfg.SignalURL != "" {
 		u, err := url.Parse(cfg.SignalURL)
 		if err != nil || u.Hostname() == "" || (u.Scheme != "https" && !(u.Scheme == "http" && isLoopbackHost(u.Hostname()))) {
-			d.fail("agent relay URL is unsafe: %q", cfg.SignalURL)
+			d.fail("agent relay URL is unsafe: %q", d.shareURL(cfg.SignalURL))
 		}
 	}
 }
@@ -198,7 +214,7 @@ func (d *doctorReport) checkAgent(dir string) {
 func checkPrivateFile(d *doctorReport, path, label string) bool {
 	info, err := os.Stat(path)
 	if os.IsNotExist(err) {
-		d.warn("%s is absent (%s)", label, path)
+		d.warn("%s is absent (%s)", label, d.dir(path))
 		return false
 	}
 	if err != nil {
@@ -216,11 +232,11 @@ func checkPrivateFile(d *doctorReport, path, label string) bool {
 func (d *doctorReport) checkRelay(rawURL string) {
 	u, err := url.Parse(rawURL)
 	if err != nil || u.Hostname() == "" {
-		d.fail("relay URL is invalid: %q", rawURL)
+		d.fail("relay URL is invalid: %q", d.shareURL(rawURL))
 		return
 	}
 	if u.Scheme != "https" && !isLoopbackHost(u.Hostname()) {
-		d.fail("relay URL must use HTTPS outside localhost: %s", rawURL)
+		d.fail("relay URL must use HTTPS outside localhost: %s", d.shareURL(rawURL))
 		return
 	}
 	ctxClient := &http.Client{
@@ -229,7 +245,7 @@ func (d *doctorReport) checkRelay(rawURL string) {
 	}
 	response, err := ctxClient.Get(strings.TrimRight(rawURL, "/") + "/healthz")
 	if err != nil {
-		d.fail("relay health check failed: %v", err)
+		d.fail("relay health check failed: %s", d.scrubValue(err.Error(), rawURL))
 		return
 	}
 	response.Body.Close()
@@ -265,6 +281,73 @@ func clockSkew(dateHeader string, now time.Time) (time.Duration, bool) {
 
 func isLoopbackHost(host string) bool {
 	return strings.EqualFold(host, "localhost") || (net.ParseIP(host) != nil && net.ParseIP(host).IsLoopback())
+}
+
+// shareHeader opens the --share report: version, platform, and tmux — the
+// context a public issue needs and nothing personal.
+func (d *doctorReport) shareHeader() {
+	d.w("mir %s\n", version.String())
+	d.w("platform: %s/%s, %s\n", runtime.GOOS, runtime.GOARCH, runtime.Version())
+	if out, err := exec.Command("tmux", "-V").Output(); err == nil {
+		d.w("tmux: %s\n", strings.TrimSpace(string(out)))
+	} else {
+		d.w("tmux: not installed\n")
+	}
+	d.w("checks:\n")
+}
+
+// id renders identity-shaped values (owner ids, machine ids): shortened
+// normally, withheld entirely in a --share report.
+func (d *doctorReport) id(value string) string {
+	if d.share {
+		return "(redacted)"
+	}
+	return shortDoctorID(value)
+}
+
+// dir renders a state path: verbatim normally, basename-only in a --share
+// report (an absolute path usually contains the username).
+func (d *doctorReport) dir(path string) string {
+	if d.share {
+		return "…/" + filepath.Base(path)
+	}
+	return path
+}
+
+// shareURL renders a relay URL: verbatim normally; in a --share report only
+// the default relay is shown, anything else becomes "custom" (a private URL
+// can identify a home server).
+func (d *doctorReport) shareURL(raw string) string {
+	if d.share && raw != defaults.SignalURL() {
+		return "custom"
+	}
+	return raw
+}
+
+// scrubValue blanks a custom relay URL out of an error string in a --share
+// report. HTTP client errors embed both the URL they dialed and, separately,
+// the host:port the dial resolved to — both must go.
+func (d *doctorReport) scrubValue(s, rawURL string) string {
+	if !d.share || rawURL == defaults.SignalURL() {
+		return s
+	}
+	if base := strings.TrimRight(rawURL, "/"); base != "" {
+		s = strings.ReplaceAll(s, base, "custom")
+	}
+	if u, err := url.Parse(rawURL); err == nil && u.Host != "" {
+		s = strings.ReplaceAll(s, u.Host, "custom")
+	}
+	return s
+}
+
+// scrubHome replaces the user's home directory in s with "~" so no report
+// line can leak the username through an embedded path.
+func scrubHome(s string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" || home == "/" {
+		return s
+	}
+	return strings.ReplaceAll(s, home, "~")
 }
 
 func shortDoctorID(value string) string {

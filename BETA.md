@@ -79,12 +79,15 @@ A good report includes:
 
 - your platform (macOS or Linux, and the version);
 - browser and CLI version if the web app is involved;
-- the output of `mir doctor` (it checks state permissions, keychain
-  reference, tmux, signed revocations, and relay health, and prints no
-  private material);
+- the output of `mir doctor --share` — the same checks as `mir doctor`,
+  printed as a paste-safe report: no identities, machine names, file paths,
+  or custom relay URLs;
 - what you attempted;
 - what happened;
 - what you expected instead.
+
+Ten spare minutes? Walk the [beta checklist](docs/beta-checklist.md) — with no
+telemetry, those notes are the only way the beta gets measured.
 
 Security issues go to security@sourceful-labs.net, not a public issue — see
 [SECURITY.md](SECURITY.md).
