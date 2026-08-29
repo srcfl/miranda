@@ -126,6 +126,30 @@ func TestUpPairsInlineOnFirstRun(t *testing.T) {
 	}
 }
 
+// TestUpRefusesMissingTmuxNonInteractiveBeforePairing wires the tmux bootstrap
+// (U2) through the real `cmdUp` entry point rather than testing ensure() in
+// isolation: with tmux genuinely absent from PATH and no TTY (as `go test`
+// runs), `mir up` must refuse — fail closed, same as before this slice — and
+// must never reach the pairing step. Emptying PATH also hides any package
+// manager, so the refusal falls through to the honest "none found" message;
+// TestEnsureNonTTYRefusesWithExactCommand covers the exact-command branch at
+// the unit level.
+func TestUpRefusesMissingTmuxNonInteractiveBeforePairing(t *testing.T) {
+	t.Setenv("PATH", t.TempDir()) // no tmux, no brew/apt/dnf/pacman either
+	out := &safeBuf{}
+	a := &app{binary: "mir", out: out, errOut: io.Discard, in: strings.NewReader("")}
+	err := a.cmdUp([]string{"--dir", t.TempDir(), "--signal", "http://127.0.0.1:1", "--no-lan"})
+	if err == nil || !strings.Contains(err.Error(), "tmux is not installed") {
+		t.Fatalf("expected the tmux refusal, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "--shell sh") {
+		t.Fatalf("refusal must still mention the --shell sh escape hatch, got: %v", err)
+	}
+	if strings.Contains(out.String(), "First run") || strings.Contains(out.String(), "safety number") {
+		t.Fatalf("tmux bootstrap must run before pairing; pairing output leaked through:\n%s", out.String())
+	}
+}
+
 // TestUpNoPairFailsClosed pins the opt-out: --no-pair on a fresh machine keeps
 // today's behavior — refuse to serve with no owner instead of pairing inline.
 func TestUpNoPairFailsClosed(t *testing.T) {
