@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"sync"
-	"time"
 
 	"github.com/srcful/terminal-relay/go/internal/noise"
 	"github.com/srcful/terminal-relay/go/internal/peer"
@@ -45,29 +44,18 @@ func RunAgentSession(ctx context.Context, mc peer.MsgConn, sess *noise.Session, 
 	sctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// Window overview: poll the tmux window list and push a WINDOWS snapshot to
-	// the client on change (1s low-rate; hooks are a later latency optimization).
+	// Window overview: push a WINDOWS snapshot to the client whenever the tmux
+	// window/session layout changes. tmux hooks make that near-instant; the poll
+	// stays as the safety net for what no hook reports and for a tmux where the
+	// hooks won't install.
 	if windowsJSON != nil {
-		go func() {
-			var last string
-			t := time.NewTicker(time.Second)
-			defer t.Stop()
-			emit := func() {
-				if b := windowsJSON(); b != nil && string(b) != last {
-					last = string(b)
-					_ = safeSend(noise.EncodeWindows(b))
-				}
-			}
-			emit()
-			for {
-				select {
-				case <-sctx.Done():
-					return
-				case <-t.C:
-					emit()
-				}
-			}
-		}()
+		trigger := make(chan struct{}, 1)
+		if tmuxPid > 0 {
+			go tmuxHookNotify(sctx, trigger)
+		}
+		go pushWindowSnapshots(sctx, windowsJSON, func(b []byte) error {
+			return safeSend(noise.EncodeWindows(b))
+		}, trigger, windowPoll, windowDebounce)
 	}
 
 	errc := make(chan error, 2)
