@@ -49,7 +49,7 @@ type ReconnectPolicy struct {
 	MinHealthy  time.Duration // uptime below this is a flap (default 5s)
 	Notify      ReconnectNotify
 
-	now   func() time.Time                              // test hook
+	now   func() time.Time                                 // test hook
 	sleep func(ctx context.Context, d time.Duration) error // test hook
 }
 
@@ -93,7 +93,7 @@ func ReconnectLoopWith(ctx context.Context, p ReconnectPolicy, dial SessionDial,
 	p.defaults()
 	backoff := p.Base
 	failures := 0
-	attempt := 0        // redials within the current outage, for OnReconnecting
+	attempt := 0         // redials within the current outage, for OnReconnecting
 	var dropAt time.Time // when the current outage began; zero = first connect
 	var lastErr error
 
