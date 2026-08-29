@@ -15,11 +15,16 @@ import (
 // Pion's ICE liveness defaults (disconnected 5s / failed 25s / keepalive 2s)
 // are tuned for media, not a terminal: after a network flip an attach sat
 // frozen for up to half a minute before `failed` finally tore it down. A
-// terminal session should notice a dead path in ~2s and give up on it in ~10s.
+// terminal session should notice a dead path in ~1s and give up on it in ~10s.
 // Both ends share these: the client redials sooner, and the agent's per-attach
 // cleanup rides the same faster `failed` (tmux keeps the shell either way).
+//
+// iceDisconnectedTimeout is two missed keepalives. It was 2s (four missed) until
+// netsim measured where resume actually goes: detection was 3.23s of a 4.08s
+// resume, and the redial it gates was already sub-second, so the beta's "under
+// 3s" could only come out of detection. See netsim/results/results.md.
 const (
-	iceDisconnectedTimeout = 2 * time.Second
+	iceDisconnectedTimeout = time.Second
 	iceFailedTimeout       = 10 * time.Second
 	iceKeepAlive           = 500 * time.Millisecond
 )
@@ -32,8 +37,14 @@ func newPeerConnection(servers []ICEServer) (*webrtc.PeerConnection, error) {
 
 // LinkGrace is how long an established attach may sit in `disconnected` before
 // LinkWatch tears it down for a prompt redial. With iceDisconnectedTimeout this
-// puts client reaction at ~3s after a flip instead of the failed timeout.
-const LinkGrace = time.Second
+// puts client reaction at ~1.5s after a flip instead of the failed timeout.
+//
+// The grace is the whole cost of being wrong: a blip that heals inside it is
+// free, and one that heals just outside it buys a redial (~0.8s direct, ~1.2s
+// relayed) instead of a frozen terminal. That trade is why it is half a second
+// and no longer the full one — the redial is cheap, so waiting is the expensive
+// option.
+const LinkGrace = 500 * time.Millisecond
 
 // LinkWatch enforces the early-reaction policy on one PeerConnection: feed it
 // every connection-state change. `disconnected` arms a grace timer; expiry runs

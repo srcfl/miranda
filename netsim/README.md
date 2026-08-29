@@ -125,28 +125,43 @@ Environment variables the driver reads (all optional):
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `NETSIM_REPS` | 3 | measurements per scenario |
+| `NETSIM_REPS` | 3 | measurements per scenario; exporting it overrides every scenario's default |
 | `NETSIM_REP_BUDGET` | 90s | ceiling for one measurement |
 | `NETSIM_FLIP_AFTER` | 7s | how long to hold the session before flipping (must exceed the policy's 5s `MinHealthy`) |
 | `NETSIM_MAX_FAILURES` | production default (7) | reconnect failure budget |
 | `NETSIM_RELAY_ONLY` | 0 | skip the LAN locator in the attach race |
 | `NETSIM_ICE_DEBUG` | unset | set to `1` to print gathered ICE candidates and state changes |
 
-## What the first run said
+## What the runs said
 
-Full table in [`results/results.md`](results/results.md). Two things worth
-carrying forward:
+Full table in [`results/results.md`](results/results.md).
 
-**Resume is ~4.1 s, and detection is nearly all of it.** Split across the flip
-scenarios: ~3.23 s to notice the link is dead, then ~0.83 s (direct) or ~1.23 s
-(TURN) to be carrying bytes again. The 3.23 s is by design —
-`peer.iceDisconnectedTimeout` (2 s) plus `peer.LinkGrace` (1 s) — and its own
-comment predicts "~3 s". The harness confirms the prediction, which also means
-the R1 gate of under 3 s cannot be met by making the redial faster: the redial is
-already sub-second. It needs earlier detection.
+**The first run found the gate open, and where.** Resume was ~4.1 s, and
+detection was nearly all of it: ~3.23 s to notice the link was dead, then ~0.83 s
+(direct) or ~1.23 s (TURN) to carry bytes again. The 3.23 s was by design —
+`peer.iceDisconnectedTimeout` (2 s) plus `peer.LinkGrace` (1 s) — and that
+constant's own comment had predicted "~3 s". Since the redial was already
+sub-second, the R1 gate of under 3 s could only come out of detection.
 
-**Continuation held every time.** The job started before the flip was still
-running after it in 6/6 flips, on both the direct and the relayed path.
+**Retuning detection closed it (#83).** With `iceDisconnectedTimeout` at 1 s and
+`LinkGrace` at 500 ms, measured detection is ~1.75 s and resume is 2.56 s direct
+/ 2.99 s relayed. Detection reads ~250 ms above the 1.5 s the arithmetic implies
+because pion checks liveness on a keepalive-driven ticker, so the `disconnected`
+transition lands up to one 500 ms interval late.
+
+**The relayed path meets the gate without margin.** `flip-turn` resumes cluster
+between 2.96 s and 3.02 s, so roughly half of them land just over 3 s. Its extra
+~400 ms over the direct path is the TURN allocation in the redial. Holding the
+gate on relayed sessions with room to spare means making that redial faster,
+which detection tuning cannot do.
+
+**Watch for a ~1 s TURN retransmit.** Occasionally a dial or redial on a TURN
+path takes ~1 s longer than its neighbours. It predates the detection retune (it
+shows up in the original `turn-only` row) and looks like an ICE/TURN
+retransmission timer. When it lands on a resume, that rep reads ~4 s.
+
+**Continuation held every time**, in 18/18 flips, on the direct path and the
+relayed one.
 
 ## Caveats
 
