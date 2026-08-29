@@ -31,6 +31,11 @@ const DEFAULT_STUN = (typeof window !== 'undefined' && typeof window.MIRANDA_STU
   ? window.MIRANDA_STUN
   : 'stun:stun.l.google.com:19302';
 
+// The canonical one-line installer, mirrored from README.md's "Install" section
+// (test/empty-state.test.js gates the two staying identical) so the empty state
+// can offer it as a copy-paste block without duplicating install logic.
+const INSTALL_CMD = 'curl -fsSL https://raw.githubusercontent.com/srcfl/miranda/main/install.sh | sh';
+
 // iceServers builds the ICE config. It prefers the relay's own ephemeral TURN
 // credentials: a TURN server already yields a server-reflexive candidate via its
 // built-in STUN, so when TURN is available we do NOT add a standalone third-party
@@ -307,7 +312,13 @@ const el = (tag, props = {}, ...kids) => {
   return n;
 };
 
-function mount(root, node) { root.replaceChildren(node); }
+// mountGen bumps on every mount() — a lightweight "is this still the live view"
+// token. pollForMachine (below) captures it before an async fetch and checks it
+// after, so a navigation away (pairing, a terminal, sign-out) mid-fetch is
+// detected and the stale poll drops its result instead of stomping whatever the
+// user navigated to.
+let mountGen = 0;
+function mount(root, node) { mountGen++; root.replaceChildren(node); }
 
 // newDevices returns the discovered machines not seen before (for a notice) and
 // persists the seen set in localStorage, so the notice fires once per device.
@@ -323,8 +334,82 @@ function newDevices(discovered) {
 
 let visibleMachines = [];
 
+// commandBlock renders a one-line command with a Copy button: monospace text
+// that also selects on tap, plus a button that copies via navigator.clipboard
+// when available. Mobile Safari (and any non-secure/older context) may lack or
+// reject that API, so the fallback selects the text so the OS's own copy
+// affordance (or a long-press) still works.
+function commandBlock(text) {
+  const code = el('code', { className: 'cmdblock-text' }, text);
+  const btn = el('button', { className: 'cmdblock-copy', type: 'button' }, 'Copy');
+  const selectText = () => {
+    try {
+      const range = document.createRange();
+      range.selectNodeContents(code);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    } catch {}
+  };
+  const flash = (label) => {
+    const prev = btn.textContent;
+    btn.textContent = label;
+    btn.disabled = true;
+    setTimeout(() => { btn.textContent = prev; btn.disabled = false; }, 1400);
+  };
+  btn.addEventListener('click', async () => {
+    try {
+      if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error('no Clipboard API');
+      await navigator.clipboard.writeText(text);
+      flash('Copied ✓');
+    } catch {
+      selectText();
+      flash('Selected — copy it');
+    }
+  });
+  code.addEventListener('click', selectText); // tap-to-select even without pressing Copy
+  return el('div', { className: 'cmdblock' }, code, btn);
+}
+
+// emptyMachinesView is the friendly first-run state: no machines yet. The pulsing
+// dot signals it resolves on its own (see pollForMachine) — no manual reload once
+// the machine registers.
+function emptyMachinesView(root) {
+  return el('div', { className: 'view' },
+    el('h1', { className: 'live-heading' }, el('span', { className: 'live-dot' }), 'Waiting for your first machine…'),
+    el('p', { className: 'muted' }, 'Install Miranda on the machine you want to keep reachable:'),
+    commandBlock(INSTALL_CMD),
+    el('p', { className: 'muted' }, 'Run `mir up` on your machine and follow it.'),
+    el('button', { className: 'link', onclick: () => viewPair(root) }, 'Already have a pairing code? →'));
+}
+
+const EMPTY_POLL_MS = 4000;
+
+// pollForMachine keeps the empty state resolving live: refetches the owner's
+// registry every EMPTY_POLL_MS and re-renders while this is still the mounted
+// view (see mountGen above). Stops silently on navigation, and for good once a
+// machine shows up — it does not reschedule itself in that case.
+function pollForMachine(root) {
+  const myGen = mountGen;
+  setTimeout(async () => {
+    if (mountGen !== myGen) return; // navigated away while waiting — stop
+    try {
+      const revocations = await syncRevocations(location.origin, signerKey().address);
+      const discovered = await fetchMachines(location.origin, signerKey(), _id.secret);
+      const visibleDiscovered = filterRevoked(discovered, revocations);
+      const merged = filterRevoked(mergeMachines(listMachines(), visibleDiscovered), revocations);
+      if (mountGen !== myGen) return; // navigated away mid-fetch — drop this result, don't stomp
+      renderMachines(root, merged, newDevices(visibleDiscovered));
+      if (!merged.length) pollForMachine(root); // still empty — keep waiting
+    } catch {
+      if (mountGen === myGen) pollForMachine(root); // relay hiccup — retry, same view still up
+    }
+  }, EMPTY_POLL_MS);
+}
+
 function renderMachines(root, machines, fresh) {
 	visibleMachines = machines;
+  if (!machines.length) { mount(root, emptyMachinesView(root)); return; }
   const grid = el('div', { className: 'grid' });
   for (const m of machines) {
     grid.append(el('button', { className: 'card machine', onclick: () => viewTerminal(root, m) },
@@ -347,7 +432,8 @@ function renderMachines(root, machines, fresh) {
 // viewMachines renders the locally-stored machines immediately, then enriches the
 // list from the owner's encrypted registry (B2) — your machines appear by name with
 // no manual pairing. The fetch is same-origin (the relay that served this app) and
-// best-effort: a failure just leaves the local list. Discovery only.
+// best-effort: a failure just leaves the local list. Discovery only. When the
+// resulting list is empty, pollForMachine keeps refreshing it live (U3).
 function viewMachines(root) {
 	let localRevocations;
 	try { localRevocations = loadRevocations(signerKey().address); }
@@ -357,14 +443,19 @@ function viewMachines(root) {
 			el('p', { className: 'muted' }, e && e.message || String(e))));
 		return;
 	}
-	renderMachines(root, filterRevoked(listMachines(), localRevocations), []);
+	const local = filterRevoked(listMachines(), localRevocations);
+	renderMachines(root, local, []);
   (async () => {
     try {
 		const revocations = await syncRevocations(location.origin, signerKey().address);
       const discovered = await fetchMachines(location.origin, signerKey(), _id.secret);
 		const visibleDiscovered = filterRevoked(discovered, revocations);
-		renderMachines(root, filterRevoked(mergeMachines(listMachines(), visibleDiscovered), revocations), newDevices(visibleDiscovered));
-    } catch { /* not signed in / relay unreachable — keep the local list */ }
+		const merged = filterRevoked(mergeMachines(listMachines(), visibleDiscovered), revocations);
+		renderMachines(root, merged, newDevices(visibleDiscovered));
+		if (!merged.length) pollForMachine(root);
+    } catch {
+		if (!local.length) pollForMachine(root); // relay unreachable & nothing local — keep trying live
+	} // not signed in / relay unreachable — keep the local list
   })();
 }
 
