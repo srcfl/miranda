@@ -7,6 +7,7 @@ import { runSession } from './net/reconnect.js';
 import { backoff } from './net/backoff.js';
 import { iceSessionDead } from './net/ice-state.js';
 import { makeDisconnectGrace } from './net/disconnect-grace.js';
+import { makePool, makeParkPolicy, stateView } from './net/pool.js';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -336,6 +337,143 @@ const el = (tag, props = {}, ...kids) => {
   return n;
 };
 
+// --- warm machine sessions (R2) -------------------------------------------
+// The pool lives at module scope so sessions survive navigation: leave the
+// terminal for the machine list (or pairing) and come back — still live, still
+// scrolled where you were. Each session owns its DURABLE terminal (the xterm
+// and its DOM node persist; only current.send swaps per reconnect), its own
+// runSession loop, and its own view state (windows snapshot, name, connection
+// state). Frames route to THEIR session — never to whichever machine is on
+// screen. The view (viewTerminal) is a shell over the ACTIVE session.
+const POOL_MAX = 3;
+const sessions = new Map(); // machine_id -> machine session
+const poolPolicy = makePool({ max: POOL_MAX });
+
+const activeSession = () => sessions.get(poolPolicy.activeId()) || null;
+const isActive = (sess) => sess === activeSession();
+const ping = (sess) => { sess.notify && sess.notify(); };
+
+// startLoop wires one machine's reconnect loop. All the R1 behavior (early
+// degraded reaction, honest transitions, outage timing, the terminal lines)
+// lives here per session; what the PILL shows is derived from session state by
+// stateView, so a background machine's trouble can show on its strip chip
+// without ever touching the active machine's pill.
+function startLoop(sess) {
+  sess.parked = false;
+  const outageSecs = () => { const s = (performance.now() - sess.dropAt) / 1000; sess.dropAt = 0; return s.toFixed(1); };
+  sess.loop = runSession({
+    connectOnce: (onConnected) => connectOnce(sess.machine, sess.term, sess.current, onConnected,
+      (s) => { sess.snap = s; ping(sess); },
+      (link) => {
+        // Link honesty on the LIVE session (R1): `disconnected` surfaces the
+        // moment it happens; a self-healed link goes straight back to live. No
+        // terminal line for a blip that healed — the pill/chip carries it.
+        if (link === 'degraded') { sess.degraded = true; if (!sess.dropAt) sess.dropAt = performance.now(); }
+        else if (link === 'up') { sess.degraded = false; if (sess.dropAt) console.debug('[mir] link healed in ' + outageSecs() + 's'); }
+        ping(sess);
+      },
+      // A late HELLO is a rename: ours (the ack) or another device's (live
+      // update). The store is only written on OUR rename (we know its sealed
+      // ts); here the session's name just follows the machine.
+      (meta) => { if (meta && meta.name) { sess.machine = { ...sess.machine, name: meta.name }; ping(sess); } }),
+    onState: (state, attempt) => {
+      sess.attempt = attempt || 0;
+      if (state === 'connected') {
+        sess.conn = 'connected'; sess.degraded = false;
+        if (isActive(sess)) { window.__attached = true; sess.term.focus(); }
+        if (sess.reconnecting) {
+          sess.reconnecting = false;
+          if (sess.dropAt) { const s = outageSecs(); console.debug('[mir] resumed in ' + s + 's'); sess.term.write('\r\n[mir] reconnected (' + s + 's)\r\n'); }
+          else sess.term.write('\r\n[mir] reconnected\r\n');
+        }
+      } else if (state === 'connecting') sess.conn = 'connecting';
+      else if (state === 'reconnecting') {
+        // Edge-trigger the terminal line on the connected -> reconnecting
+        // transition ONLY; the loop re-emits 'reconnecting' per retry.
+        const firstLossLine = !sess.reconnecting;
+        sess.reconnecting = true;
+        if (!sess.dropAt) sess.dropAt = performance.now();
+        sess.conn = 'reconnecting';
+        if (isActive(sess)) window.__attached = false;
+        if (firstLossLine) sess.term.write('\r\n[mir] connection lost — reconnecting…\r\n');
+      } else if (state === 'failed') {
+        sess.dropAt = 0; sess.conn = 'failed';
+        if (isActive(sess)) window.__attached = false;
+        sess.term.write('\r\n[mir] couldn\'t reconnect — tap ⊘ to retry\r\n');
+      }
+      ping(sess);
+    },
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    backoffFor: (attempt) => backoff(attempt),
+  });
+}
+
+// openSession returns the warm session for a machine, creating (and starting)
+// it if needed. Activation may evict the least-recently-used background
+// machine — that one is CLOSED for real (loop, transports, terminal, DOM).
+function openSession(machine) {
+  const id = machine.machine_id;
+  let sess = sessions.get(id);
+  if (!sess) {
+    const termEl = el('div', { className: 'termbox' });
+    const t = makeTerminal(termEl);
+    sess = {
+      machine, termEl,
+      term: t.term, current: t.current, refit: t.refit, disposeTerm: t.dispose,
+      snap: null,
+      conn: 'connecting', degraded: false, attempt: 0, parked: false,
+      reconnecting: false, dropAt: 0,
+      loop: null,
+      notify: null, // set by the mounted terminal view (mountGen-guarded)
+    };
+    sess.term.write('[mir] connecting to ' + (machine.name || machine.machine_id) + '…\r\n');
+    sessions.set(id, sess);
+    startLoop(sess);
+  }
+  const { evict } = poolPolicy.activate(id);
+  for (const eid of evict) closeSession(eid);
+  if (sess.parked) startLoop(sess);
+  return sess;
+}
+
+// closeSession fully tears one machine down: loop stopped, live transports
+// aborted, terminal disposed, DOM node dropped. Order matters (see attach()).
+function closeSession(id) {
+  const sess = sessions.get(id);
+  if (!sess) return;
+  sessions.delete(id);
+  poolPolicy.drop(id);
+  sess.notify = null;
+  try { sess.loop && sess.loop.stop(); } catch {}
+  try { sess.current.abort && sess.current.abort(); } catch {}
+  try { sess.current.send = null; } catch {}
+  sess.disposeTerm();
+  sess.termEl.remove();
+}
+
+// parkSession stops a background machine's loop and transports but keeps its
+// terminal and state — it redials the moment it is activated again.
+function parkSession(sess) {
+  if (sess.parked || !sess.loop) return;
+  try { sess.loop.stop(); } catch {}
+  try { sess.current.abort && sess.current.abort(); } catch {}
+  sess.loop = null;
+  sess.parked = true;
+  sess.conn = 'connecting'; sess.degraded = false; sess.reconnecting = false; sess.dropAt = 0;
+  ping(sess);
+}
+
+// Battery honesty (R2): after HIDDEN_PARK_MS hidden, background sessions park
+// (the ACTIVE one is the OS's business); returning to the tab resumes every
+// parked pool member, so switching stays instant when the user is back.
+const parkPolicy = makeParkPolicy({
+  onPark: () => { for (const sess of sessions.values()) if (!isActive(sess)) parkSession(sess); },
+  onResume: () => { for (const sess of sessions.values()) if (sess.parked) { startLoop(sess); ping(sess); } },
+});
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => parkPolicy.visibility(document.hidden));
+}
+
 // mountGen bumps on every mount() — a lightweight "is this still the live view"
 // token. pollForMachine (below) captures it before an async fetch and checks it
 // after, so a navigation away (pairing, a terminal, sign-out) mid-fetch is
@@ -436,9 +574,14 @@ function renderMachines(root, machines, fresh) {
   if (!machines.length) { mount(root, emptyMachinesView(root)); return; }
   const grid = el('div', { className: 'grid' });
   for (const m of machines) {
-    grid.append(el('button', { className: 'card machine', onclick: () => viewTerminal(root, m) },
-      el('div', { className: 'name' }, m.name || m.machine_id),
-      el('div', { className: 'sub' }, m.machine_id.slice(0, 12) + '…')));
+    // A machine that is warm in the session pool (R2) shows its live state on
+    // the card — tapping it switches back in place, scrollback intact.
+    const warm = sessions.get(m.machine_id);
+    const card = el('button', { className: 'card machine', onclick: () => viewTerminal(root, m) },
+      el('div', { className: 'name' }, (warm && warm.machine.name) || m.name || m.machine_id),
+      el('div', { className: 'sub' }, m.machine_id.slice(0, 12) + '…'));
+    if (warm) card.append(el('div', { className: 'sub' }, el('span', { className: 'dot ' + stateView(warm).chip }), ' live'));
+    grid.append(card);
   }
   grid.append(el('button', { className: 'card add', onclick: () => viewPair(root) },
     el('div', { className: 'plus' }, '＋'), el('div', { className: 'sub' }, 'Pair a machine')));
@@ -609,18 +752,20 @@ function viewPair(root, prefill = '', auto = false) {
     el('button', { className: 'link back', onclick: () => leaveScanner(() => viewMachines(root)) }, '← machines')));
 }
 
-function viewTerminal(root, machine) {
-  let handle = null;
-  let session = null; // reconnect controller (runSession) for this machine
-  let reconnecting = false; // true while recovering a dropped session (for the "reconnected" line)
-  let snap = null; // latest FrameWindows snapshot: v2 {v,sess:[...]}, or null (non-tmux)
-  const close = () => { try { handle && handle.close(); } catch {} };
-  const focus = () => { window.__term && window.__term.focus(); };
+function viewTerminal(root, machineToOpen) {
+  // The view is a SHELL over the warm session pool: machineToOpen becomes the
+  // active session (joining the pool — possibly evicting the LRU background
+  // machine); every pooled machine keeps its terminal alive in the DOM, hidden
+  // except the active one. Back leaves them all warm.
+  openSession(machineToOpen);
+  const m = () => activeSession().machine;
+  const focus = () => { const s = activeSession(); s && s.term.focus(); };
 	const revoke = async () => {
-		if (!window.confirm('Permanently revoke ' + (machine.name || machine.machine_id) + '? It must be paired again under a new owner identity to return.')) return;
-		close();
+		const mm = m();
+		if (!window.confirm('Permanently revoke ' + (mm.name || mm.machine_id) + '? It must be paired again under a new owner identity to return.')) return;
+		closeSession(mm.machine_id);
 		try {
-			await revokeMachine([machine.signal, location.origin], signerKey(), machine.machine_id);
+			await revokeMachine([mm.signal, location.origin], signerKey(), mm.machine_id);
 		} catch (e) {
 			window.alert(e && e.message || String(e));
 		}
@@ -631,7 +776,8 @@ function viewTerminal(root, machine) {
   // dependence, no command-prompt/Enter fragility, no keystroke timing). Target
   // windows by stable window_id (@N), not index, to dodge renumber races; carry
   // the owning session so the agent can switch our client across sessions.
-  const ctl = (o) => { handle && handle.sendCtl(o); focus(); };
+  // Routed to the ACTIVE machine's channel — read live, per press.
+  const ctl = (o) => { const s = activeSession(); if (!s) return; s.current.send && s.current.send(encodeControl(te.encode(JSON.stringify(o)))); s.term.focus(); };
   const selectWin = (sess, id) => ctl({ a: 'select-window', s: sess, t: id });
   const newWin = (sess) => ctl({ a: 'new-window', s: sess });
   const renameWin = (id, n) => ctl({ a: 'rename-window', t: id, n });
@@ -642,10 +788,11 @@ function viewTerminal(root, machine) {
   const killSess = (name) => ctl({ a: 'kill-session', t: name });
   const safeName = (s) => (s || '').replace(/[^\w .\-]/g, '').slice(0, 32);
 
-  // sessionsView normalizes the snapshot to a session list. v2 is native; a v1
-  // snapshot (flat {win,active}) from an un-upgraded agent maps to one session so
-  // the UI keeps working through a staged rollout.
+  // sessionsView normalizes the ACTIVE machine's snapshot to a session list. v2
+  // is native; a v1 snapshot (flat {win,active}) from an un-upgraded agent maps
+  // to one session so the UI keeps working through a staged rollout.
   const sessionsView = () => {
+    const snap = activeSession() && activeSession().snap;
     if (!snap) return null;
     if (snap.sess) return snap.sess;
     if (snap.win) return [{ n: '', act: true, aw: snap.active, win: snap.win }];
@@ -653,17 +800,22 @@ function viewTerminal(root, machine) {
   };
   const hasAlert = (s, kind) => (s.win || []).some((w) => w[kind]); // kind: 'b' bell, 'a' activity
 
-  const termBox = el('div', { className: 'termbox' });
-  const back = el('button', { className: 'tb-btn', onclick: () => { close(); viewMachines(root); } }, '‹ Machines');
+  // Back keeps every pooled session warm — that is the whole point of R2.
+  const termHost = el('div', { className: 'termhost' });
+  const back = el('button', { className: 'tb-btn', onclick: () => viewMachines(root) }, '‹ Machines');
   const sw = el('button', { className: 'tb-btn', title: 'switch machine', onclick: () => openSwitcher() }, '⇄');
 	const revokeBtn = el('button', { className: 'tb-btn', title: 'revoke machine', onclick: revoke }, '⊘');
-  const titleEl = el('div', { className: 'tb-title' }, machine.name || machine.machine_id);
+  const titleEl = el('div', { className: 'tb-title' }, m().name || m().machine_id);
   const renameBtn = el('button', { className: 'tb-btn', title: 'rename machine', onclick: () => renameMachineUI() }, '✎');
+  // machbar: one chip per warm machine (name + state dot), shown only when two
+  // or more are pooled — a single machine keeps today's clean layout.
+  const machbar = el('div', { className: 'machbar', hidden: true });
   const strip = el('div', { className: 'winbar' });
   const view = el('div', { className: 'view term' },
     el('div', { className: 'topbar' }, back, titleEl, renameBtn, sw, revokeBtn),
-    strip, termBox);
+    machbar, strip, termHost);
   mount(root, view);
+  const viewGen = mountGen; // this mount's token: stale session notifies no-op
 
   // Rename everywhere: local first (this device shows the new name at once and
   // keeps winning the merge on name_ts), then deliver the owner-resealed
@@ -671,8 +823,9 @@ function viewTerminal(root, machine) {
   // persists the name, republishes on its live relay registration, and
   // re-HELLOs (the onHello below) — your other devices converge on the newer ts.
   function renameMachineUI() {
-    const n = (prompt('Rename machine', machine.name || '') || '').trim();
-    if (!n || n === machine.name) return;
+    const sess = activeSession();
+    const n = (prompt('Rename machine', sess.machine.name || '') || '').trim();
+    if (!n || n === sess.machine.name) return;
     if ([...n].length > 64 || /[\u0000-\u001F\u007F]/.test(n)) {
       alert('Names are 1–64 characters with no control characters.');
       return;
@@ -680,15 +833,15 @@ function viewTerminal(root, machine) {
     let sealed;
     try {
       sealed = sealMachineRecord(_id.secret, {
-        machine_id: machine.machine_id, name: n, host_pub: machine.host_pub, signal_url: machine.signal,
+        machine_id: sess.machine.machine_id, name: n, host_pub: sess.machine.host_pub, signal_url: sess.machine.signal,
       });
     } catch (e) {
       alert('Could not seal the rename: ' + (e && e.message || e));
       return;
     }
-    machine = { ...machine, name: n, name_ts: sealed.ts };
-    addMachine(machine); // upsert by machine_id — the local rename is instant
-    titleEl.textContent = n;
+    sess.machine = { ...sess.machine, name: n, name_ts: sealed.ts };
+    addMachine(sess.machine); // upsert by machine_id — the local rename is instant
+    renderChrome();
     ctl({ a: 'rename-machine', n, blob: sealed.blob });
   }
 
@@ -737,7 +890,7 @@ function viewTerminal(root, machine) {
   function openGrid() {
     const sess = sessionsView();
     if (!sess) return;
-    const card = el('div', { className: 'sheet-card' }, el('div', { className: 'sheet-title' }, 'sessions on ' + (machine.name || machine.machine_id)));
+    const card = el('div', { className: 'sheet-card' }, el('div', { className: 'sheet-title' }, 'sessions on ' + (m().name || m().machine_id)));
     const sheet = el('div', { className: 'sheet', onclick: (e) => { if (e.target === sheet) sheet.remove(); } }, card);
     for (const s of sess) {
       const head = el('div', { className: 'sheet-subtitle' }, el('span', {}, (s.act ? '● ' : '') + (s.n || 'session')));
@@ -782,93 +935,128 @@ function viewTerminal(root, machine) {
     view.append(sheet);
   }
 
-  // quick-switcher: jump straight to another machine without going back to the list
+  // quick-switcher: jump straight to another machine without going back to the
+  // list. Warm machines switch in place (<200 ms, no teardown); a warm
+  // BACKGROUND machine also gets a "disconnect" to leave the pool deliberately.
   function openSwitcher() {
     const card = el('div', { className: 'sheet-card' }, el('div', { className: 'sheet-title' }, 'switch machine'));
     const sheet = el('div', { className: 'sheet', onclick: (e) => { if (e.target === sheet) sheet.remove(); } }, card);
-    for (const m of visibleMachines.filter((x) => x.machine_id !== machine.machine_id)) {
-      card.append(el('button', { className: 'sheet-item', onclick: () => { sheet.remove(); close(); viewTerminal(root, m); } }, m.name || m.machine_id));
+    for (const mm of visibleMachines.filter((x) => x.machine_id !== m().machine_id)) {
+      const warm = sessions.get(mm.machine_id);
+      const item = el('button', { className: 'sheet-item', onclick: () => { sheet.remove(); switchTo(mm); } },
+        el('span', {}, (warm ? '● ' : '') + (warm && warm.machine.name || mm.name || mm.machine_id)));
+      if (warm) {
+        item.append(el('span', { className: 'link', onclick: (e) => {
+          e.stopPropagation(); sheet.remove(); closeSession(mm.machine_id); renderChrome();
+        } }, 'disconnect'));
+      }
+      card.append(item);
     }
-    card.append(el('button', { className: 'sheet-item add', onclick: () => { sheet.remove(); close(); viewPair(root); } }, '＋ Pair a machine'));
+    card.append(el('button', { className: 'sheet-item add', onclick: () => { sheet.remove(); viewPair(root); } }, '＋ Pair a machine'));
     card.append(el('button', { className: 'link', onclick: () => sheet.remove() }, 'cancel'));
     view.append(sheet);
   }
 
-  const { term, current, dispose } = makeTerminal(termBox);
-  term.write('[mir] connecting to ' + (machine.name || machine.machine_id) + '…\r\n');
-
   // mobile keyboard accessory bar: Esc / Ctrl / Tab / arrows / extras, only on
   // touch (coarse-pointer) devices so desktop keeps a clean terminal. Its presses
-  // go through the SAME reconnect-safe path as typed keys — current.send is read
-  // LIVE each press and the raw bytes are framed with encodeData, byte-identical
-  // to term.onData — so the bar keeps working across reconnects (current.send is
-  // swapped per (re)connect, never captured here). preventDefault on the buttons'
-  // pointerdown keeps focus on the terminal so the soft keyboard stays up.
+  // go through the SAME reconnect-safe path as typed keys — the ACTIVE session's
+  // current.send is read LIVE each press and the raw bytes are framed with
+  // encodeData, byte-identical to term.onData — so the bar keeps working across
+  // reconnects AND machine switches (nothing is captured per machine).
   if (shouldShowKeybar()) {
     const { el: keybar } = makeKeybar(
-      (bytes) => { current.send && current.send(encodeData(bytes)); },
-      () => term.focus(),
+      (bytes) => { const s = activeSession(); s && s.current.send && s.current.send(encodeData(bytes)); },
+      () => focus(),
     );
     view.append(keybar);
   }
 
-  // topbar status pill: reflects the live connection state; tap to retry when it has
-  // given up. The keystroke path is durable (current.send), swapped per (re)connect.
-  const pill = el('button', { className: 'pill status', onclick: () => { if (pill.dataset.failed) session && session.retryNow(); } }, '…');
-  const setPill = (label, cls) => { pill.className = 'pill status ' + cls; pill.textContent = label; pill.dataset.failed = cls === 'failed' ? '1' : ''; };
+  // topbar status pill (R1): the ACTIVE machine's state via stateView — the
+  // strings are R1's, pinned by pool.test.js. Tap to retry when it has given up.
+  const pill = el('button', { className: 'pill status', onclick: () => { const s = activeSession(); if (pill.dataset.failed && s && s.loop) s.loop.retryNow(); } }, '…');
   view.querySelector('.topbar').insertBefore(pill, sw);
 
-  handle = {
-    sendCtl: (obj) => { current.send && current.send(encodeControl(te.encode(JSON.stringify(obj)))); focus(); },
-    // Order matters: stop() prevents a NEW attempt; abort() tears down the LIVE one
-    // (closing pc/dc so its read loop unwinds and stops writing) BEFORE dispose()
-    // frees the terminal — otherwise an inbound frame races a disposed xterm.
-    close: () => { session && session.stop(); try { current.abort && current.abort(); } catch {} try { current.send = null; } catch {} dispose(); },
+  const renderPill = () => {
+    const s = activeSession();
+    if (!s) return;
+    const v = stateView(s);
+    pill.className = 'pill status ' + v.cls;
+    pill.textContent = v.pill;
+    pill.dataset.failed = s.conn === 'failed' ? '1' : '';
   };
 
-  // dropAt stamps the moment the link degraded or the session dropped (whichever
-  // came first), so the reconnected line can carry the real outage length — the
-  // number the NAT-matrix work (P2) reads. 0 = healthy.
-  let dropAt = 0;
-  const outageSecs = () => { const s = (performance.now() - dropAt) / 1000; dropAt = 0; return s.toFixed(1); };
-  session = runSession({
-    connectOnce: (onConnected) => connectOnce(machine, term, current, onConnected, (s) => { snap = s; renderStrip(); }, (link) => {
-      // Link honesty on the LIVE session: ICE `disconnected` shows the moment it
-      // happens — before any teardown — and a self-healed link (no teardown, so
-      // no onState transition) goes straight back to live. No terminal line for
-      // a blip that healed by itself: the pill carries it, the scrollback stays clean.
-      if (link === 'degraded') { if (!dropAt) dropAt = performance.now(); setPill('⟳ resuming', 'wait'); }
-      else if (link === 'up' && dropAt) { console.debug('[mir] link healed in ' + outageSecs() + 's'); setPill('● live', 'ok'); }
-    },
-      // A late HELLO is a rename: ours (the ack) or another device's (live
-      // update). The store is only written on OUR rename (we know its sealed
-      // ts); here the title just follows the machine.
-      (meta) => { if (meta && meta.name) { machine = { ...machine, name: meta.name }; titleEl.textContent = meta.name; } }),
-    onState: (state, attempt) => {
-      if (state === 'connected') {
-        setPill('● live', 'ok'); window.__attached = true; term.focus();
-        if (reconnecting) {
-          reconnecting = false;
-          if (dropAt) { const s = outageSecs(); console.debug('[mir] resumed in ' + s + 's'); term.write('\r\n[mir] reconnected (' + s + 's)\r\n'); }
-          else term.write('\r\n[mir] reconnected\r\n');
-        }
-      }
-      else if (state === 'connecting') setPill('⟳ connecting', 'wait');
-      else if (state === 'reconnecting') {
-        // Edge-trigger the terminal line on the connected -> reconnecting transition
-        // ONLY (reconnecting was false). The reconnect loop re-emits 'reconnecting' on
-        // every retry; writing per-emit (the old attempt===0 check) floods the terminal.
-        const firstLossLine = !reconnecting;
-        reconnecting = true;
-        if (!dropAt) dropAt = performance.now();
-        setPill('⟳ reconnecting' + (attempt ? ' (' + attempt + ')' : ''), 'wait');
-        if (firstLossLine) term.write('\r\n[mir] connection lost — reconnecting…\r\n');
-      }
-      else if (state === 'failed') { dropAt = 0; setPill('⊘ tap to retry', 'failed'); term.write('\r\n[mir] couldn\'t reconnect — tap ⊘ to retry\r\n'); }
-    },
-    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
-    backoffFor: (attempt) => backoff(attempt),
-  });
+  // machbar: a chip per pooled machine in pool order — state dot + name; tap to
+  // switch. Hidden entirely below two machines (todays clean single layout).
+  const renderMachbar = () => {
+    machbar.hidden = sessions.size < 2;
+    if (machbar.hidden) { machbar.replaceChildren(); return; }
+    const pills = el('div', { className: 'pills' });
+    for (const id of poolPolicy.ids()) {
+      const sess = sessions.get(id);
+      if (!sess) continue;
+      const activeChip = isActive(sess);
+      const v = stateView(sess);
+      pills.append(el('button', { className: 'pill mach' + (activeChip ? ' active' : ''), onclick: () => { if (!activeChip) switchTo(sess.machine); } },
+        el('span', { className: 'dot ' + v.chip }), el('span', {}, sess.machine.name || sess.machine.machine_id.slice(0, 8))));
+    }
+    machbar.replaceChildren(el('span', { className: 'winbar-label' }, 'machines'), pills);
+  };
+
+  const renderTitle = () => { const mm = m(); titleEl.textContent = mm.name || mm.machine_id; };
+  function renderChrome() { renderTitle(); renderPill(); renderMachbar(); renderStrip(); }
+
+  // Every pooled terminal lives in the DOM, hidden except the active one — the
+  // durable-terminal design across machines: scrollback survives switching.
+  const adoptTerminals = () => {
+    for (const id of poolPolicy.ids()) {
+      const sess = sessions.get(id);
+      if (!sess) continue;
+      if (sess.termEl.parentNode !== termHost) termHost.append(sess.termEl);
+      sess.termEl.hidden = !isActive(sess);
+    }
+  };
+
+  // wireNotify points every pooled session's notify at THIS mounted view; a
+  // stale notify (view replaced) no-ops via the mountGen token. Frames always
+  // land in their OWN session's state — only the rendering is view-scoped.
+  const wireNotify = () => {
+    for (const sess of sessions.values()) {
+      sess.notify = () => {
+        if (mountGen !== viewGen) return;
+        renderMachbar();
+        if (isActive(sess)) { renderPill(); renderTitle(); renderStrip(); }
+      };
+    }
+  };
+
+  // Keep the window.__term/__send/__termText validation hooks on the ACTIVE
+  // terminal (makeTerminal points them at creation; switching re-points).
+  const pointTestHooks = (sess) => {
+    window.__term = sess.term;
+    window.__send = (s) => sess.current.send && sess.current.send(encodeData(te.encode(s)));
+    window.__termText = () => {
+      const b = sess.term.buffer.active;
+      let out = '';
+      for (let i = 0; i < b.length; i++) out += b.getLine(i).translateToString(true) + '\n';
+      return out;
+    };
+  };
+
+  // switchTo: activate a machine IN PLACE — no teardown, no redial for a warm
+  // one (a parked one starts dialing immediately). Pure local DOM work, well
+  // under the 200 ms switch budget.
+  function switchTo(mm) {
+    openSession(mm);
+    adoptTerminals();
+    wireNotify();
+    renderChrome();
+    const s = activeSession();
+    window.__attached = s.conn === 'connected';
+    pointTestHooks(s);
+    requestAnimationFrame(() => { s.refit(); s.current.send && s.current.send(encodeResize(s.term.cols, s.term.rows)); s.term.focus(); });
+  }
+
+  switchTo(machineToOpen);
 }
 
 // after sign-in: replay a scanned pairing code, else show machines
