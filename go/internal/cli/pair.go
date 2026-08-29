@@ -171,12 +171,12 @@ func (a *app) pairInitiate(dir, codeStr string, gate sasGate) error {
 	defer cancel()
 	mc, closeConn, err := pairing.DialPair(ctx, signalURL, pairing.RoomID(token))
 	if err != nil {
-		return err
+		return humanRelayErr(a.binary, err)
 	}
 	defer closeConn()
 	started, err := pairing.StartInitiator(ctx, mc, token, w)
 	if err != nil {
-		return err
+		return humanPairHandshakeErr(err)
 	}
 	m := client.Machine{Name: started.Info.Name, MachineID: started.Info.MachineID, HostPubHex: started.Info.HostPubHex, SignalURL: signalURL}
 

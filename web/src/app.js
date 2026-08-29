@@ -496,6 +496,11 @@ function newDevices(discovered) {
 
 let visibleMachines = [];
 
+// discoveryPaused: the last registry fetch failed while saved machines were
+// shown. The list renders a one-line notice instead of passing stale off as
+// live; any successful fetch clears it.
+let discoveryPaused = false;
+
 // commandBlock renders a one-line command with a Copy button: monospace text
 // that also selects on tap, plus a button that copies via navigator.clipboard
 // when available. Mobile Safari (and any non-secure/older context) may lack or
@@ -562,6 +567,7 @@ function pollForMachine(root) {
       const visibleDiscovered = filterRevoked(discovered, revocations);
       const merged = filterRevoked(mergeMachines(listMachines(), visibleDiscovered), revocations);
       if (mountGen !== myGen) return; // navigated away mid-fetch — drop this result, don't stomp
+      discoveryPaused = false;
       if (!merged.length) { pollForMachine(root); return; } // still empty — keep the view untouched (a re-mount would eat a Copy tap) and wait
       renderMachines(root, merged, newDevices(visibleDiscovered));
     } catch {
@@ -578,6 +584,17 @@ function pollForMachine(root) {
 // persists the signed record locally BEFORE any network — so a relay failure
 // still leaves the machine retired on this device, and the notice says so.
 let lastRetired = null; // {name, warn} — one gentle re-pair pointer on the next list render
+
+// noticeSheet: one plain sentence in the app's own sheet idiom — never the
+// browser's blocking dialog, which freezes the page and looks nothing like
+// the app.
+function noticeSheet(msg) {
+  const sheet = el('div', { className: 'sheet', onclick: (e) => { if (e.target === sheet) sheet.remove(); } },
+    el('div', { className: 'sheet-card' },
+      el('p', { className: 'muted' }, msg),
+      el('button', { className: 'btn', onclick: () => sheet.remove() }, 'OK')));
+  document.body.append(sheet);
+}
 
 function retireSheet(host, machine, onDone) {
   const name = machine.name || machine.machine_id;
@@ -646,6 +663,9 @@ function renderMachines(root, machines, fresh) {
   if (fresh && fresh.length) {
     kids.push(el('p', { className: 'muted' }, '📣 new device joined: ' + fresh.map((m) => m.name || m.machine_id).join(', ')));
   }
+  if (discoveryPaused) {
+    kids.push(el('p', { className: 'muted' }, '⚠ The relay is unreachable — showing saved machines; discovery resumes when you are back online.'));
+  }
   kids.push(grid);
   viewEl.append(...kids);
   mount(root, viewEl);
@@ -662,7 +682,8 @@ function viewMachines(root) {
 	catch (e) {
 		mount(root, el('div', { className: 'view' },
 			el('h1', {}, 'security check failed'),
-			el('p', { className: 'muted' }, e && e.message || String(e))));
+			el('p', { className: 'muted' }, e && e.message || String(e)),
+			el('p', { className: 'muted' }, 'Your saved machine list did not pass its signature check, so it is not shown. Reload to retry; if this keeps happening, sign out and back in.')));
 		return;
 	}
 	const local = filterRevoked(listMachines(), localRevocations);
@@ -673,11 +694,15 @@ function viewMachines(root) {
       const discovered = await fetchMachines(location.origin, signerKey(), _id.secret);
 		const visibleDiscovered = filterRevoked(discovered, revocations);
 		const merged = filterRevoked(mergeMachines(listMachines(), visibleDiscovered), revocations);
+		discoveryPaused = false;
 		renderMachines(root, merged, newDevices(visibleDiscovered));
 		if (!merged.length) pollForMachine(root);
     } catch {
-		if (!local.length) pollForMachine(root); // relay unreachable & nothing local — keep trying live
-	} // not signed in / relay unreachable — keep the local list
+		// Relay unreachable: keep the local list, but say so — a silently stale
+		// list would read as live. pollForMachine keeps retrying either way.
+		if (local.length && !discoveryPaused) { discoveryPaused = true; renderMachines(root, local, []); }
+		if (!local.length) pollForMachine(root);
+	}
   })();
 }
 
@@ -696,7 +721,7 @@ async function scanQR(videoEl, onCode, onError) {
   const stop = () => { stopped = true; cancelAnimationFrame(raf); if (stream) stream.getTracks().forEach((t) => t.stop()); };
   try {
     stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
-  } catch (e) { onError('camera unavailable: ' + (e && e.message || e)); return stop; }
+  } catch (e) { onError('The camera is unavailable — allow camera access in your browser settings, or type the code instead. (' + (e && e.message || e) + ')'); return stop; }
   videoEl.setAttribute('playsinline', '');
   videoEl.muted = true;
   videoEl.srcObject = stream;
@@ -875,7 +900,7 @@ function viewTerminal(root, machineToOpen) {
     const n = (prompt('Rename machine', sess.machine.name || '') || '').trim();
     if (!n || n === sess.machine.name) return;
     if ([...n].length > 64 || /[\u0000-\u001F\u007F]/.test(n)) {
-      alert('Names are 1–64 characters with no control characters.');
+      noticeSheet('Names are 1–64 characters with no control characters. Try a shorter, plainer name.');
       return;
     }
     let sealed;
@@ -884,7 +909,7 @@ function viewTerminal(root, machineToOpen) {
         machine_id: sess.machine.machine_id, name: n, host_pub: sess.machine.host_pub, signal_url: sess.machine.signal,
       });
     } catch (e) {
-      alert('Could not seal the rename: ' + (e && e.message || e));
+      noticeSheet('The rename was not saved — reload and try again. (' + (e && e.message || e) + ')');
       return;
     }
     sess.machine = { ...sess.machine, name: n, name_ts: sealed.ts };

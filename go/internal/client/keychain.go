@@ -69,7 +69,7 @@ func (s commandSecretStore) Get(ref string) ([]byte, error) {
 	out, err := cmd.Output()
 	if err != nil {
 		// Never include command output: some keychain tools can echo secret data.
-		return nil, fmt.Errorf("%s: owner secret %q is unavailable", s.kind, ref)
+		return nil, fmt.Errorf("%s: owner secret %q is unavailable — if the keychain is locked, unlock it and retry; `mir doctor` checks this", s.kind, ref)
 	}
 	secret := bytes.TrimSpace(out)
 	if len(secret) == 0 {

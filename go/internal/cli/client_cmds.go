@@ -74,7 +74,7 @@ func (a *app) cmdSelfUpdate(args []string) error {
 	c := selfupdate.New(repoSlug, a.binary)
 	rel, err := c.Latest()
 	if err != nil {
-		return err
+		return humanUpdateErr(err)
 	}
 	if !selfupdate.IsNewer(version.Version, rel.Tag) {
 		fmt.Fprintf(a.out, "already up to date (%s)\n", version.Version)
@@ -82,7 +82,7 @@ func (a *app) cmdSelfUpdate(args []string) error {
 	}
 	fmt.Fprintf(a.out, "updating %s %s → %s …\n", a.binary, version.Version, rel.Tag)
 	if err := c.Apply(rel, exe); err != nil {
-		return err
+		return humanUpdateErr(err)
 	}
 	fmt.Fprintf(a.out, "updated %s → %s\n", a.binary, rel.Tag)
 	return nil
@@ -121,7 +121,7 @@ func (a *app) cmdRun(args []string) error {
 
 	mc, sess, cleanup, err := client.Attach(ctx, *m, idn, ice(), false)
 	if err != nil {
-		return err
+		return humanAttachErr(a.binary, m.Name, err)
 	}
 	defer cleanup()
 	if err := client.RunCommand(ctx, mc, sess, cmd, *window, os.Stdout); err != nil && ctx.Err() == nil {
@@ -195,8 +195,12 @@ func (a *app) cmdList(args []string) error {
 	if idn.HasRootedIdentity() {
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		a.syncRevocations(ctx, *dir, idn, []string{defaults.SignalURL()})
-		disc, _ := client.FetchRegistry(ctx, nil, defaults.SignalURL(), idn)
+		disc, fetchErr := client.FetchRegistry(ctx, nil, defaults.SignalURL(), idn)
 		cancel()
+		if fetchErr != nil {
+			// Degrading silently would show a stale list as if it were live.
+			fmt.Fprintln(a.errOut, discoveryPausedNote)
+		}
 		discovered = disc
 		for _, m := range disc {
 			discoveredID[m.MachineID] = true
@@ -242,10 +246,11 @@ func (a *app) resolveMachines(ctx context.Context, dir string, names []string, i
 		return nil, err
 	}
 	var discovered []client.Machine
+	var fetchErr error
 	if idn.HasRootedIdentity() {
 		fctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 		a.syncRevocations(fctx, dir, idn, []string{defaults.SignalURL()})
-		discovered, _ = client.FetchRegistry(fctx, nil, defaults.SignalURL(), idn)
+		discovered, fetchErr = client.FetchRegistry(fctx, nil, defaults.SignalURL(), idn)
 		cancel()
 		_ = client.NotifyNewDevices(a.errOut, dir, discovered)
 	}
@@ -259,6 +264,9 @@ func (a *app) resolveMachines(ctx context.Context, dir string, names []string, i
 	for _, name := range names {
 		m, ok, _ := client.ResolveMachine(local, discovered, name)
 		if !ok {
+			if fetchErr != nil {
+				return nil, fmt.Errorf("unknown machine %q — it is not paired locally, and the relay was unreachable so your encrypted registry could not be checked; get back online and retry (cause: %v)", name, fetchErr)
+			}
 			return nil, fmt.Errorf("unknown machine %q — it is neither paired locally nor online in your encrypted registry", name)
 		}
 		resolved = append(resolved, m)
@@ -546,14 +554,14 @@ func (a *app) cmdAttach(args []string) error {
 			return client.RunInteractive(ctx, mc, sess, m.Name)
 		})
 		if err != nil && ctx.Err() == nil && !isCleanDetach(err) {
-			return err
+			return humanAttachErr(a.binary, m.Name, err)
 		}
 		return nil
 	}
 
 	sessions, cleanup, err := client.AttachAll(ctx, resolved, idn, iceList, *relayOnly)
 	if err != nil {
-		return err
+		return humanAttachErr(a.binary, strings.Join(names, ", "), err)
 	}
 	defer cleanup()
 	if err := client.RunInteractiveMux(ctx, sessions, prefix, prefixLabel); err != nil && ctx.Err() == nil {
