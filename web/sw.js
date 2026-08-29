@@ -13,7 +13,7 @@
 // relay serves sw.js no-store — so a new deploy replaces this worker on the
 // next online load.
 
-const CACHE = 'mir-shell-v3';
+const CACHE = 'mir-shell-v4';
 
 // Everything the app needs to boot. test/sw.test.js fails if this list drifts
 // from the files on disk — add new modules here when you add them to src/.
@@ -35,6 +35,7 @@ const SHELL = [
   '/src/net/backoff.js',
   '/src/net/disconnect-grace.js',
   '/src/net/ice-state.js',
+  '/src/net/pool.js',
   '/src/net/reconnect.js',
   '/src/net/ws-open.js',
   '/src/noise/frame.js',
