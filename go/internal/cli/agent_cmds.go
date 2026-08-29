@@ -97,8 +97,13 @@ func (a *app) cmdUp(args []string) error {
 		return err
 	}
 	launch := strings.Split(*shell, ":")
-	if launch[0] == "tmux" && !agent.TmuxInstalled() {
-		return fmt.Errorf("tmux not installed (brew install tmux), or pass --shell sh")
+	isTTY := term.IsTerminal(int(os.Stdin.Fd()))
+	// tmux bootstrap runs BEFORE pairing: on a fresh machine both need the
+	// user's attention, and asking everything up front (tmux, then the pairing
+	// QR) reads as one flow instead of two interruptions.
+	launch, err = newTmuxBootstrap(isTTY, a.in).ensure(a.out, a.errOut, launch)
+	if err != nil {
+		return err
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -111,7 +116,7 @@ func (a *app) cmdUp(args []string) error {
 		gate := sasGate{
 			confirmSAS: *confirmSAS,
 			skip:       *yes,
-			isTTY:      term.IsTerminal(int(os.Stdin.Fd())),
+			isTTY:      isTTY,
 			in:         os.Stdin,
 		}
 		if err := a.pairOnFirstRun(ctx, *dir, *name, *signalURL, *webURL, gate); err != nil {
