@@ -20,10 +20,17 @@ type Shell interface {
 	Close() error
 }
 
+// ControlHandler lets the runtime intercept agent-level CONTROL frames (e.g.
+// machine rename) before tmux window control sees them. handled=true means the
+// payload was an agent-level command (whether or not it was applied); a
+// non-empty helloName re-announces the machine to this client with a fresh
+// HELLO — the rename acknowledgement.
+type ControlHandler func(payload []byte) (handled bool, helloName string)
+
 // RunAgentSession bridges an established Noise session to a shell using the
 // Plan-1 frame protocol: it sends HELLO (machine name) once, then pumps DATA in
 // both directions and applies RESIZE. Returns when either side ends.
-func RunAgentSession(ctx context.Context, mc peer.MsgConn, sess *noise.Session, sh Shell, machineName string, windowsJSON func() []byte, tmuxPid int) error {
+func RunAgentSession(ctx context.Context, mc peer.MsgConn, sess *noise.Session, sh Shell, machineName string, windowsJSON func() []byte, tmuxPid int, control ControlHandler) error {
 	// noise.Session.Encrypt is not concurrency-safe (nonce counter), and several
 	// goroutines now send (HELLO, shell->peer, the windows poller) — serialize.
 	var sendMu sync.Mutex
@@ -106,6 +113,15 @@ func RunAgentSession(ctx context.Context, mc peer.MsgConn, sess *noise.Session, 
 					_ = sh.Resize(cols, rows)
 				}
 			case noise.FrameControl:
+				if control != nil {
+					if handled, helloName := control(payload); handled {
+						if helloName != "" {
+							hello, _ := json.Marshal(map[string]string{"name": helloName})
+							_ = safeSend(noise.EncodeHello(hello))
+						}
+						continue
+					}
+				}
 				if tmuxPid > 0 { // tmux launch only; 0 = plain shell, no window/session control
 					runTmuxControl(tmuxPid, payload)
 				}

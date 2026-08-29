@@ -1,7 +1,7 @@
 // web/src/app.js — the SPA: identity, a machine list, in-browser pairing, and a
 // live terminal. Data plane is P2P + Noise (see attach); the relay only brokers.
 import { HandshakeKK } from './noise/noise-kk.js';
-import { encodeData, encodeResize, encodeControl, decodeFrame, FRAME_DATA, FRAME_WINDOWS } from './noise/frame.js';
+import { encodeData, encodeResize, encodeControl, decodeFrame, FRAME_DATA, FRAME_WINDOWS, FRAME_HELLO } from './noise/frame.js';
 import { awaitSocketOpen } from './net/ws-open.js';
 import { runSession } from './net/reconnect.js';
 import { backoff } from './net/backoff.js';
@@ -11,7 +11,7 @@ import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { listMachines, addMachine } from './store.js';
-import { fetchMachines, mergeMachines, freshDevices } from './registry.js';
+import { fetchMachines, mergeMachines, freshDevices, sealMachineRecord } from './registry.js';
 import { pairWithCode } from './pair.js';
 import { confirmPairingSafety, machineAfterConfirmedPairing, pendingPairingConfirmation } from './pairing/confirm.js';
 import { registerPasskey, signInPasskey, devOwnerKey, passkeySupported, isLocalhost } from './identity.js';
@@ -97,8 +97,11 @@ const wsBase = (signalURL) => 'ws' + signalURL.slice(4); // http->ws, https->wss
 // onConnected() fires once the Noise channel is ready; onWindows(snapshot) gets each
 // tmux FrameWindows snapshot. onLink('degraded'|'up'), optional, reports ICE link
 // health on the LIVE session (a flip seen, a flip healed) so the pill stays honest
-// before any teardown. The caller (makeTerminal) owns the terminal + teardown.
-export async function connectOnce(machine, term, current, onConnected, onWindows, onLink) {
+// before any teardown. onHello(meta), optional, gets late HELLOs — the agent
+// re-announcing itself, today a machine rename (ours: the acknowledgement;
+// another device's: a live update). The caller (makeTerminal) owns the terminal
+// + teardown.
+export async function connectOnce(machine, term, current, onConnected, onWindows, onLink, onHello) {
   const owner = ownerKey();
   const signer = signerKey();
 	if (isMachineRevoked(machine.machine_id, signer.address)) throw new Error('machine revoked');
@@ -237,6 +240,10 @@ export async function connectOnce(machine, term, current, onConnected, onWindows
       const { type, payload } = decodeFrame(hs.decrypt(ct));
       if (type === FRAME_DATA) { if (!aborted) term.write(payload); }
       else if (type === FRAME_WINDOWS) { try { onWindows && onWindows(JSON.parse(td.decode(payload))); } catch {} }
+      // A HELLO after the first one is the agent re-announcing itself — today
+      // that means a machine rename (ours: the acknowledgement; another
+      // device's: a live update).
+      else if (type === FRAME_HELLO) { try { onHello && onHello(JSON.parse(td.decode(payload))); } catch {} }
     }
   } catch (e) {
     if (!connected) throw e; // setup failure -> runSession backs off and retries with a fresh offer
@@ -650,11 +657,40 @@ function viewTerminal(root, machine) {
   const back = el('button', { className: 'tb-btn', onclick: () => { close(); viewMachines(root); } }, '‹ Machines');
   const sw = el('button', { className: 'tb-btn', title: 'switch machine', onclick: () => openSwitcher() }, '⇄');
 	const revokeBtn = el('button', { className: 'tb-btn', title: 'revoke machine', onclick: revoke }, '⊘');
+  const titleEl = el('div', { className: 'tb-title' }, machine.name || machine.machine_id);
+  const renameBtn = el('button', { className: 'tb-btn', title: 'rename machine', onclick: () => renameMachineUI() }, '✎');
   const strip = el('div', { className: 'winbar' });
   const view = el('div', { className: 'view term' },
-    el('div', { className: 'topbar' }, back, el('div', { className: 'tb-title' }, machine.name || machine.machine_id), sw, revokeBtn),
+    el('div', { className: 'topbar' }, back, titleEl, renameBtn, sw, revokeBtn),
     strip, termBox);
   mount(root, view);
+
+  // Rename everywhere: local first (this device shows the new name at once and
+  // keeps winning the merge on name_ts), then deliver the owner-resealed
+  // registry record over the session — the agent can't seal records itself. It
+  // persists the name, republishes on its live relay registration, and
+  // re-HELLOs (the onHello below) — your other devices converge on the newer ts.
+  function renameMachineUI() {
+    const n = (prompt('Rename machine', machine.name || '') || '').trim();
+    if (!n || n === machine.name) return;
+    if ([...n].length > 64 || /[\u0000-\u001F\u007F]/.test(n)) {
+      alert('Names are 1–64 characters with no control characters.');
+      return;
+    }
+    let sealed;
+    try {
+      sealed = sealMachineRecord(_id.secret, {
+        machine_id: machine.machine_id, name: n, host_pub: machine.host_pub, signal_url: machine.signal,
+      });
+    } catch (e) {
+      alert('Could not seal the rename: ' + (e && e.message || e));
+      return;
+    }
+    machine = { ...machine, name: n, name_ts: sealed.ts };
+    addMachine(machine); // upsert by machine_id — the local rename is instant
+    titleEl.textContent = n;
+    ctl({ a: 'rename-machine', n, blob: sealed.blob });
+  }
 
   // tab strip: a pill per window of the ACTIVE session (mirrors the snapshot),
   // active highlighted; a session chip (when >1 session) switches sessions and
@@ -803,7 +839,11 @@ function viewTerminal(root, machine) {
       // a blip that healed by itself: the pill carries it, the scrollback stays clean.
       if (link === 'degraded') { if (!dropAt) dropAt = performance.now(); setPill('⟳ resuming', 'wait'); }
       else if (link === 'up' && dropAt) { console.debug('[mir] link healed in ' + outageSecs() + 's'); setPill('● live', 'ok'); }
-    }),
+    },
+      // A late HELLO is a rename: ours (the ack) or another device's (live
+      // update). The store is only written on OUR rename (we know its sealed
+      // ts); here the title just follows the machine.
+      (meta) => { if (meta && meta.name) { machine = { ...machine, name: meta.name }; titleEl.textContent = meta.name; } }),
     onState: (state, attempt) => {
       if (state === 'connected') {
         setPill('● live', 'ok'); window.__attached = true; term.focus();

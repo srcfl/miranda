@@ -127,5 +127,5 @@ func (rt *Runtime) lanAccept(ctx context.Context, conn *quicmsg.Conn) {
 	if err != nil {
 		return
 	}
-	_ = rt.serveAuthenticated(ctx, conn, ownerPub, releaseHS)
+	_ = rt.serveAuthenticated(ctx, conn, sb.Wallet, ownerPub, releaseHS)
 }

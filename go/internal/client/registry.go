@@ -37,32 +37,35 @@ type registryRecord struct {
 }
 
 // SealRegistryMachine creates the opaque discovery record provisioned to an
-// agent during pairing. Encryption happens on the owner client; the agent only
-// stores and republishes the blob and never receives the registry key or root.
-func SealRegistryMachine(id *Identity, m Machine) (string, error) {
+// agent during pairing (and re-sealed on rename). Encryption happens on the
+// owner client; the agent only stores and republishes the blob and never
+// receives the registry key or root. The second result is the record's ts —
+// the name's last-writer-wins timestamp (see MergeMachines).
+func SealRegistryMachine(id *Identity, m Machine) (string, int64, error) {
 	if !id.HasRootedIdentity() {
-		return "", fmt.Errorf("registry: identity has no secret root")
+		return "", 0, fmt.Errorf("registry: identity has no secret root")
 	}
-	rec := registryRecord{V: 1, Name: m.Name, HostPub: m.HostPubHex, SignalURL: m.SignalURL, TS: time.Now().Unix()}
+	ts := time.Now().Unix()
+	rec := registryRecord{V: 1, Name: m.Name, HostPub: m.HostPubHex, SignalURL: m.SignalURL, TS: ts}
 	pt, err := json.Marshal(rec)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	secret := id.Secret()
 	defer zeroBytes(secret)
 	key, err := identity.RegistryKey(secret)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	nonce := make([]byte, 12)
 	if _, err := rand.Read(nonce); err != nil {
-		return "", err
+		return "", 0, err
 	}
 	blob, err := identity.SealRecord(key, nonce, pt, m.MachineID)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
-	return base64.StdEncoding.EncodeToString(blob), nil
+	return base64.StdEncoding.EncodeToString(blob), ts, nil
 }
 
 // FetchRegistry asks the relay for this owner's live device records and decrypts
@@ -123,6 +126,7 @@ func FetchRegistry(ctx context.Context, hc *http.Client, signalURL string, id *I
 			MachineID:  e.MachineID,
 			HostPubHex: rec.HostPub,
 			SignalURL:  su,
+			NameTS:     rec.TS,
 		})
 	}
 	return machines, nil
@@ -130,7 +134,10 @@ func FetchRegistry(ctx context.Context, hc *http.Client, signalURL string, id *I
 
 // MergeMachines unions local and discovered machines by MachineID. A verified
 // registry record is canonical for HostPubHex and SignalURL (unsigned
-// machines.json must not win a pin); the local display name may stay.
+// machines.json must not win a pin). The display name is last-writer-wins on
+// NameTS: a registry record sealed after the local name was set carries a
+// rename made on another device, so it wins; a local rename not yet delivered
+// to the machine (newer NameTS) keeps winning until the machine republishes.
 // Discovered-only machines are appended. Order is local-first, then newcomers.
 func MergeMachines(local, discovered []Machine) []Machine {
 	byID := make(map[string]Machine, len(local)+len(discovered))
@@ -160,8 +167,9 @@ func MergeMachines(local, discovered []Machine) []Machine {
 		if m.SignalURL != "" {
 			prev.SignalURL = m.SignalURL
 		}
-		if prev.Name == "" {
+		if m.Name != "" && (prev.Name == "" || m.NameTS >= prev.NameTS) {
 			prev.Name = m.Name
+			prev.NameTS = m.NameTS
 		}
 		byID[m.MachineID] = prev
 	}

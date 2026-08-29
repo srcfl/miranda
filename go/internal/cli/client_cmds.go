@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/srcful/terminal-relay/go/internal/agent"
 	"github.com/srcful/terminal-relay/go/internal/client"
 	"github.com/srcful/terminal-relay/go/internal/defaults"
 	"github.com/srcful/terminal-relay/go/internal/noise"
@@ -288,14 +289,78 @@ func (a *app) syncRevocations(ctx context.Context, dir string, idn *client.Ident
 
 func (a *app) cmdMachine(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: mir machine revoke <name> --yes")
+		return fmt.Errorf("usage: mir machine rename <name> <new-name> | mir machine revoke <name> --yes")
 	}
 	switch args[0] {
 	case "revoke":
 		return a.cmdMachineRevoke(args[1:])
+	case "rename":
+		return a.cmdMachineRename(args[1:])
 	default:
 		return fmt.Errorf("unknown machine subcommand %q", args[0])
 	}
+}
+
+// cmdMachineRename renames a machine everywhere: locally at once, then — the
+// agent can't seal registry records itself — it re-seals the discovery record
+// under the owner root and delivers it to the machine over an authenticated
+// session. The machine persists the name, republishes the record on its live
+// relay registration, and your other devices converge on the registry's newer
+// ts (see client.MergeMachines).
+func (a *app) cmdMachineRename(args []string) error {
+	fs := flag.NewFlagSet("machine rename", flag.ExitOnError)
+	dir := fs.String("dir", defaultClientDir(), "client state directory")
+	ice := iceFlags(fs)
+	_ = fs.Parse(args)
+	rest := fs.Args()
+	if len(rest) != 2 {
+		return fmt.Errorf("usage: mir machine rename <name> <new-name>")
+	}
+	name, newName := rest[0], rest[1]
+	if !agent.ValidMachineName(newName) {
+		return fmt.Errorf("invalid machine name %q: 1-64 characters, no control characters or surrounding spaces", newName)
+	}
+	idn, err := a.identity(*dir)
+	if err != nil {
+		return err
+	}
+	if err := a.requireRootedIdentity(idn); err != nil {
+		return err
+	}
+	machines, err := a.resolveMachines(context.Background(), *dir, []string{name}, idn)
+	if err != nil {
+		return err
+	}
+	m := machines[0]
+	if newName == m.Name {
+		fmt.Fprintf(a.out, "machine is already named %q\n", newName)
+		return nil
+	}
+
+	blob, ts, err := client.SealRegistryMachine(idn, client.Machine{
+		Name: newName, MachineID: m.MachineID, HostPubHex: m.HostPubHex, SignalURL: m.SignalURL,
+	})
+	if err != nil {
+		return err
+	}
+	// Local first: this device shows the new name immediately (and keeps
+	// winning the merge until the machine republishes the re-sealed record).
+	if err := client.RenameLocalMachine(*dir, m, newName, ts); err != nil {
+		return err
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	mc, sess, cleanup, err := client.Attach(ctx, m, idn, ice(), false)
+	if err != nil {
+		return fmt.Errorf("renamed locally, but %q is unreachable (%v) — your other devices keep the old name; re-run when it is back online", name, err)
+	}
+	defer cleanup()
+	if err := client.RenameOverSession(ctx, mc, sess, newName, blob, 8*time.Second); err != nil {
+		return fmt.Errorf("renamed locally, but delivery was not confirmed (%v) — the machine may run an older agent; update it and re-run", err)
+	}
+	fmt.Fprintf(a.out, "✓ renamed %q → %q — the new name reaches your other devices via the encrypted registry\n", name, newName)
+	return nil
 }
 
 func (a *app) cmdMachineRevoke(args []string) error {
