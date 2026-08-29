@@ -35,9 +35,11 @@ This is a beta. Read the gaps below before you rely on it.
   authenticators (Safari, Chrome, Firefox, iCloud Keychain, 1Password, and so
   on) are tested and supported. Most combinations work; none are certified
   yet.
-- **NAT and network numbers.** Reconnect timing is tuned and target-tested,
-  but there are no published measurements across home NAT, office NAT,
-  cellular, and TURN fallback.
+- **Real-network numbers.** Lab measurements exist — a Docker NAT matrix
+  ([netsim/results/results.md](netsim/results/results.md)) shows attach in
+  0.2–1.3 s and resume after a network flip in ~2.6 s direct / ~3.0 s over
+  TURN — but nothing is published yet from real home, office, or cellular
+  networks.
 - **External audit.** Miranda has not had an independent security audit. A
   scope document exists ([docs/audit-scope.md](docs/audit-scope.md)), but no
   audit has been commissioned or completed.
