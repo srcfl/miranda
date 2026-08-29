@@ -1,0 +1,58 @@
+name: Beta feedback
+description: Something worked but felt slow, confusing, or off.
+labels: ["beta-feedback"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This form is for friction, not breakage — if something failed outright,
+        use **Bug report** instead. See [BETA.md](https://github.com/srcfl/miranda/blob/main/BETA.md)
+        for what the beta already claims, so you can tell us where it fell short.
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      description: The OS on the machine you were using.
+      options:
+        - macOS
+        - Linux
+        - Other / not sure
+    validations:
+      required: true
+
+  - type: input
+    id: browser-cli
+    attributes:
+      label: Browser or CLI version
+      description: >
+        If you used the web app, name and version of the browser. If you used
+        the `mir` CLI, its version (`mir version`).
+    validations:
+      required: true
+
+  - type: textarea
+    id: where
+    attributes:
+      label: Where did it feel slow or confusing?
+      description: Name the moment — pairing, reconnect, switching machines, renaming, revoking, an error message, anything else.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What would have felt right instead?
+    validations:
+      required: false
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: mir doctor output (optional)
+      description: >
+        If the friction involved a connection or a machine's state, paste
+        `mir doctor` output here. It prints no private material.
+      render: text
+    validations:
+      required: false
