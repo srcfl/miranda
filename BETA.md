@@ -41,11 +41,6 @@ This is a beta. Read the gaps below before you rely on it.
 - **External audit.** Miranda has not had an independent security audit. A
   scope document exists ([docs/audit-scope.md](docs/audit-scope.md)), but no
   audit has been commissioned or completed.
-- **Machine retirement.** Revoking a machine works, but the guided flow and
-  plain-language explanation of what revocation means are still thin.
-- **Failure messages.** Most user-facing errors are plain sentences with a
-  next step; a full pass over every failure path is not finished, so a
-  handful may still be terser than they should be.
 - **No telemetry.** Miranda does not phone home, by design. That means we
   cannot see how the beta is going without your reports — see below.
 
