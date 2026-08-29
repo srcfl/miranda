@@ -2,7 +2,7 @@
 
 PREFIX ?= $(HOME)/.local/bin
 
-.PHONY: build test race reproduce install dev
+.PHONY: build test race reproduce install dev netsim
 
 build:
 	cd go && go build -o ../bin/mir-signal ./cmd/mir-signal
@@ -17,6 +17,12 @@ race:
 
 reproduce:
 	./scripts/verify-reproducible.sh
+
+# netsim: the NAT matrix in Docker — attach, TURN fallback, and resume after a
+# network flip, measured across NAT types. Needs a running Docker (OrbStack is
+# fine). Takes a few minutes; results land in netsim/results/. See netsim/README.md.
+netsim:
+	./netsim/run.sh
 
 # install the CLIs onto your PATH (default ~/.local/bin; override with PREFIX=...)
 install: build
