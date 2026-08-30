@@ -6,7 +6,21 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 )
+
+// cosignInstallHint names the install command for this platform, so the
+// missing-cosign refusal carries its next step.
+func cosignInstallHint() string {
+	switch runtime.GOOS {
+	case "darwin":
+		return "brew install cosign"
+	case "linux":
+		return "brew install cosign, or your package manager's cosign package"
+	default:
+		return "https://docs.sigstore.dev/cosign/system_config/installation/"
+	}
+}
 
 // cosignOIDCIssuer is the OIDC issuer that mints the token Fulcio signs against
 // for GitHub Actions jobs. Pinning it stops a cert minted via some OTHER issuer
@@ -48,7 +62,7 @@ func (c *Client) verifyChecksumsSignature(rel *Release, sums []byte, note func(s
 		}
 	}
 	if _, err := exec.LookPath("cosign"); err != nil {
-		return fmt.Errorf("cosign is required to verify Miranda releases")
+		return fmt.Errorf("cosign is required to verify Miranda releases: install it (%s) and run the update again", cosignInstallHint())
 	}
 
 	// Fail closed: a release that carries no .sig/.pem is refused. Do NOT soften
