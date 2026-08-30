@@ -105,6 +105,45 @@ func TestRunUnknownCommand(t *testing.T) {
 	}
 }
 
+// tmux-style shorthands and the friendly `update` spelling map onto canonical
+// commands; everything else passes through untouched.
+func TestCanonicalCommand(t *testing.T) {
+	cases := map[string]string{
+		"a": "attach", "ls": "list", "id": "identity", "update": "self-update",
+		"attach": "attach", "wat": "wat",
+	}
+	for in, want := range cases {
+		if got := canonicalCommand(in); got != want {
+			t.Errorf("canonicalCommand(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// `mir ls` behaves exactly like `mir list` — and pins the empty state pointing
+// at `mir up` (U1 moved first-run pairing there; `mir pair` was stale).
+func TestShorthandLs(t *testing.T) {
+	t.Setenv("MIR_NO_UPDATE_CHECK", "1")
+	t.Setenv("MIR_SIGNAL", "http://127.0.0.1:1")
+	var out, errb bytes.Buffer
+	if code := Run([]string{"ls", "--dir", t.TempDir()}, &out, &errb); code != 0 {
+		t.Fatalf("ls exit = %d, stderr = %q", code, errb.String())
+	}
+	if !strings.Contains(out.String(), "no machines yet — run `mir up`") {
+		t.Fatalf("ls output = %q", out.String())
+	}
+}
+
+// The usage line offers `update` (the spelling people try first) and the shorthands.
+func TestUsageMentionsUpdateAndShorthands(t *testing.T) {
+	var out, errb bytes.Buffer
+	Run([]string{"wat"}, &out, &errb)
+	for _, want := range []string{"update", "a = attach", "ls = list"} {
+		if !strings.Contains(errb.String(), want) {
+			t.Fatalf("usage missing %q: %q", want, errb.String())
+		}
+	}
+}
+
 func TestRunNoArgs(t *testing.T) {
 	var out, errb bytes.Buffer
 	if code := Run(nil, &out, &errb); code != 2 {
