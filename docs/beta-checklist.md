@@ -13,7 +13,7 @@ Each step maps to a release gate in the
 Start a timer. On a machine that has never run Miranda:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/srcfl/miranda/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/srcfl/miranda/main/install.sh | MIR_CHANNEL=beta sh
 mir up
 ```
 
