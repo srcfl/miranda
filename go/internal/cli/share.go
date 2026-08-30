@@ -51,11 +51,11 @@ func (a *app) cmdShare(args []string) error {
 	session := fs.String("session", "main", "tmux session the share covers")
 	webURL := fs.String("web", defaults.WebURL(), "browser SPA base URL the invite link opens")
 	ice := iceFlags(fs)
-	_ = fs.Parse(args)
-	if len(fs.Args()) != 1 {
-		return fmt.Errorf("usage: mir share <machine> [--ttl 1h] [--write] [--session main] | mir share ls | mir share revoke <id>")
+	rest := parseArgs(fs, args)
+	if len(rest) != 1 {
+		return fmt.Errorf("usage: %s share <machine> [--ttl 1h] [--write] [--session main] | %s share ls | %s share revoke <id>", a.binary, a.binary, a.binary)
 	}
-	name := fs.Arg(0)
+	name := rest[0]
 	if !shareIsTTY() {
 		return fmt.Errorf("sharing needs a person at the terminal to compare the safety number — there is no --yes; run `%s share` interactively", a.binary)
 	}
@@ -236,11 +236,11 @@ func (a *app) cmdShareRevoke(args []string) error {
 	fs := flag.NewFlagSet("share revoke", flag.ExitOnError)
 	dir := fs.String("dir", defaultClientDir(), "client state directory")
 	ice := iceFlags(fs)
-	_ = fs.Parse(args)
-	if len(fs.Args()) != 1 {
+	rest := parseArgs(fs, args)
+	if len(rest) != 1 {
 		return fmt.Errorf("usage: %s share revoke <id>   (ids: `%s share ls`)", a.binary, a.binary)
 	}
-	share, err := client.ResolveShareGID(*dir, fs.Arg(0))
+	share, err := client.ResolveShareGID(*dir, rest[0])
 	if err != nil {
 		return err
 	}
@@ -290,11 +290,11 @@ func modeWord(mode string) string {
 func (a *app) cmdJoin(args []string) error {
 	fs := flag.NewFlagSet("join", flag.ExitOnError)
 	dir := fs.String("dir", defaultClientDir(), "client state directory")
-	_ = fs.Parse(args)
-	if len(fs.Args()) != 1 {
-		return fmt.Errorf("usage: mir join <code>")
+	rest := parseArgs(fs, args)
+	if len(rest) != 1 {
+		return fmt.Errorf("usage: %s join <code>", a.binary)
 	}
-	signalURL, token, err := pairing.DecodeCode(fs.Arg(0))
+	signalURL, token, err := pairing.DecodeCode(rest[0])
 	if err != nil {
 		return err
 	}

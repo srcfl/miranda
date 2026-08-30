@@ -100,10 +100,14 @@ func (a *app) cmdRun(args []string) error {
 	dir := fs.String("dir", defaultClientDir(), "client state directory")
 	ice := iceFlags(fs)
 	window := fs.Duration("window", 3*time.Second, "how long to stream output before exiting")
+	// run is the one command that does NOT accept flags after the positionals:
+	// everything past <machine> is the remote command, so `mir run box ls -la`
+	// must hand `-la` to ls, not to mir. Its own flags therefore come first,
+	// which is what the usage line says.
 	_ = fs.Parse(args)
 	rest := fs.Args()
 	if len(rest) < 2 {
-		return fmt.Errorf("usage: mir run <machine> <command...>")
+		return fmt.Errorf("usage: %s run [flags] <machine> <command...>   (flags come first; everything after <machine> is the remote command)", a.binary)
 	}
 	name := rest[0]
 	cmd := strings.Join(rest[1:], " ")
@@ -379,7 +383,7 @@ func sameRelay(a, b string) bool {
 
 func (a *app) cmdMachine(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: mir machine rename <name> <new-name> | mir machine revoke <name> [--yes]")
+		return fmt.Errorf("usage: %s machine rename <name> <new-name> | %s machine revoke <name> [--yes]", a.binary, a.binary)
 	}
 	switch args[0] {
 	case "revoke":
@@ -401,10 +405,9 @@ func (a *app) cmdMachineRename(args []string) error {
 	fs := flag.NewFlagSet("machine rename", flag.ExitOnError)
 	dir := fs.String("dir", defaultClientDir(), "client state directory")
 	ice := iceFlags(fs)
-	_ = fs.Parse(args)
-	rest := fs.Args()
+	rest := parseArgs(fs, args)
 	if len(rest) != 2 {
-		return fmt.Errorf("usage: mir machine rename <name> <new-name>")
+		return fmt.Errorf("usage: %s machine rename <name> <new-name>", a.binary)
 	}
 	name, newName := rest[0], rest[1]
 	if !agent.ValidMachineName(newName) {
@@ -493,23 +496,13 @@ func (a *app) cmdMachineRevoke(args []string) error {
 	fs := flag.NewFlagSet("machine revoke", flag.ExitOnError)
 	dir := fs.String("dir", defaultClientDir(), "client state directory")
 	yes := fs.Bool("yes", false, "skip the interactive confirmation (scripts)")
-	// Accept the human-friendly documented form `revoke box --yes` as well as
-	// Go flag's native `revoke --yes box` ordering.
-	name := ""
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		name, args = args[0], args[1:]
+	// Accepts the human-friendly documented form `revoke box --yes` as well as
+	// Go flag's native `revoke --yes box` ordering (parseArgs).
+	rest := parseArgs(fs, args)
+	if len(rest) != 1 {
+		return fmt.Errorf("usage: %s machine revoke <name> [--yes]", a.binary)
 	}
-	_ = fs.Parse(args)
-	if name == "" {
-		if len(fs.Args()) == 1 {
-			name = fs.Args()[0]
-		}
-	} else if len(fs.Args()) != 0 {
-		return fmt.Errorf("usage: mir machine revoke <name> [--yes]")
-	}
-	if name == "" || len(fs.Args()) > 1 {
-		return fmt.Errorf("usage: mir machine revoke <name> [--yes]")
-	}
+	name := rest[0]
 	// Consent before any identity or network work. Interactive runs get the
 	// plain-words prompt; scripted runs must state --yes (fail closed).
 	if !*yes {
@@ -593,17 +586,16 @@ func (a *app) cmdAttach(args []string) error {
 	prefixFlag := fs.String("prefix", "ctrl-o", "multiplexer switch key (e.g. ctrl-o, ctrl-a, ctrl-space)")
 	relayOnly := fs.Bool("relay-only", false, "deprecated: no effect (one connection now carries direct and relayed)")
 	ice := iceFlags(fs)
-	_ = fs.Parse(args)
+	names := parseArgs(fs, args)
 	if *relayOnly {
 		fmt.Fprintln(a.errOut, "note: --relay-only no longer does anything and will go away — LAN-direct now rides the same connection (direct when possible, relayed when not)")
 	}
-	names := fs.Args()
 	if len(names) == 0 {
 		// A bare `mir attach` on a terminal means "continue": the last-used
 		// machine, else the only one there is, else the overview. Scripts
 		// (no TTY) keep the explicit usage error.
 		if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
-			return fmt.Errorf("usage: mir attach <machine> [machine...]")
+			return fmt.Errorf("usage: %s attach <machine> [machine...]", a.binary)
 		}
 		name, err := a.defaultAttachTarget(*dir)
 		if err != nil {

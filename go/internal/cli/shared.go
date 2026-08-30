@@ -83,6 +83,45 @@ func hostname() string {
 	return h
 }
 
+// parseArgs parses fs against args and returns the positionals, accepting flags
+// and positionals in ANY order — both the human-friendly form our usage strings
+// document (`mir share box --ttl 1h`) and Go flag's native leading-flag form
+// (`mir share --ttl 1h box`).
+//
+// Go's flag.FlagSet stops at the first positional, so without this a documented
+// invocation drops its flags into fs.Args(), where they trip the arity check and
+// the user is refused for following our own help text (#45, #112). Every command
+// that takes positionals AND flags parses through here, so the trap cannot come
+// back one command at a time.
+//
+// A literal "--" ends flag parsing: everything after it is a positional, dashes
+// and all. The flag sets here are all flag.ExitOnError, so a bad flag exits
+// inside fs.Parse exactly as before.
+func parseArgs(fs *flag.FlagSet, args []string) []string {
+	var literal []string
+	for i, a := range args {
+		if a == "--" {
+			args, literal = args[:i], args[i+1:]
+			break
+		}
+	}
+	var positional []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return nil
+		}
+		rest := fs.Args()
+		if len(rest) == 0 {
+			break
+		}
+		// Keep the first positional, then parse what follows it: repeat until
+		// the flags on both sides of every positional are consumed.
+		positional = append(positional, rest[0])
+		args = rest[1:]
+	}
+	return append(positional, literal...)
+}
+
 // iceFlags registers --stun/--turn/--turn-user/--turn-pass on fs and returns a
 // closure building the ICE server list (call after fs.Parse). TURN is the opt-in
 // symmetric-NAT fallback; Noise keeps it blind to content.

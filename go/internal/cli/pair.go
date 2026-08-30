@@ -119,9 +119,8 @@ func (a *app) cmdPair(args []string) error {
 	webURL := fs.String("web", defaults.WebURL(), "browser SPA base URL the QR opens (responder)")
 	confirmSAS := fs.String("confirm-sas", "", "non-interactive: the expected safety number; pairing is committed only if it matches the computed one")
 	yes := fs.Bool("yes", false, "non-interactive: commit pairing without comparing the safety number (only if you trust the channel out-of-band)")
-	_ = fs.Parse(args)
 
-	mode, code, err := classifyPair(fs.Args())
+	mode, code, err := classifyPair(parseArgs(fs, args))
 	if err != nil {
 		return err
 	}
