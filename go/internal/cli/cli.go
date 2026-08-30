@@ -154,7 +154,7 @@ func (a *app) guide() {
 	p("    " + b + " pair              add another owner later — prints a QR + safety number")
 	p("")
 	p("  Reach your machines (where you are):")
-	p("    " + b + "                   your machines, live — Enter attaches (Ctrl-O d comes back)")
+	p("    " + b + "                   your machines, live — Enter attaches (Ctrl-O then d comes back)")
 	p("    " + b + " pair <code>       pair to a machine (compare the safety numbers)")
 	p("    " + b + " attach            continue where you left off — short: " + b + " a")
 	p("    " + b + " attach <name>     open its shell, peer-to-peer — short: " + b + " a <name>")

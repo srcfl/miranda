@@ -414,7 +414,10 @@ func (ov *overviewState) ice() []peer.ICEServer {
 func (ov *overviewState) attach(ctx context.Context, m client.Machine) error {
 	a := ov.app
 	fmt.Fprint(a.out, altScreenOff)
-	fmt.Fprintf(os.Stderr, "[%s] attached to %s — Ctrl-O then d comes back to your machines\r\n", a.binary, m.Name)
+	// Same opening as the bare-attach banner, then the gesture this entry path
+	// really has: the overview is still running behind the attach, so Ctrl-O
+	// then d returns to it.
+	fmt.Fprintf(os.Stderr, "[%s] %s; Ctrl-O then d comes back to your machines\r\n", a.binary, client.AttachHint(m.Name))
 
 	attachCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
