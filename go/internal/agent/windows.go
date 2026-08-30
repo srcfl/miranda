@@ -35,13 +35,20 @@ func runTmuxControl(clientPid int, payload []byte) {
 			return
 		}
 		tty, cur := tmuxClient(clientPid)
-		if tty != "" && c.S != "" && c.S != cur && validSessTarget(c.S) {
-			// Window lives in a session we're not viewing: move our client there,
-			// then select the window. window_id (@N) is server-global, so the
-			// select needs no session qualifier and can't hit the wrong window.
+		if tty != "" && c.S != "" && !sameView(c.S, cur) && validSessTarget(c.S) {
+			// Window lives in a session we're not viewing (and that doesn't share
+			// our windows): move our client there, then select the window.
 			_ = exec.Command("tmux", "switch-client", "-c", tty, "-t", "="+c.S).Run()
+			cur = c.S
 		}
-		_ = exec.Command("tmux", "select-window", "-t", c.T).Run()
+		// Grouped sessions share windows, so a bare @N is ambiguous — every
+		// member holds it. Qualify with OUR session so this viewer's current
+		// window moves, not another viewer's.
+		target := c.T
+		if validSessTarget(cur) {
+			target = "=" + cur + ":" + c.T
+		}
+		_ = exec.Command("tmux", "select-window", "-t", target).Run()
 	case "kill-window":
 		if idOK {
 			_ = exec.Command("tmux", "kill-window", "-t", c.T).Run()
@@ -59,16 +66,28 @@ func runTmuxControl(clientPid int, payload []byte) {
 		if !validSessTarget(target) {
 			return
 		}
-		// Create in the target session and learn where it landed; if that session
-		// isn't the one we're viewing, jump our client to the new window. The
-		// trailing ":" makes "=name:" a session target (a bare "=name" would
-		// exact-match a *window* named name, since new-window's -t is a window).
-		out, err := exec.Command("tmux", "new-window", "-t", "="+target+":", "-P", "-F", "#{session_name}").Output()
+		// Create in the target session and learn where it landed. The trailing
+		// ":" makes "=name:" a session target (a bare "=name" would exact-match
+		// a *window* named name, since new-window's -t is a window).
+		out, err := exec.Command("tmux", "new-window", "-t", "="+target+":", "-P", "-F", "#{session_name}|#{window_id}").Output()
 		if err == nil && tty != "" {
-			// new-window selects the new window in its session; if that session
-			// isn't the one we're viewing, jump our client there to land on it.
-			if created := strings.TrimSpace(string(out)); created != cur && validSessTarget(created) {
-				_ = exec.Command("tmux", "switch-client", "-c", tty, "-t", "="+created).Run()
+			f := strings.Split(strings.TrimSpace(string(out)), "|")
+			if len(f) == 2 {
+				created, wid := f[0], f[1]
+				switch {
+				case created == cur || !validSessTarget(created):
+					// new-window already selected it in our own session.
+				case sameView(created, cur):
+					// The target shares our windows (grouped): the window exists
+					// in our view too — land on it there, don't move the client.
+					if winIDRe.MatchString(wid) && validSessTarget(cur) {
+						_ = exec.Command("tmux", "select-window", "-t", "="+cur+":"+wid).Run()
+					}
+				default:
+					// A genuinely different session: jump our client to land on
+					// the new window (new-window selected it there).
+					_ = exec.Command("tmux", "switch-client", "-c", tty, "-t", "="+created).Run()
+				}
 			}
 		}
 	case "next-window":
@@ -80,7 +99,9 @@ func runTmuxControl(clientPid int, payload []byte) {
 			_ = exec.Command("tmux", "previous-window", "-t", "="+cur).Run()
 		}
 	case "switch-session":
-		if tty, cur := tmuxClient(clientPid); tty != "" && c.T != cur && validSessTarget(c.T) {
+		// sameView also covers the grouped alias: "switch to main" while viewing
+		// our grouped member of main is a no-op, not a hop out of our view.
+		if tty, cur := tmuxClient(clientPid); tty != "" && !sameView(c.T, cur) && validSessTarget(c.T) {
 			_ = exec.Command("tmux", "switch-client", "-c", tty, "-t", "="+c.T).Run()
 		}
 	case "new-session":
@@ -103,9 +124,11 @@ func runTmuxControl(clientPid int, payload []byte) {
 		}
 	case "kill-session":
 		// Guard: never kill the session our client is viewing — that detaches the
-		// client and tears down the whole attach. (The UI also hides this action
-		// for the active session; this is defense in depth.)
-		if _, cur := tmuxClient(clientPid); validSessTarget(c.T) && c.T != cur {
+		// client and tears down the whole attach. sameView extends the guard to
+		// the grouped base: killing "main" while viewing a grouped member would
+		// split the group out from under every viewer. (The UI also hides this
+		// action for the active session; this is defense in depth.)
+		if _, cur := tmuxClient(clientPid); validSessTarget(c.T) && !sameView(c.T, cur) {
 			_ = exec.Command("tmux", "kill-session", "-t", "="+c.T).Run()
 		}
 	}
@@ -141,6 +164,37 @@ func validSessTarget(s string) bool {
 		}
 	}
 	return true
+}
+
+// sessionGroups returns session_name -> session_group for every session, or
+// nil when tmux can't answer. Grouped sessions (spec D4) mirror each other's
+// windows, so group-aware targeting needs this map.
+func sessionGroups() map[string]string {
+	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}|#{session_group}").Output()
+	if err != nil {
+		return nil
+	}
+	m := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if f := strings.Split(line, "|"); len(f) == 2 {
+			m[f[0]] = f[1]
+		}
+	}
+	return m
+}
+
+// sameView reports whether target names the content our client already views:
+// the same session, or another session in the same group (same windows).
+func sameView(target, cur string) bool {
+	if target == cur {
+		return true
+	}
+	g := sessionGroups()
+	if g == nil {
+		return false
+	}
+	tg, cg := g[target], g[cur]
+	return tg != "" && tg == cg
 }
 
 // tmuxClient resolves OUR attached client (the one this agent's PTY drives) by
@@ -201,22 +255,45 @@ type sessSnapshot struct {
 
 // tmuxSessionsJSON returns a v2 JSON snapshot of every tmux session and its
 // windows, marking the session our client (PTY child = clientPid) is viewing.
-// Pure read — runs no mutation. nil if tmux fails or there are no windows.
-func tmuxSessionsJSON(clientPid int) []byte {
+// collapseBase non-empty means this attach runs a grouped session (spec D4):
+// agent-minted mir-* sessions are folded out of the snapshot, with this
+// viewer's own current window carried onto the base entry. Pure read — runs no
+// mutation. nil if tmux fails or there are no windows.
+func tmuxSessionsJSON(clientPid int, collapseBase string) []byte {
 	out, err := exec.Command("tmux", "list-windows", "-a", "-F",
 		"#{session_name}|#{window_id}|#{window_index}|#{window_name}|#{window_active}|#{window_activity_flag}|#{window_bell_flag}|#{pane_current_command}|#{window_panes}").Output()
 	if err != nil {
 		return nil
 	}
 	_, active := tmuxClient(clientPid)
-	return parseSessions(string(out), active)
+	snap := parseSessionsSnap(string(out), active)
+	if snap == nil {
+		return nil
+	}
+	if collapseBase != "" {
+		collapseGrouped(snap, active, collapseBase)
+	}
+	b, _ := json.Marshal(snap)
+	return b
 }
 
-// parseSessions builds the v2 snapshot from `tmux list-windows -a` output (one
-// window per line, session_name first) and the name of the session our client is
-// viewing. Sessions and windows keep tmux's output order so the change-detection
-// compare in the session poller stays stable. nil when there are no windows.
+// parseSessions builds the v2 snapshot JSON from `tmux list-windows -a` output.
+// Kept as the JSON-returning wrapper the tests exercise.
 func parseSessions(listAllWindows, activeSession string) []byte {
+	snap := parseSessionsSnap(listAllWindows, activeSession)
+	if snap == nil {
+		return nil
+	}
+	b, _ := json.Marshal(snap)
+	return b
+}
+
+// parseSessionsSnap builds the v2 snapshot from `tmux list-windows -a` output
+// (one window per line, session_name first) and the name of the session our
+// client is viewing. Sessions and windows keep tmux's output order so the
+// change-detection compare in the session poller stays stable. nil when there
+// are no windows.
+func parseSessionsSnap(listAllWindows, activeSession string) *sessSnapshot {
 	snap := sessSnapshot{V: 2}
 	pos := map[string]int{}
 	for _, line := range strings.Split(strings.TrimSpace(listAllWindows), "\n") {
@@ -242,8 +319,40 @@ func parseSessions(listAllWindows, activeSession string) []byte {
 	if len(snap.Sess) == 0 {
 		return nil
 	}
-	b, _ := json.Marshal(snap)
-	return b
+	return &snap
+}
+
+// collapseGrouped hides agent-minted mir-* grouped sessions from the
+// client-facing snapshot — their windows mirror the base session's, so showing
+// them would list every viewer as a phantom session. The viewer's OWN grouped
+// session folds INTO the base entry: its viewing flag and active window carry
+// over, so the window strip highlights what THIS client is looking at, not
+// what another viewer selected. Frame format v2 is unchanged; this is a
+// filter.
+func collapseGrouped(snap *sessSnapshot, active, base string) {
+	ownAW := ""
+	ownView := false
+	baseIdx := -1
+	kept := snap.Sess[:0]
+	for _, s := range snap.Sess {
+		if groupedNameRe.MatchString(s.N) {
+			if s.N == active {
+				ownAW, ownView = s.AW, true
+			}
+			continue
+		}
+		if s.N == base {
+			baseIdx = len(kept)
+		}
+		kept = append(kept, s)
+	}
+	snap.Sess = kept
+	if baseIdx >= 0 && ownView {
+		snap.Sess[baseIdx].Act = true
+		if ownAW != "" {
+			snap.Sess[baseIdx].AW = ownAW
+		}
+	}
 }
 
 // sessionFromLaunch extracts the tmux session name from a launch command like

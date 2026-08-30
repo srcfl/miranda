@@ -72,7 +72,7 @@ func TestTmuxHooksDeliverWindowChangeFast(t *testing.T) {
 	pushDone := make(chan struct{})
 	go func() {
 		defer close(pushDone)
-		pushWindowSnapshots(ctx, func() []byte { return tmuxSessionsJSON(0) }, r.push, trigger, time.Hour, windowDebounce)
+		pushWindowSnapshots(ctx, func() []byte { return tmuxSessionsJSON(0, "") }, r.push, trigger, time.Hour, windowDebounce)
 	}()
 
 	r.waitPushes(t, 1, 5*time.Second) // the attach-time snapshot
@@ -159,7 +159,7 @@ func TestTmuxHooksWithAttachedClient(t *testing.T) {
 	r := newPushRecorder()
 	go func() {
 		defer close(pushDone)
-		pushWindowSnapshots(ctx, func() []byte { return tmuxSessionsJSON(pid) }, r.push, trigger, time.Hour, windowDebounce)
+		pushWindowSnapshots(ctx, func() []byte { return tmuxSessionsJSON(pid, "") }, r.push, trigger, time.Hour, windowDebounce)
 	}()
 	r.waitPushes(t, 1, 5*time.Second)
 	r.drain()
