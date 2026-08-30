@@ -76,16 +76,20 @@ func FetchRegistry(ctx context.Context, hc *http.Client, signalURL string, id *I
 	if !id.HasRootedIdentity() {
 		return nil, nil
 	}
-	secret := id.Secret()
-	defer zeroBytes(secret)
-	key, err := identity.RegistryKey(secret)
+	entries, err := fetchRegistryEntries(ctx, hc, signalURL, id.OwnerID)
 	if err != nil {
 		return nil, err
 	}
+	return decodeRegistryEntries(entries, id, signalURL)
+}
+
+// fetchRegistryEntries is the network half: it returns the relay's blind wire
+// shape, which is also exactly what the pre-attach cache stores.
+func fetchRegistryEntries(ctx context.Context, hc *http.Client, signalURL, ownerID string) ([]registryEntry, error) {
 	if hc == nil {
 		hc = &http.Client{Timeout: 8 * time.Second}
 	}
-	url := strings.TrimRight(signalURL, "/") + "/registry?owner_id=" + neturl.QueryEscape(id.OwnerID)
+	url := strings.TrimRight(signalURL, "/") + "/registry?owner_id=" + neturl.QueryEscape(ownerID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -100,6 +104,22 @@ func FetchRegistry(ctx context.Context, hc *http.Client, signalURL string, id *I
 	}
 	var entries []registryEntry
 	if err := json.NewDecoder(resp.Body).Decode(&entries); err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
+// decodeRegistryEntries is the crypto half: it opens each sealed blob with the
+// owner root. Forged/garbage blobs fail to open and are silently dropped, live
+// or cached alike.
+func decodeRegistryEntries(entries []registryEntry, id *Identity, signalURL string) ([]Machine, error) {
+	if !id.HasRootedIdentity() {
+		return nil, nil
+	}
+	secret := id.Secret()
+	defer zeroBytes(secret)
+	key, err := identity.RegistryKey(secret)
+	if err != nil {
 		return nil, err
 	}
 

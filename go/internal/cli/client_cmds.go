@@ -197,20 +197,17 @@ func (a *app) cmdList(args []string) error {
 	var discovered []client.Machine
 	discoveredID := map[string]bool{}
 	if idn.HasRootedIdentity() {
-		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		a.syncRevocations(ctx, *dir, idn, []string{defaults.SignalURL()})
-		disc, fetchErr := client.FetchRegistry(ctx, nil, defaults.SignalURL(), idn)
-		cancel()
-		if fetchErr != nil {
+		warm := a.prewarm(context.Background(), *dir, idn, "", nil)
+		if warm.RegistryErr != nil {
 			// Degrading silently would show a stale list as if it were live.
 			fmt.Fprintln(a.errOut, discoveryPausedNote)
 		}
-		discovered = disc
-		for _, m := range disc {
+		discovered = warm.Discovered
+		for _, m := range discovered {
 			discoveredID[m.MachineID] = true
 		}
 		// One-line "new device joined" notice on stderr, so stdout stays script-clean.
-		_ = client.NotifyNewDevices(a.errOut, *dir, disc)
+		_ = client.NotifyNewDevices(a.errOut, *dir, discovered)
 	}
 
 	revocations, err := client.ListRevocations(*dir)
@@ -241,65 +238,101 @@ func isCleanDetach(err error) bool {
 	return errors.Is(err, peer.ErrDataChannelClosed) || errors.Is(err, io.EOF)
 }
 
+// prewarm runs the three pre-attach relay fetches — signed revocations, the
+// encrypted registry, TURN credentials — concurrently and behind their caches
+// (spec D2). turnURL empty asks for no credentials. Relay availability is not
+// authority: already-stored tombstones are always enforced, and every newly
+// fetched record is owner-verified before it lands.
+func (a *app) prewarm(ctx context.Context, dir string, idn *client.Identity, turnURL string, stun []string) *client.Prewarm {
+	warm := (&client.Prewarmer{Dir: dir}).Run(ctx, client.PrewarmRequest{
+		Identity:     idn,
+		SignalURL:    defaults.SignalURL(),
+		TURNURL:      turnURL,
+		STUNFallback: stun,
+	})
+	if warm.RevocationStoreErr != nil {
+		fmt.Fprintf(a.errOut, "warning: could not cache signed revocation: %v\n", warm.RevocationStoreErr)
+	}
+	return warm
+}
+
 // resolveMachines resolves every name against the local pin set and the owner's
-// encrypted live registry in one fetch. This gives single attach, multi-attach,
-// and non-interactive run identical zero-config discovery behavior.
+// encrypted live registry. This gives single attach, multi-attach, and
+// non-interactive run identical zero-config discovery behavior.
 func (a *app) resolveMachines(ctx context.Context, dir string, names []string, idn *client.Identity) ([]client.Machine, error) {
+	resolved, _, err := a.resolveMachinesWarm(ctx, dir, names, idn, "", nil)
+	return resolved, err
+}
+
+// resolveMachinesWarm is resolveMachines plus the ICE credentials an attach
+// needs, fetched in the same parallel warm-up. It returns the warm-up so the
+// caller can use (or discard) those credentials.
+func (a *app) resolveMachinesWarm(ctx context.Context, dir string, names []string, idn *client.Identity, turnURL string, stun []string) ([]client.Machine, *client.Prewarm, error) {
 	local, err := client.ListMachines(dir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	var discovered []client.Machine
-	var fetchErr error
+	warm := a.prewarm(ctx, dir, idn, turnURL, stun)
+	discovered := warm.Discovered
+	fetchErr := warm.RegistryErr
 	if idn.HasRootedIdentity() {
-		fctx, cancel := context.WithTimeout(ctx, 8*time.Second)
-		a.syncRevocations(fctx, dir, idn, []string{defaults.SignalURL()})
-		discovered, fetchErr = client.FetchRegistry(fctx, nil, defaults.SignalURL(), idn)
-		cancel()
 		_ = client.NotifyNewDevices(a.errOut, dir, discovered)
 	}
 	revocations, err := client.ListRevocations(dir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	local = client.FilterRevoked(local, idn.OwnerID, revocations)
-	discovered = client.FilterRevoked(discovered, idn.OwnerID, revocations)
+	resolved, missing := resolveNames(local, client.FilterRevoked(discovered, idn.OwnerID, revocations), names)
+	if missing != "" && warm.RegistryIsCached() {
+		// A cached registry can be a beat behind a machine paired seconds ago on
+		// another device. Before calling a name unknown, ask the relay.
+		live, refreshErr := warm.RefreshRegistry(ctx)
+		if refreshErr != nil {
+			fetchErr = refreshErr
+		} else {
+			fetchErr = nil
+			_ = client.NotifyNewDevices(a.errOut, dir, live)
+			resolved, missing = resolveNames(local, client.FilterRevoked(live, idn.OwnerID, revocations), names)
+		}
+	}
+	if missing != "" {
+		if fetchErr != nil {
+			return nil, nil, fmt.Errorf("unknown machine %q — it is not paired locally, and the relay was unreachable so your encrypted registry could not be checked; get back online and retry (cause: %v)", missing, fetchErr)
+		}
+		return nil, nil, fmt.Errorf("unknown machine %q — it is neither paired locally nor online in your encrypted registry", missing)
+	}
+	return resolved, warm, nil
+}
+
+// resolveNames maps names onto machines, returning the first name that resolved
+// nowhere ("" when every name landed).
+func resolveNames(local, discovered []client.Machine, names []string) ([]client.Machine, string) {
 	resolved := make([]client.Machine, 0, len(names))
 	for _, name := range names {
 		m, ok, _ := client.ResolveMachine(local, discovered, name)
 		if !ok {
-			if fetchErr != nil {
-				return nil, fmt.Errorf("unknown machine %q — it is not paired locally, and the relay was unreachable so your encrypted registry could not be checked; get back online and retry (cause: %v)", name, fetchErr)
-			}
-			return nil, fmt.Errorf("unknown machine %q — it is neither paired locally nor online in your encrypted registry", name)
+			return nil, name
 		}
 		resolved = append(resolved, m)
 	}
-	return resolved, nil
+	return resolved, ""
 }
 
-// syncRevocations best-effort gossips signed tombstones from each relay into the
-// fail-closed local store. Relay availability is not authority: already-cached
-// records are always enforced, and every newly fetched record is owner-verified.
-func (a *app) syncRevocations(ctx context.Context, dir string, idn *client.Identity, relays []string) {
-	seen := map[string]bool{}
-	for _, relay := range relays {
-		relay = strings.TrimRight(strings.TrimSpace(relay), "/")
-		if relay == "" || seen[relay] {
-			continue
-		}
-		seen[relay] = true
-		records, err := client.FetchRevocations(ctx, nil, relay, idn.OwnerID)
-		if err != nil {
-			continue
-		}
-		for _, record := range records {
-			if err := client.RecordRevocation(dir, record); err != nil {
-				fmt.Fprintf(a.errOut, "warning: could not cache signed revocation: %v\n", err)
-				return
-			}
-		}
+// localRelayFor guesses which relay will mint this attach's TURN credentials, so
+// the fetch can start alongside discovery instead of waiting for it: the pinned
+// machine's own relay when we know it, else the default. A guess that turns out
+// wrong costs one extra round trip (cmdAttach refetches), never a wrong path.
+func localRelayFor(dir, name string) string {
+	if m, err := client.GetMachine(dir, name); err == nil && strings.TrimSpace(m.SignalURL) != "" {
+		return m.SignalURL
 	}
+	return defaults.SignalURL()
+}
+
+// sameRelay compares two relay base URLs the way the cache scopes them.
+func sameRelay(a, b string) bool {
+	return strings.TrimRight(strings.TrimSpace(a), "/") == strings.TrimRight(strings.TrimSpace(b), "/")
 }
 
 func (a *app) cmdMachine(args []string) error {
@@ -525,13 +558,22 @@ func (a *app) cmdAttach(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	resolved, err := a.resolveMachines(ctx, *dir, names, idn)
+	// Credentials are minted per relay, and which relay this attach uses is only
+	// known after discovery. Guess from the local pin so the fetch runs beside
+	// discovery instead of after it; refetch only if the guess was wrong.
+	turnURL := ""
+	if !iceHasTURN(servers) {
+		turnURL = localRelayFor(*dir, names[0])
+	}
+	resolved, warm, err := a.resolveMachinesWarm(ctx, *dir, names, idn, turnURL, iceSTUNURLs(servers))
 	if err != nil {
 		return err
 	}
 	iceList := servers
 	if len(resolved) > 0 && !iceHasTURN(servers) {
-		if got, err := client.ResolveICE(ctx, resolved[0].SignalURL, iceSTUNURLs(servers)); err == nil {
+		if warm.ICEErr == nil && sameRelay(warm.ICEFrom, resolved[0].SignalURL) {
+			iceList = warm.ICE
+		} else if got, err := client.ResolveICE(ctx, resolved[0].SignalURL, iceSTUNURLs(servers)); err == nil {
 			iceList = got
 		}
 	}
