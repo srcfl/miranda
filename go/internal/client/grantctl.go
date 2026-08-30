@@ -60,6 +60,45 @@ func GrantOverSession(ctx context.Context, mc peer.MsgConn, sess *noise.Session,
 	}
 }
 
+// RevokeGrantOverSession delivers a grant revocation to the agent over an
+// established owner session and waits for the acknowledging HELLO. The agent
+// tombstones the gid and drops any live guest serving it. (The `mir share
+// revoke` command that calls this is wired in G1d.)
+func RevokeGrantOverSession(ctx context.Context, mc peer.MsgConn, sess *noise.Session, gid string, wait time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
+
+	payload, err := json.Marshal(map[string]string{"a": "revoke-grant", "gid": gid})
+	if err != nil {
+		return err
+	}
+	if err := newSender(mc, sess).send(noise.EncodeControl(payload)); err != nil {
+		return fmt.Errorf("revoke: send failed: %w", err)
+	}
+	want := "revoke-grant:" + gid
+	for {
+		ct, err := mc.Recv(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				return ErrGrantUnconfirmed
+			}
+			return err
+		}
+		pt, err := sess.Decrypt(ct)
+		if err != nil {
+			return err
+		}
+		typ, payload, err := noise.DecodeFrame(pt)
+		if err != nil || typ != noise.FrameHello {
+			continue
+		}
+		var meta map[string]string
+		if json.Unmarshal(payload, &meta) == nil && meta["ack"] == want {
+			return nil
+		}
+	}
+}
+
 var guestGIDRe = regexp.MustCompile(`^[0-9a-f]{16}$`)
 
 // SaveGuestGrant stores the grant record a guest received with an invite, so

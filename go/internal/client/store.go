@@ -41,6 +41,12 @@ type Machine struct {
 	// Registry merge is last-writer-wins on it, so a rename made on one device
 	// beats every stale name without ever letting a stale one bounce back.
 	NameTS int64 `json:"name_ts,omitempty"`
+	// Owner routes an attach that this identity does not own itself: a guest
+	// entry carries the machine owner's id so the relay routes the offer to the
+	// agent's registration, while the offer is still authenticated by this
+	// (guest) identity. Empty for your own machines — the attach URL then uses
+	// your own owner id, byte-identical to before guest sharing.
+	Owner string `json:"owner,omitempty"`
 }
 
 type IdentityStorageInfo struct {

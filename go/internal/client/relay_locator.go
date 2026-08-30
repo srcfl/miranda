@@ -23,7 +23,14 @@ import (
 type relayLocator struct{}
 
 func (relayLocator) Dial(ctx context.Context, m Machine, id *Identity, ice []peer.ICEServer) (peer.MsgConn, func(), error) {
-	ownerID := id.OwnerID
+	// The URL owner_id only routes the offer to the agent's registration; the
+	// binding and auth below authenticate this identity. A guest entry sets
+	// m.Owner (the machine owner) so routing works while we attach as the guest;
+	// your own machines leave it empty and route under your own id, unchanged.
+	ownerID := m.Owner
+	if ownerID == "" {
+		ownerID = id.OwnerID
+	}
 	wsURL := "ws" + strings.TrimPrefix(m.SignalURL, "http") +
 		"/attach?owner_id=" + url.QueryEscape(ownerID) +
 		"&machine_id=" + url.QueryEscape(m.MachineID)

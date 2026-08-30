@@ -237,6 +237,7 @@ func (a *app) cmdJoin(args []string) error {
 
 	if err := client.AddMachine(*dir, client.Machine{
 		Name: info.Name, MachineID: info.MachineID, HostPubHex: info.HostPubHex, SignalURL: signalURL,
+		Owner: sg.Owner, // a guest entry: attach routes under the machine owner, authenticates as us
 	}); err != nil {
 		return err
 	}
