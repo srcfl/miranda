@@ -251,6 +251,25 @@ func NotifyNewDevices(w io.Writer, dir string, machines []Machine) error {
 	return saveSeen(dir, seen)
 }
 
+// UnseenMachines returns the machine ids in machines that the seen-set does not
+// know yet, without recording them. The overview badges these for as long as it
+// is open (NotifyNewDevices records immediately, which would drop the badge on
+// the very next refresh).
+func UnseenMachines(dir string, machines []Machine) map[string]bool {
+	seen := loadSeen(dir)
+	known := make(map[string]bool, len(seen.MachineIDs))
+	for _, id := range seen.MachineIDs {
+		known[id] = true
+	}
+	fresh := map[string]bool{}
+	for _, m := range machines {
+		if m.MachineID != "" && !known[m.MachineID] {
+			fresh[m.MachineID] = true
+		}
+	}
+	return fresh
+}
+
 // loadSeen reads the seen-set; a missing or unreadable file is an empty set (so a
 // first run notifies for everything and a corrupt file degrades to re-notifying,
 // never to a hard error).
