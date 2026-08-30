@@ -21,7 +21,8 @@ desktop, or multi-user access platform.
 
 <p align="center">
   <img src="assets/miranda-demo.gif" width="900"
-    alt="Miranda reconnecting to a persistent terminal session on another machine">
+    alt="mir listing your machines, attaching to a tmux session on one of them,
+    then minting a read-only invite that expires in an hour">
 </p>
 
 ## Beta
