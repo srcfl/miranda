@@ -182,6 +182,7 @@ func (a *app) cmdList(args []string) error {
 	_ = fs.Parse(args)
 	// Cheap, non-blocking update notice (cache-only display; refresh in background).
 	updateClient(a.binary).MaybeNotify(a.errOut, updateCachePath(*dir), version.Version, 24*time.Hour)
+	client.SweepGuestState(*dir, time.Now()) // shares whose window closed age out here
 	local, err := client.ListMachines(*dir)
 	if err != nil {
 		return err
@@ -221,6 +222,16 @@ func (a *app) cmdList(args []string) error {
 		return nil
 	}
 	for _, m := range merged {
+		if m.Owner != "" {
+			// A share someone gave this identity: the grant, not the registry,
+			// says what it is and how long it lasts.
+			detail := "shared with you"
+			if g := client.GuestGrantFor(*dir, m.MachineID); g != nil {
+				detail = fmt.Sprintf("shared with you · %s · %s", modeWord(g.Mode), expiryPhrase(g.NA, false, time.Now()))
+			}
+			fmt.Fprintf(a.out, "%-16s %s  %s\n", m.Name, m.MachineID, detail)
+			continue
+		}
 		tag := ""
 		if discoveredID[m.MachineID] {
 			tag = "  (online)"
@@ -633,6 +644,17 @@ func (a *app) cmdAttach(args []string) error {
 	resolved, warm, err := a.resolveMachinesWarm(ctx, *dir, names, idn, turnURL, iceSTUNURLs(servers))
 	if err != nil {
 		return err
+	}
+	// A share is checked against its own clock before dialing: an expired grant
+	// would only earn the agent's silent refusal, which reads as "offline".
+	for _, m := range resolved {
+		if m.Owner == "" {
+			continue
+		}
+		g := client.GuestGrantFor(*dir, m.MachineID)
+		if g == nil || g.ValidAt(time.Now()) != nil {
+			return fmt.Errorf("your share of %q has ended — ask the owner for a new invite", m.Name)
+		}
 	}
 	iceList := servers
 	if len(resolved) > 0 && !iceHasTURN(servers) {
