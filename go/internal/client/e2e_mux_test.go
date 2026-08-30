@@ -21,9 +21,7 @@ func startAgent(t *testing.T, ctx context.Context, srvURL, name string, id *Iden
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := agent.PinOwner(dir, id.OwnerID); err != nil {
-		t.Fatal(err)
-	}
+	provisionOwnerForTest(t, dir, cfg, id)
 	cfg, _ = agent.LoadOrInit(dir, name, srvURL)
 	rt := agent.NewRuntime(cfg, []string{"sh"}, nil)
 	go func() { _ = rt.Up(ctx) }()
@@ -31,6 +29,7 @@ func startAgent(t *testing.T, ctx context.Context, srvURL, name string, id *Iden
 }
 
 func TestEndToEndMuxSwitchesBetweenTwoMachines(t *testing.T) {
+	t.Setenv("MIR_TEST_KEYCHAIN_DIR", t.TempDir())
 	srv := httptest.NewServer(signal.New().Handler())
 	defer srv.Close()
 
