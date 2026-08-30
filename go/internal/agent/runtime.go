@@ -163,6 +163,9 @@ func (rt *Runtime) Up(ctx context.Context) error {
 	if len(rt.cfg.PairedOwners) == 0 {
 		return errNoOwner
 	}
+	if isDefaultTmuxLaunch(rt.launch) {
+		sweepOrphanGroupedSessions() // mir-* leftovers from a crashed agent
+	}
 	rt.reconcileOwners(ctx, append([]string(nil), rt.cfg.PairedOwners...))
 	t := time.NewTicker(rt.reloadInterval)
 	defer t.Stop()
@@ -488,11 +491,27 @@ func (rt *Runtime) serveAuthenticated(ctx context.Context, mc peer.MsgConn, owne
 	}
 	rt.sessionStarted()
 	defer rt.sessionEnded()
-	pty, err := StartPTY(ctx, rt.launch)
+	// Grouped per-attach sessions (spec D4): under the default tmux launch each
+	// attach gets its own session in main's group — same windows, independent
+	// current window per viewer. The base is ensured FIRST so it always anchors
+	// the group; if ensuring fails (tmux hiccup) we fall back to the shared
+	// launch rather than refuse the attach.
+	launch := rt.launch
+	grouped := ""
+	if isDefaultTmuxLaunch(rt.launch) {
+		if err := ensureGroupedBase("main"); err == nil {
+			grouped = newAttachSessionName()
+			launch = groupedLaunch("main", grouped)
+		}
+	}
+	pty, err := StartPTY(ctx, launch)
 	if err != nil {
 		return err
 	}
 	defer pty.Close()
+	if grouped != "" {
+		defer killGroupedSession(grouped) // LIFO: runs before pty.Close, never kills main
+	}
 	// For a tmux launch, push whole-server session/window snapshots so clients
 	// render an overview, and accept window+session control commands (select/new/
 	// rename/kill, switch-session). Targeting OUR client for cross-session switches
@@ -503,7 +522,11 @@ func (rt *Runtime) serveAuthenticated(ctx context.Context, mc peer.MsgConn, owne
 	}
 	var windows func() []byte
 	if pid > 0 {
-		windows = func() []byte { return tmuxSessionsJSON(pid) }
+		collapse := ""
+		if grouped != "" {
+			collapse = sessionFromLaunch(rt.launch) // "main": fold mir-* out of the snapshot
+		}
+		windows = func() []byte { return tmuxSessionsJSON(pid, collapse) }
 	}
 	return RunAgentSession(ctx, mc, sess, pty, rt.machineName(), windows, pid, rt.renameHandler(owner))
 }

@@ -76,7 +76,7 @@ func (a *app) cmdUp(args []string) error {
 	name := fs.String("name", hostname(), "machine display name")
 	signalURL := fs.String("signal", defaults.SignalURL(), "signaling server base URL")
 	webURL := fs.String("web", defaults.WebURL(), "browser SPA base URL the first-run pairing QR opens")
-	shell := fs.String("shell", "tmux:new:-A:-s:main", "launch command, ':'-separated")
+	shell := fs.String("shell", "tmux:new:-A:-s:main", "launch command, ':'-separated (the default gives each viewer its own tmux view; a custom command attaches as-is)")
 	ice := iceFlags(fs)
 	autoUpdate := fs.Bool("auto-update", os.Getenv("MIR_AUTO_UPDATE") == "1", "opt-in: automatically self-update when idle")
 	noLAN := fs.Bool("no-lan", false, "deprecated: no effect (one connection now carries direct and relayed)")
