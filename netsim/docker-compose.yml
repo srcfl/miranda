@@ -188,6 +188,25 @@ services:
     networks:
       pub: { ipv4_address: 10.88.0.5 }
 
+  # The agent on the CLIENT's own subnet (lan_wifi): no NAT between the peers.
+  # With TURN off and no hairpin on the router, the only pair ICE can complete
+  # is host<->host — so this scenario passing at all proves direct-on-LAN with
+  # the relay carrying signalling only (the one-transport claim, T1).
+  agent-lan:
+    <<: *mir
+    profiles: ["lan"]
+    cap_add: [NET_ADMIN]
+    command: *agent-cmd
+    environment:
+      <<: *node-env
+      NETSIM_UPLINK_PREFIX: "10.88.20."
+      NETSIM_UPLINK_GW: "10.88.20.2"
+    volumes:
+      - state:/state
+    depends_on: [relay, coturn, nat-wifi]
+    networks:
+      lan_wifi: { ipv4_address: 10.88.20.6 }
+
   # The measuring client: two uplinks, the second down until the flip.
   client:
     <<: *mir

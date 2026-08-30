@@ -6,19 +6,16 @@ require (
 	github.com/coder/websocket v1.8.14
 	github.com/creack/pty v1.1.24
 	github.com/flynn/noise v1.1.0
-	github.com/grandcat/zeroconf v1.0.0
 	github.com/mdp/qrterminal/v3 v3.2.1
 	github.com/pion/webrtc/v4 v4.2.14
-	github.com/quic-go/quic-go v0.60.0
 	golang.org/x/crypto v0.53.0
 	golang.org/x/mod v0.37.0
 	golang.org/x/term v0.44.0
 )
 
 require (
-	github.com/cenkalti/backoff v2.2.1+incompatible // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/miekg/dns v1.1.27 // indirect
+	github.com/kr/pretty v0.3.1 // indirect
 	github.com/pion/datachannel v1.6.0 // indirect
 	github.com/pion/dtls/v3 v3.1.4 // indirect
 	github.com/pion/ice/v4 v4.2.7 // indirect
@@ -34,6 +31,7 @@ require (
 	github.com/pion/stun/v3 v3.1.5 // indirect
 	github.com/pion/transport/v4 v4.0.2 // indirect
 	github.com/pion/turn/v5 v5.0.7 // indirect
+	github.com/rogpeppe/go-internal v1.10.0 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
 	golang.org/x/net v0.56.0 // indirect
 	golang.org/x/sys v0.46.0 // indirect

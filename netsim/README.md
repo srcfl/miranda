@@ -78,6 +78,7 @@ how `turn-only` isolates the TURN fallback.
 | Scenario | Agent | Client | ICE | Flip |
 |---|---|---|---|---|
 | `open-agent` | routable | port-restricted | STUN | — |
+| `lan-direct` | client's own subnet | agent's own subnet | STUN (host pair) | — |
 | `prc-prc` | port-restricted | port-restricted | STUN | — |
 | `sym-sym-stun` | symmetric | symmetric | STUN | — (expected to fail) |
 | `sym-sym-turn` | symmetric | symmetric | TURN | — |
@@ -129,7 +130,6 @@ Environment variables the driver reads (all optional):
 | `NETSIM_REP_BUDGET` | 90s | ceiling for one measurement |
 | `NETSIM_FLIP_AFTER` | 7s | how long to hold the session before flipping (must exceed the policy's 5s `MinHealthy`) |
 | `NETSIM_MAX_FAILURES` | production default (7) | reconnect failure budget |
-| `NETSIM_RELAY_ONLY` | 0 | skip the LAN locator in the attach race |
 | `NETSIM_ICE_DEBUG` | unset | set to `1` to print gathered ICE candidates and state changes |
 
 ## What the runs said

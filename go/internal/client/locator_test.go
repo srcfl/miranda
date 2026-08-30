@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,162 +12,69 @@ import (
 	"github.com/srcful/terminal-relay/go/internal/peer"
 )
 
-// fakeConn is a no-op MsgConn used to identify which locator won the race.
+// fakeConn is a no-op MsgConn used to identify the dialed connection.
 type fakeConn struct{ tag string }
 
 func (fakeConn) Send(b []byte) error                      { return nil }
 func (fakeConn) Recv(ctx context.Context) ([]byte, error) { return nil, nil }
 
-// stubLocator returns a canned (conn, cleanup, err). delay (if set) sleeps before
-// returning, ignoring ctx — simulating a locator already in flight when the race is
-// decided. called records whether Dial actually ran (a staggered locator cancelled
-// during its head start never dials).
+// stubLocator returns a canned (conn, cleanup, err).
 type stubLocator struct {
 	conn    peer.MsgConn
 	cleanup func()
 	err     error
-	called  *int32
-	delay   time.Duration
 }
 
 func (s stubLocator) Dial(ctx context.Context, m Machine, id *Identity, ice []peer.ICEServer) (peer.MsgConn, func(), error) {
-	if s.called != nil {
-		atomic.StoreInt32(s.called, 1)
-	}
-	if s.delay > 0 {
-		time.Sleep(s.delay)
-	}
 	return s.conn, s.cleanup, s.err
 }
 
-// LAN (locator[0]) connects fast, so it wins inside the head start and the relay is
-// never dialed — a successful LAN attach stays relay-free.
-func TestDialStaggeredLANWinsRelayNeverDialed(t *testing.T) {
-	want := fakeConn{tag: "lan"}
-	var relayCalled int32
-	locators := []Locator{
-		stubLocator{conn: want},
-		stubLocator{conn: fakeConn{tag: "relay"}, called: &relayCalled},
-	}
-	mc, _, cleanup, err := dialStaggered(context.Background(), locators, 200*time.Millisecond, Machine{Name: "box"}, &Identity{}, nil, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if mc != want {
-		t.Fatalf("got %#v, want the LAN conn", mc)
-	}
-	cleanup()
-	if atomic.LoadInt32(&relayCalled) != 0 {
-		t.Fatal("relay must NOT be dialed when LAN wins within the head start")
-	}
-}
-
-// No LAN answer (ErrUnreachable) -> the relay starts after the head start and wins.
-func TestDialStaggeredFallsToRelay(t *testing.T) {
+// A transport win with nil auth passes straight through (unit-test mode).
+func TestDialLocatorTransportOnly(t *testing.T) {
 	want := fakeConn{tag: "relay"}
-	locators := []Locator{
-		stubLocator{err: ErrUnreachable},
-		stubLocator{conn: want},
-	}
-	mc, _, _, err := dialStaggered(context.Background(), locators, 10*time.Millisecond, Machine{Name: "box"}, &Identity{}, nil, nil)
+	mc, sess, _, err := dialLocator(context.Background(), stubLocator{conn: want}, Machine{Name: "box"}, &Identity{}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if mc != want {
-		t.Fatalf("got %#v, want the relay conn", mc)
+	if mc != want || sess != nil {
+		t.Fatalf("got (%#v, %v), want the conn and no session", mc, sess)
 	}
 }
 
-// When everything fails, surface the relay's REAL error, not the LAN ErrUnreachable.
-func TestDialStaggeredAllFailPrefersRealError(t *testing.T) {
+// The locator's real error surfaces untouched.
+func TestDialLocatorSurfacesDialError(t *testing.T) {
 	boom := errors.New("signaling: machine offline")
-	locators := []Locator{
-		stubLocator{err: ErrUnreachable},
-		stubLocator{err: boom},
-	}
-	mc, _, _, err := dialStaggered(context.Background(), locators, 5*time.Millisecond, Machine{Name: "box"}, &Identity{}, nil, nil)
+	mc, _, _, err := dialLocator(context.Background(), stubLocator{err: boom}, Machine{Name: "box"}, &Identity{}, nil, nil)
 	if mc != nil {
-		t.Fatal("expected no conn when all locators fail")
+		t.Fatal("expected no conn on dial failure")
 	}
 	if !errors.Is(err, boom) {
-		t.Fatalf("expected the real relay error, got: %v", err)
+		t.Fatalf("expected the real dial error, got: %v", err)
 	}
 }
 
-// A slow loser that still connects after the winner is chosen must be cleaned up
-// (its conn would otherwise leak).
-func TestDialStaggeredCleansSlowLoser(t *testing.T) {
-	var loserCleaned int32
-	locators := []Locator{
-		// LAN: slow success — it loses the race but still connects later.
-		stubLocator{conn: fakeConn{tag: "lan"}, cleanup: func() { atomic.StoreInt32(&loserCleaned, 1) }, delay: 60 * time.Millisecond},
-		// relay: wins shortly after its (small) head start.
-		stubLocator{conn: fakeConn{tag: "relay"}},
+// A locator that opens a socket but fails auth is not a win: the conn is
+// cleaned up and the result is ErrUnreachable.
+func TestDialLocatorAuthFailureCleansUp(t *testing.T) {
+	cleaned := false
+	auth := func(context.Context, peer.MsgConn, Machine, *Identity) (*noise.Session, error) {
+		return nil, fmt.Errorf("%w: handshake stall", ErrUnreachable)
 	}
-	mc, _, _, err := dialStaggered(context.Background(), locators, 5*time.Millisecond, Machine{Name: "box"}, &Identity{}, nil, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	mc, _, _, err := dialLocator(context.Background(), stubLocator{conn: fakeConn{tag: "relay"}, cleanup: func() { cleaned = true }}, Machine{Name: "box"}, &Identity{}, nil, auth)
+	if mc != nil {
+		t.Fatal("auth failure must not yield a conn")
 	}
-	if mc.(fakeConn).tag != "relay" {
-		t.Fatalf("expected the relay to win, got %v", mc)
+	if !errors.Is(err, ErrUnreachable) {
+		t.Fatalf("want ErrUnreachable, got: %v", err)
 	}
-	// Give the slow loser time to return and be drained/cleaned.
-	deadline := time.Now().Add(time.Second)
-	for atomic.LoadInt32(&loserCleaned) == 0 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	if atomic.LoadInt32(&loserCleaned) == 0 {
-		t.Fatal("the slow loser's conn was not cleaned up")
-	}
-}
-
-// A single locator (relay-only) dials directly with no race.
-func TestDialStaggeredSingleLocatorDirect(t *testing.T) {
-	want := fakeConn{tag: "relay"}
-	var called int32
-	mc, _, _, err := dialStaggered(context.Background(), []Locator{stubLocator{conn: want, called: &called}}, 50*time.Millisecond, Machine{Name: "box"}, &Identity{}, nil, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if mc != want || atomic.LoadInt32(&called) != 1 {
-		t.Fatal("single locator should be dialed directly")
-	}
-}
-
-// A locator that opens a socket but fails KK is not a win: the race continues
-// and a later locator that authenticates succeeds.
-func TestDialStaggeredKKFailureFallsThrough(t *testing.T) {
-	want := fakeConn{tag: "relay"}
-	var lanCleaned int32
-	auth := func(_ context.Context, mc peer.MsgConn, _ Machine, _ *Identity) (*noise.Session, error) {
-		if mc.(fakeConn).tag == "lan" {
-			return nil, ErrUnreachable
-		}
-		return nil, nil
-	}
-	locators := []Locator{
-		stubLocator{conn: fakeConn{tag: "lan"}, cleanup: func() { atomic.StoreInt32(&lanCleaned, 1) }},
-		stubLocator{conn: want},
-	}
-	mc, _, _, err := dialStaggered(context.Background(), locators, 10*time.Millisecond, Machine{Name: "box"}, &Identity{}, nil, auth)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if mc != want {
-		t.Fatalf("got %#v, want the relay conn after LAN KK failure", mc)
-	}
-	deadline := time.Now().Add(time.Second)
-	for atomic.LoadInt32(&lanCleaned) == 0 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	if atomic.LoadInt32(&lanCleaned) == 0 {
-		t.Fatal("LAN conn that failed KK must be cleaned up")
+	if !cleaned {
+		t.Fatal("the conn that failed auth must be cleaned up")
 	}
 }
 
 // kkPipeLocator returns one end of a Pipe whose other end is a Noise-KK
-// responder with the given static keys. Used to drive shipped kkAuth inside
-// dialStaggered without reimplementing the auth policy.
+// responder with the given static keys. Drives the shipped kkAuth policy
+// through dialLocator without reimplementing it.
 type kkPipeLocator struct {
 	hostPriv, peerPub []byte
 }
@@ -179,28 +85,9 @@ func (k kkPipeLocator) Dial(ctx context.Context, _ Machine, _ *Identity, _ []pee
 	return clientMC, func() {}, nil
 }
 
-type delayLocator struct {
-	delay time.Duration
-	loc   Locator
-}
-
-func (d delayLocator) Dial(ctx context.Context, m Machine, id *Identity, ice []peer.ICEServer) (peer.MsgConn, func(), error) {
-	t := time.NewTimer(d.delay)
-	defer t.Stop()
-	select {
-	case <-t.C:
-		return d.loc.Dial(ctx, m, id, ice)
-	case <-ctx.Done():
-		return nil, nil, ctx.Err()
-	}
-}
-
-func TestDialStaggeredKKAuthWrongHostFallsToRelay(t *testing.T) {
-	lanPriv, _, err := noise.GenerateStatic()
-	if err != nil {
-		t.Fatal(err)
-	}
-	relayPriv, relayPub, err := noise.GenerateStatic()
+// The full path: KK against the pinned host key completes and yields a session.
+func TestDialLocatorKKSuccess(t *testing.T) {
+	hostPriv, hostPub, err := noise.GenerateStatic()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,24 +96,21 @@ func TestDialStaggeredKKAuthWrongHostFallsToRelay(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := &Identity{OwnerPrivHex: fmt.Sprintf("%x", ownerPriv)}
-	locators := []Locator{
-		kkPipeLocator{hostPriv: lanPriv, peerPub: ownerPub},
-		delayLocator{delay: kkHandshakeTimeout + 50*time.Millisecond, loc: kkPipeLocator{hostPriv: relayPriv, peerPub: ownerPub}},
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
-	_, sess, cleanup, err := dialStaggered(ctx, locators, time.Millisecond, Machine{Name: "box"}, id, nil, kkAuth(relayPub))
+	_, sess, cleanup, err := dialLocator(ctx, kkPipeLocator{hostPriv: hostPriv, peerPub: ownerPub}, Machine{Name: "box"}, id, nil, kkAuth(hostPub))
 	if err != nil {
-		t.Fatalf("relay KK should win after LAN wrong host: %v", err)
+		t.Fatalf("KK against the pinned key should succeed: %v", err)
 	}
 	if cleanup != nil {
 		cleanup()
 	}
 	if sess == nil {
-		t.Fatal("winner must be a completed KK session, not transport-only")
+		t.Fatal("the win must be a completed KK session, not transport-only")
 	}
 }
 
+// The wrong host key is unreachable, never a win.
 func TestKKAuthWrongHostKeyIsUnreachable(t *testing.T) {
 	hostPriv, _, err := noise.GenerateStatic()
 	if err != nil {
@@ -252,26 +136,5 @@ func TestKKAuthWrongHostKeyIsUnreachable(t *testing.T) {
 	_, err = kkAuth(wrongHost)(ctx, clientMC, Machine{Name: "box"}, id)
 	if !errors.Is(err, ErrUnreachable) {
 		t.Fatalf("kkAuth with the wrong host key: %v, want ErrUnreachable", err)
-	}
-}
-
-func TestDialStaggeredKKTimeoutIsUnreachable(t *testing.T) {
-	want := fakeConn{tag: "relay"}
-	auth := func(ctx context.Context, mc peer.MsgConn, _ Machine, _ *Identity) (*noise.Session, error) {
-		if mc.(fakeConn).tag == "lan" {
-			return nil, fmt.Errorf("%w: handshake stall", ErrUnreachable)
-		}
-		return nil, nil
-	}
-	locators := []Locator{
-		stubLocator{conn: fakeConn{tag: "lan"}},
-		stubLocator{conn: want},
-	}
-	mc, _, _, err := dialStaggered(context.Background(), locators, 5*time.Millisecond, Machine{Name: "box"}, &Identity{}, nil, auth)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if mc != want {
-		t.Fatalf("got %#v, want relay after LAN handshake stall", mc)
 	}
 }

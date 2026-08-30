@@ -123,7 +123,7 @@ func (a *app) cmdRun(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	mc, sess, cleanup, err := client.Attach(ctx, *m, idn, ice(), false)
+	mc, sess, cleanup, err := client.Attach(ctx, *m, idn, ice())
 	if err != nil {
 		return humanAttachErr(a.binary, m.Name, err)
 	}
@@ -366,7 +366,7 @@ func (a *app) cmdMachineRename(args []string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	mc, sess, cleanup, err := client.Attach(ctx, m, idn, ice(), false)
+	mc, sess, cleanup, err := client.Attach(ctx, m, idn, ice())
 	if err != nil {
 		return fmt.Errorf("renamed locally, but %q is unreachable (%v) — your other devices keep the old name; re-run when it is back online", name, err)
 	}
@@ -496,9 +496,12 @@ func (a *app) cmdAttach(args []string) error {
 	fs := flag.NewFlagSet("attach", flag.ExitOnError)
 	dir := fs.String("dir", defaultClientDir(), "client state directory")
 	prefixFlag := fs.String("prefix", "ctrl-o", "multiplexer switch key (e.g. ctrl-o, ctrl-a, ctrl-space)")
-	relayOnly := fs.Bool("relay-only", false, "skip LAN-direct discovery; use the relay")
+	relayOnly := fs.Bool("relay-only", false, "deprecated: no effect (one connection now carries direct and relayed)")
 	ice := iceFlags(fs)
 	_ = fs.Parse(args)
+	if *relayOnly {
+		fmt.Fprintln(a.errOut, "note: --relay-only no longer does anything and will go away — LAN-direct now rides the same connection (direct when possible, relayed when not)")
+	}
 	names := fs.Args()
 	if len(names) == 0 {
 		return fmt.Errorf("usage: mir attach <machine> [machine...]")
@@ -553,7 +556,7 @@ func (a *app) cmdAttach(args []string) error {
 			},
 		}
 		err := client.ReconnectLoopWith(ctx, client.ReconnectPolicy{Notify: notify}, func(ctx context.Context) (peer.MsgConn, *noise.Session, func(), error) {
-			return client.Attach(ctx, m, idn, iceList, *relayOnly)
+			return client.Attach(ctx, m, idn, iceList)
 		}, func(ctx context.Context, mc peer.MsgConn, sess *noise.Session) error {
 			return client.RunInteractive(ctx, mc, sess, m.Name)
 		})
@@ -563,7 +566,7 @@ func (a *app) cmdAttach(args []string) error {
 		return nil
 	}
 
-	sessions, cleanup, err := client.AttachAll(ctx, resolved, idn, iceList, *relayOnly)
+	sessions, cleanup, err := client.AttachAll(ctx, resolved, idn, iceList)
 	if err != nil {
 		return humanAttachErr(a.binary, strings.Join(names, ", "), err)
 	}

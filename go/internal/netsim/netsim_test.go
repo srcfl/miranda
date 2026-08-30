@@ -248,7 +248,7 @@ func runOnce(t *testing.T, rep int, m client.Machine, id *client.Identity, ice [
 
 	dial := func(ctx context.Context) (peer.MsgConn, *noise.Session, func(), error) {
 		start := time.Now()
-		mc, sess, cleanup, err := client.Attach(ctx, m, id, ice, relayOnly())
+		mc, sess, cleanup, err := client.Attach(ctx, m, id, ice)
 		if err == nil {
 			st.noteDial(start)
 		}
@@ -656,8 +656,6 @@ func iceFallback() []string {
 	}
 	return nil
 }
-
-func relayOnly() bool { return os.Getenv("NETSIM_RELAY_ONLY") == "1" }
 
 func writeResult(dir string, res scenarioResult) error {
 	raw := filepath.Join(dir, "raw")
