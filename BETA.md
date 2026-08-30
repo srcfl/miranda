@@ -49,8 +49,12 @@ This is a beta. Read the gaps below before you rely on it.
 ## Install and join
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/srcfl/miranda/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/srcfl/miranda/main/install.sh | MIR_CHANNEL=beta sh
 ```
+
+`MIR_CHANNEL=beta` installs the newest beta build (a plain install gives the
+last stable release, which predates everything this page describes). A beta
+build keeps itself on the beta channel: `mir update` follows prereleases.
 
 On the machine whose terminal should stay reachable, run:
 

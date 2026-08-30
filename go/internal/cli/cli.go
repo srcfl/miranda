@@ -8,6 +8,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
+
+	"golang.org/x/term"
 
 	"github.com/srcful/terminal-relay/go/internal/version"
 )
@@ -44,12 +47,29 @@ func RunAgentCompat(argv []string, stdout, stderr io.Writer) int {
 	return (&app{in: os.Stdin, out: stdout, errOut: stderr, binary: "mir-agent"}).run(argv)
 }
 
+// canonicalCommand maps tmux-style shorthands and friendly spellings onto the
+// dispatch table's canonical names. An explicit table, not prefix matching, so
+// what `mir a` does is greppable and can never change by adding a command.
+func canonicalCommand(cmd string) string {
+	switch cmd {
+	case "a":
+		return "attach"
+	case "ls":
+		return "list"
+	case "id":
+		return "identity"
+	case "update":
+		return "self-update"
+	}
+	return cmd
+}
+
 func (a *app) run(argv []string) int {
 	if len(argv) == 0 {
 		a.guide()
 		return 2
 	}
-	switch argv[0] {
+	switch canonicalCommand(argv[0]) {
 	case "--version", "-v", "version":
 		fmt.Fprintln(a.out, a.binary, version.String())
 		return 0
@@ -97,7 +117,8 @@ func (a *app) exit(err error) int {
 }
 
 func (a *app) usage() {
-	fmt.Fprintln(a.errOut, "usage: "+a.binary+" <up|attach|list|pair|machine|identity|doctor|run|self-update|--version> [flags]")
+	fmt.Fprintln(a.errOut, "usage: "+a.binary+" <up|attach|list|pair|machine|identity|doctor|run|update|--version> [flags]")
+	fmt.Fprintln(a.errOut, "shorthands: a = attach, ls = list, id = identity")
 }
 
 // guide is the no-argument landing: a friendly walkthrough of the core flow, with a
@@ -122,18 +143,26 @@ func (a *app) guide() {
 	p("")
 	p("  Reach your machines (where you are):")
 	p("    " + b + " pair <code>       pair to a machine (compare the safety numbers)")
-	p("    " + b + " attach <name>     open its shell, peer-to-peer")
+	p("    " + b + " attach <name>     open its shell, peer-to-peer — short: " + b + " a <name>")
 	p("    " + b + " attach a b c      several at once — Ctrl-O then 1–9 to switch")
 	p("")
 	p("  Identity & machines:")
-	p("    " + b + " identity show     your Miranda owner id")
+	p("    " + b + " identity show     your Miranda owner id — short: " + b + " id show")
 	p("    " + b + " identity export-recovery   emergency recovery phrase")
-	p("    " + b + " list              machines you've paired")
+	p("    " + b + " list              machines you've paired — short: " + b + " ls")
 	p("    " + b + " machine rename <name> <new-name>   rename it on every device")
 	p("    " + b + " machine revoke <name>   retire a machine — asks first (--yes for scripts)")
 	p("    " + b + " doctor            verify local state, keychain, tmux and relay")
 	p("    " + b + " doctor --share    the same checks as a paste-safe report for an issue")
+	p("    " + b + " update            install the newest release (checked once a day)")
 	p("")
 	p("On the same network, " + b + " attach connects directly over the LAN (no relay) and")
 	p("falls back to the relay automatically. Full help for any command: " + b + " <command> -h")
+	// The guide is the one place a user stops to look around, so spend up to a
+	// second checking for an update — bounded, cached for a day, silent on any
+	// failure, and skipped when stdin isn't a terminal (scripts, CI, go test).
+	if term.IsTerminal(int(os.Stdin.Fd())) {
+		updateClient(b).NoticeNow(a.errOut, updateCachePath(defaultClientDir()),
+			version.Version, 24*time.Hour, time.Second)
+	}
 }

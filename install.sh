@@ -89,6 +89,22 @@ latest_tag() {
 		| awk -F'"' '/"tag_name"/ {print $4; exit}'
 }
 
+# Newest release INCLUDING prereleases, for MIR_CHANNEL=beta. GitHub's
+# /releases/latest never returns a prerelease, so the beta funnel needs the
+# release list; it is newest-first, and the first tag is the freshest build on
+# any channel.
+latest_tag_any() {
+	curl -fsSL "https://api.github.com/repos/$REPO/releases?per_page=1" \
+		| awk -F'"' '/"tag_name"/ {print $4; exit}'
+}
+
+resolve_tag() {
+	case "${MIR_CHANNEL:-stable}" in
+		beta) latest_tag_any ;;
+		*) latest_tag ;;
+	esac
+}
+
 # --- everything below only runs for a real install ---
 if [ "${MIR_INSTALL_LIB:-}" = "1" ]; then return 0 2>/dev/null || exit 0; fi
 
@@ -103,7 +119,7 @@ while [ $# -gt 0 ]; do
 done
 
 osarch=$(detect_os_arch); os=${osarch%/*}; arch=${osarch#*/}
-tag=${MIR_VERSION:-$(latest_tag)}
+tag=${MIR_VERSION:-$(resolve_tag)}
 [ -n "$tag" ] || { echo "could not resolve latest release tag" >&2; exit 1; }
 ver=${tag#v}
 dir=${INSTALL_DIR:-"$HOME/.local/bin"}

@@ -64,14 +64,18 @@ func (a *app) requireRootedIdentity(id *client.Identity) error {
 // (verified by SHA256) when a newer version exists. a.binary selects the asset
 // (mir / mir-agent), so the deprecated shim updates its own binary.
 func (a *app) cmdSelfUpdate(args []string) error {
-	fs := flag.NewFlagSet("self-update", flag.ExitOnError)
+	fs := flag.NewFlagSet("update", flag.ExitOnError)
+	pre := fs.Bool("pre", false, "follow prereleases (the beta channel); a prerelease build does this by default")
 	_ = fs.Parse(args)
 	exe, err := os.Executable()
 	if err != nil {
 		return err
 	}
 	exe, _ = filepath.EvalSymlinks(exe)
-	c := selfupdate.New(repoSlug, a.binary)
+	c := updateClient(a.binary)
+	if *pre {
+		c.Pre = true
+	}
 	rel, err := c.Latest()
 	if err != nil {
 		return humanUpdateErr(err)
@@ -176,7 +180,7 @@ func (a *app) cmdList(args []string) error {
 	dir := fs.String("dir", defaultClientDir(), "client state directory")
 	_ = fs.Parse(args)
 	// Cheap, non-blocking update notice (cache-only display; refresh in background).
-	selfupdate.New(repoSlug, a.binary).MaybeNotify(a.errOut, updateCachePath(*dir), version.Version, 24*time.Hour)
+	updateClient(a.binary).MaybeNotify(a.errOut, updateCachePath(*dir), version.Version, 24*time.Hour)
 	local, err := client.ListMachines(*dir)
 	if err != nil {
 		return err
@@ -215,7 +219,7 @@ func (a *app) cmdList(args []string) error {
 	}
 	merged := client.FilterRevoked(client.MergeMachines(local, discovered), idn.OwnerID, revocations)
 	if len(merged) == 0 {
-		fmt.Fprintln(a.out, "no machines yet — run `mir pair` on a target, then scan its QR or pair with its code")
+		fmt.Fprintln(a.out, "no machines yet — run `mir up` on the machine you want to reach; its first run shows a pairing QR")
 		return nil
 	}
 	for _, m := range merged {
@@ -513,7 +517,7 @@ func (a *app) cmdAttach(args []string) error {
 	}
 	// attach is long-lived, so the backgrounded refresh has time to land for the
 	// next run; surface any cached newer version now (non-blocking).
-	selfupdate.New(repoSlug, a.binary).MaybeNotify(a.errOut, updateCachePath(*dir), version.Version, 24*time.Hour)
+	updateClient(a.binary).MaybeNotify(a.errOut, updateCachePath(*dir), version.Version, 24*time.Hour)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

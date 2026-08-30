@@ -10,6 +10,8 @@ import (
 	"github.com/srcful/terminal-relay/go/internal/client"
 	"github.com/srcful/terminal-relay/go/internal/defaults"
 	"github.com/srcful/terminal-relay/go/internal/peer"
+	"github.com/srcful/terminal-relay/go/internal/selfupdate"
+	"github.com/srcful/terminal-relay/go/internal/version"
 )
 
 const repoSlug = "srcfl/miranda"
@@ -33,6 +35,16 @@ func ensureAgentOnlyDir(dir string) error {
 }
 
 func updateCachePath(dir string) string { return filepath.Join(dir, "update-check.json") }
+
+// updateClient builds the channel-aware selfupdate client: a prerelease build
+// (0.8.0-beta.1) follows prereleases, a stable build follows stable releases,
+// and MIR_CHANNEL=beta opts a stable build into the beta channel for scripts.
+// Channel only picks WHICH release is resolved; verification is unchanged.
+func updateClient(binary string) *selfupdate.Client {
+	c := selfupdate.New(repoSlug, binary)
+	c.Pre = selfupdate.IsPrerelease(version.Version) || os.Getenv("MIR_CHANNEL") == "beta"
+	return c
+}
 
 // freshSetup reports whether the default config dir holds no mir state yet, so the
 // no-argument guide can lead with a one-time welcome.

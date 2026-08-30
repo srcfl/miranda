@@ -140,7 +140,7 @@ func (a *app) cmdUp(args []string) error {
 	rt.Logf = rlog.Printf
 	fmt.Fprintf(a.out, "%s up: machine %s, signaling %s\n", a.binary, cfg.MachineID, cfg.SignalURL)
 	// Non-blocking update notice (cache-only display; refresh in background while serving).
-	selfupdate.New(repoSlug, a.binary).MaybeNotify(a.errOut, updateCachePath(*dir), version.Version, 24*time.Hour)
+	updateClient(a.binary).MaybeNotify(a.errOut, updateCachePath(*dir), version.Version, 24*time.Hour)
 	if *autoUpdate {
 		go a.autoUpdateLoop(ctx, rt)
 	}
@@ -159,7 +159,7 @@ func (a *app) autoUpdateLoop(ctx context.Context, rt *agent.Runtime) {
 		return
 	}
 	exe, _ = filepath.EvalSymlinks(exe)
-	c := selfupdate.New(repoSlug, a.binary)
+	c := updateClient(a.binary)
 	check := func() {
 		if rt.ActiveSessions() > 0 {
 			return // a client is connected — defer the swap until idle
