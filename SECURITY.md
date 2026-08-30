@@ -207,6 +207,57 @@ v0.8.0-beta.3: both modes ride the same connection.)
 Miranda does not hide IP addresses or provide traffic anonymity. Use a separate
 privacy network if that is a requirement.
 
+## Session sharing
+
+An owner can share one machine's terminal with a guest for a bounded time
+(`mir share`). Design and full threat analysis:
+[docs/superpowers/specs/2026-08-30-g1-guest-sharing-design.md](docs/superpowers/specs/2026-08-30-g1-guest-sharing-design.md).
+
+**The grant.** Sharing is authorized by a grant: an Ed25519 signature by the
+owner over a domain-separated canonical record naming one machine, one guest
+key, a mode (read-only or read-write), and a validity window (default 1 h,
+hard cap 24 h). The agent verifies it against the owner keys it already pins
+and re-checks signature, clock, and revocation on **every** attach. The relay
+cannot mint, alter, or extend a grant; neither can a guest — guests hold no
+owner key, grants are non-transferable, and guests cannot mint sub-grants.
+The grant is bound to the guest's key at claim time, so a stolen grant is
+useless without the guest's private key; leaking one costs nothing.
+
+**Read-only (the default)** is a pane mirror, not a tmux client: the agent
+streams one pane's output, and guest input is dropped at the agent — there is
+no tmux client to escape, so a read-only guest cannot inject a byte, switch
+windows, or reach any other session. What it still exposes: **everything that
+pane prints while the grant lives**, including any secret the owner displays.
+The exfiltration bound is screen content.
+
+**Read-write is arbitrary code execution as the agent's user** — full tmux
+server control and network access as that machine. That is the honest meaning
+of sharing a shell, and there is no pretend sandboxing. The mitigations are
+consent-side only: `--write` is never the default, the mint prompt says "full
+control of <machine> as your user" and requires typing the machine name, and
+the TTL cap bounds it. A hostile guest machine is equivalent to a hostile
+guest: scope, mode, and TTL are the whole containment story.
+
+**Invites.** A stolen invite code has the same profile as a stolen pairing
+code: one claim consumes the room, the owner sees the claimer's identity and
+safety number and must approve, and an unclaimed code dies with the room
+timeout. Declining costs the attacker the code. The grant itself is not a
+session token: every attach runs Noise-KK against the guest's key plus a live
+clock and tombstone check, so replayed offers, revoked grants, and expired
+grants all fail.
+
+**Revocation (v1) is agent-local.** `mir share revoke` delivers a tombstone to
+the machine over an authenticated session; the agent drops any live guest at
+once and refuses future attaches. While the machine is offline the revoke has
+not happened — but an offline machine cannot serve the guest either, and the
+24 h cap bounds the worst case. Expiry is enforced by the agent's clock; a
+machine with a wildly wrong clock mis-enforces TTLs, which `mir doctor`'s
+clock-skew check warns about at 5 minutes.
+
+**The relay learns nothing new:** one opaque pair room and ordinary attach
+metadata for the machine — identical to today's traffic. Suppressing traffic
+denies service (already true); it never grants access.
+
 ## Recovery and rotation
 
 - `mir identity export-recovery --yes` intentionally prints a 24-word recovery

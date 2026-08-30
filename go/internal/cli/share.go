@@ -360,5 +360,6 @@ func (a *app) cmdJoin(args []string) error {
 		return err
 	}
 	fmt.Fprintf(a.out, "✓ joined %q as a guest — %s access until %s\n", info.Name, modeWord(sg.Mode), time.Unix(sg.NA, 0).Format("15:04"))
+	fmt.Fprintf(a.out, "  open it: %s attach %s   (or the web app)\n", a.binary, info.Name)
 	return nil
 }

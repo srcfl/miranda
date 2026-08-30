@@ -24,6 +24,12 @@ This is a beta. Read the gaps below before you rely on it.
   through the encrypted registry.
 - The CLI attaches several machines at once (`mir attach a b c`) and switches
   focus with `Ctrl-O` then a number.
+- Share a terminal with someone for a bounded time: `mir share <machine>`
+  mints an invite (read-only by default, write only by explicit heavy consent,
+  1 h default, 24 h cap); the guest joins with `mir join <code>` or the web
+  link and the share expires on its own. Read-only guests see one pane and
+  cannot type; write access is full control, and the prompt says so. See
+  [SECURITY.md](SECURITY.md#session-sharing).
 - Machine revocation, native OS-keychain storage for the owner root, signed
   and reproducible releases, and the shared Go/JavaScript cryptography vectors
   all carry over from v0.7.0. See [SECURITY.md](SECURITY.md) for the exact
@@ -43,6 +49,10 @@ This is a beta. Read the gaps below before you rely on it.
 - **External audit.** Miranda has not had an independent security audit. A
   scope document exists ([docs/audit-scope.md](docs/audit-scope.md)), but no
   audit has been commissioned or completed.
+- **Sharing v2 items.** A read-only share mirrors one pane and does not
+  follow the owner's window switches; revocation reaches the machine only
+  when it is online (the 24 h cap is the backstop); and shares are minted
+  from the CLI only — phone minting comes later.
 - **No telemetry.** Miranda does not phone home, by design. That means we
   cannot see how the beta is going without your reports — see below.
 
