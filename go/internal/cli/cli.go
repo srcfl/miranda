@@ -66,10 +66,18 @@ func canonicalCommand(cmd string) string {
 
 func (a *app) run(argv []string) int {
 	if len(argv) == 0 {
+		// On a terminal, `mir` alone opens your machines (the overview). For a
+		// script or pipe the static guide + exit 2 stays exactly as it was.
+		if term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd())) {
+			return a.exit(a.cmdOverview())
+		}
 		a.guide()
 		return 2
 	}
 	switch canonicalCommand(argv[0]) {
+	case "--help", "-h", "help":
+		a.guide()
+		return 0
 	case "--version", "-v", "version":
 		fmt.Fprintln(a.out, a.binary, version.String())
 		return 0
@@ -142,7 +150,9 @@ func (a *app) guide() {
 	p("    " + b + " pair              add another owner later — prints a QR + safety number")
 	p("")
 	p("  Reach your machines (where you are):")
+	p("    " + b + "                   your machines, live — Enter attaches (Ctrl-O d comes back)")
 	p("    " + b + " pair <code>       pair to a machine (compare the safety numbers)")
+	p("    " + b + " attach            continue where you left off — short: " + b + " a")
 	p("    " + b + " attach <name>     open its shell, peer-to-peer — short: " + b + " a <name>")
 	p("    " + b + " attach a b c      several at once — Ctrl-O then 1–9 to switch")
 	p("")

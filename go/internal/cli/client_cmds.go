@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -305,6 +306,36 @@ func (a *app) resolveMachinesWarm(ctx context.Context, dir string, names []strin
 	return resolved, warm, nil
 }
 
+// defaultAttachTarget picks what a bare `mir attach` means: the last-used
+// machine when it still exists, else the only machine there is. "" (with a nil
+// error) means "no obvious default — open the overview".
+func (a *app) defaultAttachTarget(dir string) (string, error) {
+	idn, err := a.identity(dir)
+	if err != nil {
+		return "", err
+	}
+	if err := a.requireRootedIdentity(idn); err != nil {
+		return "", err
+	}
+	local, err := client.ListMachines(dir)
+	if err != nil {
+		return "", err
+	}
+	warm := a.prewarm(context.Background(), dir, idn, "", nil)
+	revocations, err := client.ListRevocations(dir)
+	if err != nil {
+		return "", err
+	}
+	merged := client.FilterRevoked(client.MergeMachines(local, warm.Discovered), idn.OwnerID, revocations)
+	if len(merged) == 0 {
+		return "", fmt.Errorf("no machines yet — run `%s up` on the machine you want to reach; its first run shows a pairing QR", a.binary)
+	}
+	if m, ok := pickDefaultMachine(client.LastUsed(dir), merged); ok {
+		return m.Name, nil
+	}
+	return "", nil
+}
+
 // resolveNames maps names onto machines, returning the first name that resolved
 // nowhere ("" when every name landed).
 func resolveNames(local, discovered []client.Machine, names []string) ([]client.Machine, string) {
@@ -385,6 +416,22 @@ func (a *app) cmdMachineRename(args []string) error {
 		return nil
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := a.renameResolved(ctx, *dir, idn, m, newName, ice()); err != nil {
+		return err
+	}
+	fmt.Fprintf(a.out, "✓ renamed %q → %q — the new name reaches your other devices via the encrypted registry\n", name, newName)
+	return nil
+}
+
+// renameResolved is the rename core shared by `mir machine rename` and the
+// overview: validate, re-seal under the owner root, rename locally first, then
+// deliver the re-sealed record to the machine over an authenticated session.
+func (a *app) renameResolved(ctx context.Context, dir string, idn *client.Identity, m client.Machine, newName string, ice []peer.ICEServer) error {
+	if !agent.ValidMachineName(newName) {
+		return fmt.Errorf("invalid machine name %q: 1-64 characters, no control characters or surrounding spaces", newName)
+	}
 	blob, ts, err := client.SealRegistryMachine(idn, client.Machine{
 		Name: newName, MachineID: m.MachineID, HostPubHex: m.HostPubHex, SignalURL: m.SignalURL,
 	})
@@ -393,21 +440,17 @@ func (a *app) cmdMachineRename(args []string) error {
 	}
 	// Local first: this device shows the new name immediately (and keeps
 	// winning the merge until the machine republishes the re-sealed record).
-	if err := client.RenameLocalMachine(*dir, m, newName, ts); err != nil {
+	if err := client.RenameLocalMachine(dir, m, newName, ts); err != nil {
 		return err
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	mc, sess, cleanup, err := client.Attach(ctx, m, idn, ice())
+	mc, sess, cleanup, err := client.Attach(ctx, m, idn, ice)
 	if err != nil {
-		return fmt.Errorf("renamed locally, but %q is unreachable (%v) — your other devices keep the old name; re-run when it is back online", name, err)
+		return fmt.Errorf("renamed locally, but %q is unreachable (%v) — your other devices keep the old name; re-run when it is back online", m.Name, err)
 	}
 	defer cleanup()
 	if err := client.RenameOverSession(ctx, mc, sess, newName, blob, 8*time.Second); err != nil {
 		return fmt.Errorf("renamed locally, but delivery was not confirmed (%v) — the machine may run an older agent; update it and re-run", err)
 	}
-	fmt.Fprintf(a.out, "✓ renamed %q → %q — the new name reaches your other devices via the encrypted registry\n", name, newName)
 	return nil
 }
 
@@ -486,6 +529,14 @@ func (a *app) cmdMachineRevoke(args []string) error {
 	if !ok {
 		return fmt.Errorf("unknown machine %q", name)
 	}
+	return a.retireResolved(ctx, a.out, *dir, idn, machine)
+}
+
+// retireResolved is the retirement core shared by `mir machine revoke` and the
+// overview: sign the revocation, record it locally first, then publish it to
+// the relays. Progress lines go to w (the overview passes io.Discard and shows
+// its own one-line status instead).
+func (a *app) retireResolved(ctx context.Context, w io.Writer, dir string, idn *client.Identity, machine client.Machine) error {
 	signer, err := idn.Signer()
 	if err != nil {
 		return err
@@ -496,10 +547,10 @@ func (a *app) cmdMachineRevoke(args []string) error {
 	}
 	// Local-first is intentional: even when every relay is unavailable, this
 	// client must stop trusting the target immediately.
-	if err := client.RecordRevocation(*dir, *record); err != nil {
+	if err := client.RecordRevocation(dir, *record); err != nil {
 		return err
 	}
-	fmt.Fprintf(a.out, "revoked %q locally (%s)\n", machine.Name, machine.MachineID)
+	fmt.Fprintf(w, "revoked %q locally (%s)\n", machine.Name, machine.MachineID)
 
 	relays := []string{machine.SignalURL, defaults.SignalURL()}
 	seen := map[string]bool{}
@@ -514,14 +565,14 @@ func (a *app) cmdMachineRevoke(args []string) error {
 			publishErrors = append(publishErrors, relay+": "+err.Error())
 			continue
 		}
-		fmt.Fprintf(a.out, "published signed revocation to %s\n", relay)
+		fmt.Fprintf(w, "published signed revocation to %s\n", relay)
 	}
 	if len(publishErrors) > 0 {
 		return fmt.Errorf("machine is blocked locally, but relay publication failed (%s); retry the command when online", strings.Join(publishErrors, "; "))
 	}
-	fmt.Fprintf(a.out, "\n✓ retired %q — your identity can no longer reach it, on any device.\n", machine.Name)
-	fmt.Fprintln(a.out, "The machine itself keeps running; nothing on it was touched.")
-	fmt.Fprintln(a.out, "To use it again: run `mir up` on it and pair fresh.")
+	fmt.Fprintf(w, "\n✓ retired %q — your identity can no longer reach it, on any device.\n", machine.Name)
+	fmt.Fprintln(w, "The machine itself keeps running; nothing on it was touched.")
+	fmt.Fprintln(w, "To use it again: run `mir up` on it and pair fresh.")
 	return nil
 }
 
@@ -537,7 +588,21 @@ func (a *app) cmdAttach(args []string) error {
 	}
 	names := fs.Args()
 	if len(names) == 0 {
-		return fmt.Errorf("usage: mir attach <machine> [machine...]")
+		// A bare `mir attach` on a terminal means "continue": the last-used
+		// machine, else the only one there is, else the overview. Scripts
+		// (no TTY) keep the explicit usage error.
+		if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
+			return fmt.Errorf("usage: mir attach <machine> [machine...]")
+		}
+		name, err := a.defaultAttachTarget(*dir)
+		if err != nil {
+			return err
+		}
+		if name == "" {
+			return a.cmdOverview()
+		}
+		fmt.Fprintf(a.errOut, "[%s] attaching %s — run `%s` alone to pick from your machines\n", a.binary, name, a.binary)
+		names = []string{name}
 	}
 	prefix, prefixLabel, err := parsePrefix(*prefixFlag)
 	if err != nil {
@@ -597,9 +662,11 @@ func (a *app) cmdAttach(args []string) error {
 				fmt.Fprintf(a.errOut, "\r\n[mir] is the machine up? Check `%s list`, then rerun `%s attach %s`.\r\n", a.binary, a.binary, m.Name)
 			},
 		}
+		var once sync.Once
 		err := client.ReconnectLoopWith(ctx, client.ReconnectPolicy{Notify: notify}, func(ctx context.Context) (peer.MsgConn, *noise.Session, func(), error) {
 			return client.Attach(ctx, m, idn, iceList)
 		}, func(ctx context.Context, mc peer.MsgConn, sess *noise.Session) error {
+			once.Do(func() { client.SaveLastUsed(*dir, m.Name) })
 			return client.RunInteractive(ctx, mc, sess, m.Name)
 		})
 		if err != nil && ctx.Err() == nil && !isCleanDetach(err) {

@@ -15,10 +15,21 @@ type Size struct {
 	Rows uint16
 }
 
+// WindowsSink receives each tmux window snapshot the agent pushes (the JSON
+// payload of a WINDOWS frame). Called from the receive goroutine — keep it fast
+// and non-blocking.
+type WindowsSink func(json []byte)
+
 // ClientBridge pumps a local terminal (in/out) over an established Noise session:
 // stdin -> DATA frames; incoming DATA -> out; window changes (resizes) -> RESIZE;
 // the agent's HELLO is consumed (not written to out). Returns when either side ends.
 func ClientBridge(ctx context.Context, in io.Reader, out io.Writer, resizes <-chan Size, initial Size, mc peer.MsgConn, sess *noise.Session) error {
+	return ClientBridgeSink(ctx, in, out, resizes, initial, mc, sess, nil)
+}
+
+// ClientBridgeSink is ClientBridge with an optional WindowsSink: the overview
+// uses it to keep the latest tmux snapshot without changing the byte stream.
+func ClientBridgeSink(ctx context.Context, in io.Reader, out io.Writer, resizes <-chan Size, initial Size, mc peer.MsgConn, sess *noise.Session, onWindows WindowsSink) error {
 	s := newSender(mc, sess)
 	if err := s.send(noise.EncodeResize(initial.Cols, initial.Rows)); err != nil {
 		return err
@@ -69,10 +80,13 @@ func ClientBridge(ctx context.Context, in io.Reader, out io.Writer, resizes <-ch
 					return
 				}
 			}
-			// FrameHello / FrameResize / FrameWindows from the agent are ignored
-			// here: the CLI is a raw passthrough, so it already renders tmux's own
-			// status bar (the window overview) and Ctrl-B works — the native
-			// equivalent of the web client's tab strip, on the same shared session.
+			if typ == noise.FrameWindows && onWindows != nil {
+				onWindows(payload)
+			}
+			// FrameHello / FrameResize from the agent are ignored here: the CLI is
+			// a raw passthrough, so it already renders tmux's own status bar and
+			// Ctrl-B works. FrameWindows only feeds the overview's summary line —
+			// it never touches the byte stream.
 		}
 	}()
 
