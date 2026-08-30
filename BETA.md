@@ -1,9 +1,10 @@
 # Miranda beta
 
-Miranda lets you leave a desk and keep the same live terminal. Pair a phone or
-laptop to a machine with a passkey, and `tmux` sessions on that machine stay
-reachable through a blind relay that never sees plaintext, over an
-end-to-end-encrypted connection.
+Miranda is the reach layer for persistent terminals: `tmux` keeps your session
+alive on the machine, and Miranda gets you to that machine from the device in
+your hand. Pair a phone or laptop with a passkey, and the machine's `tmux`
+sessions stay reachable through a blind relay that never sees plaintext, over an
+end-to-end-encrypted connection. Leave your desk. Keep your terminal.
 
 This is a beta. Read the gaps below before you rely on it.
 
@@ -42,10 +43,10 @@ This is a beta. Read the gaps below before you rely on it.
   on) are tested and supported. Most combinations work; none are certified
   yet.
 - **Real-network numbers.** Lab measurements exist — a Docker NAT matrix
-  ([netsim/results/results.md](netsim/results/results.md)) shows attach in
-  0.2–1.3 s and resume after a network flip in ~2.6 s direct / ~3.0 s over
-  TURN — but nothing is published yet from real home, office, or cellular
-  networks.
+  ([netsim/results/results.md](netsim/results/results.md)) shows attach from
+  12 ms on a LAN to ~1.0 s over TURN, and resume after a network flip in
+  ~2.4 s direct / ~2.8 s over TURN — but nothing is published yet from real
+  home, office, or cellular networks.
 - **External audit.** Miranda has not had an independent security audit. A
   scope document exists ([docs/audit-scope.md](docs/audit-scope.md)), but no
   audit has been commissioned or completed.

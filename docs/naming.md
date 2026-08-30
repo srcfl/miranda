@@ -94,5 +94,5 @@ backbone.
   binaries.
 - The Go module path and historical cryptographic wire-domain strings remain
   `github.com/srcful/terminal-relay/go` / `terminal-relay/...` for compatibility.
-- Product positioning now lives in [`product.md`](product.md): passkey-native
-  terminal continuity, not a general VPN or SSH reimplementation.
+- Product positioning now lives in [`product.md`](product.md): the passkey-native
+  reach layer for persistent terminals, not a general VPN or SSH reimplementation.

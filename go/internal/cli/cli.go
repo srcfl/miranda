@@ -142,12 +142,12 @@ func (a *app) guide() {
 	if freshSetup() {
 		p("👋  Welcome to " + b + ". Looks like a fresh setup.")
 		p("")
-		p(b + " keeps your live terminal and AI sessions available on every device.")
+		p(b + " reaches the terminals already running on your machines, from any device.")
 		p("No inbound ports or SSH keys. Your passkey identity and terminal data stay")
 		p("end-to-end encrypted; targets hold only their own machine keys.")
 		p("")
 	}
-	p(b + " — terminal continuity for long-running development and AI sessions.")
+	p(b + " — tmux keeps your session alive; " + b + " gets you to it from any device.")
 	p("")
 	p("  Serve a machine (on the box you want to reach):")
 	p("    " + b + " up                keep its tmux sessions reachable — first run shows a pairing QR")

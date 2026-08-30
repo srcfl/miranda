@@ -1,7 +1,7 @@
 {
   "name": "Miranda",
   "short_name": "Miranda",
-  "description": "Leave your desk. Keep your terminal. Passkey-native terminal continuity.",
+  "description": "Leave your desk. Keep your terminal. Passkey-native reach to the terminals already running on your machines.",
   "id": "/",
   "start_url": "/",
   "scope": "/",

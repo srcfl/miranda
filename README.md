@@ -7,14 +7,17 @@
 
 **Leave your desk. Keep your terminal.**
 
-Miranda is passkey-native terminal continuity for long-running development and
-AI sessions. Start work in `tmux` on one of your machines, walk away, and continue
-the same live terminal from a laptop or phone. No inbound port forwarding, copied
-SSH keys, or blanket network access.
+Miranda is the reach layer for persistent terminals. A multiplexer keeps your
+session alive **on the machine**. Miranda gets you **to that machine** — from
+whatever device is in your hand, with a passkey. No VPN, no copied SSH key, no
+open inbound port, no account.
 
-It is deliberately narrow: Miranda connects **you to persistent terminals on
-machines you own**. It is not a general VPN, network overlay, remote desktop, or
-multi-user access platform.
+Start an agent or a build in `tmux` on your workstation, walk away, and pick up
+the same live terminal on a laptop or a phone.
+
+We do not build a multiplexer; we make yours reachable. Miranda connects **you to
+persistent terminals on machines you own** — not a VPN, network overlay, remote
+desktop, or multi-user access platform.
 
 <p align="center">
   <img src="assets/miranda-demo.gif" width="900"
@@ -27,23 +30,28 @@ Miranda is in public beta. Read [BETA.md](BETA.md) for what works today, the
 known gaps (passkey/browser matrix, NAT numbers, external audit — none
 published yet), and how to report a problem.
 
-## Is it “P2P tmux”?
+## Is it “P2P tmux”? How is it different from a multiplexer?
 
-Close, but the useful boundary is:
+The useful boundary is the layer:
 
-- `tmux` owns persistence, panes, windows, and processes **inside one machine**.
-- Miranda owns passkey identity, machine pairing, discovery, reachability, and
-  encrypted continuity **between your devices and machines**.
+- A multiplexer — `tmux`, or an agent-aware one like
+  [herdr](https://github.com/herdrdev/herdr) — keeps sessions, panes, windows,
+  and the processes inside them alive **on one machine**.
+- Miranda keeps that machine **reachable from the device in your hand**: passkey
+  identity, pairing, discovery, NAT traversal, encrypted resume, and time-boxed
+  sharing.
 
-So the exact niche is a **private terminal-continuity mesh**. Miranda does not
-replace tmux; it makes your tmux sessions securely follow you.
+So Miranda does not replace your multiplexer. It makes the sessions you already
+run follow you. tmux is the engine it drives today; carrying other engines is
+the direction, tracked in [#107](https://github.com/srcfl/miranda/issues/107),
+not something that works yet.
 
 | Tool | Its job | What Miranda adds |
 |---|---|---|
-| `tmux` | Keep a local terminal session alive | Reach and resume it from another device |
-| SSH | Log in to a host | Passkey-first pairing, discovery, browser access, no exposed SSH service |
-| VPN/overlay | Put devices on one private network | Expose only a terminal, not the rest of the network |
-| Miranda | Continue your own live terminals | The focused product |
+| `tmux`, herdr | Keep a session alive on one machine | Reach and resume it from another device |
+| SSH | Log in to a host you can already route to | Passkey-first pairing, discovery, browser and phone access, no exposed SSH service |
+| VPN/overlay | Put devices on one private network | Expose one terminal, not the rest of the network |
+| Miranda | Get you to your own live terminals | The focused product |
 
 ## The one-minute flow
 
@@ -69,24 +77,42 @@ to the same owner appear by name from an end-to-end-encrypted registry.
 Attach several machines at once with `mir attach a b c`; press `Ctrl-O`, then
 `1`–`9` or `n`, to switch focus.
 
-## Why it feels simpler
+## Five claims you can check
 
-- **One terminal-shaped capability.** Miranda does not grant subnet access or
-  expose unrelated services.
-- **Passkey-first browser identity.** WebAuthn PRF derives the owner identity for
-  the current ceremony. The owner private key is not stored by the agent or relay.
-- **One visual trust step.** Pair once, compare one safety number, then reconnect
-  without managing `authorized_keys`.
-- **Persistent by default.** Network changes, browser sleep, or closing the lid do
-  not kill the work running inside tmux.
-- **Direct when possible.** One connection, two modes: ICE pairs peers directly —
-  on the same LAN or hole-punched across the internet — and an optional TURN
-  server forwards ciphertext where direct NAT traversal fails.
-- **Blind discovery.** The relay stores only owner-encrypted machine records while
-  agents are online.
-- **Shareable, for a while.** `mir share` hands someone a time-boxed,
-  read-only view of one terminal — no account, no key exchange, and it revokes
-  or expires on its own.
+- **Your passkey is the identity, and there is no account.** No signup, no
+  password, no user record. The owner identity is derived from the passkey PRF
+  output, so the browser re-derives it for each session and stores no private
+  key; the relay and every machine you pair hold public IDs only. Pair once,
+  compare one six-group safety number, and never touch `authorized_keys` again.
+  → [`go/internal/identity/owner.go`](go/internal/identity/owner.go),
+  [B1 identity spec](docs/superpowers/specs/2026-06-11-b1-wallet-identity.md)
+- **The relay cannot read, and keeps next to nothing.** Terminal bytes run
+  through Noise `KK` inside the WebRTC DataChannel, so the relay sees `owner_id`,
+  `machine_id`, and routing metadata. Discovery records are owner-encrypted blobs
+  it never opens, held only while your agent is online — a restart loses every
+  one. The single thing it persists is an owner-signed revocation.
+  → [`go/internal/signal/server.go`](go/internal/signal/server.go),
+  [SECURITY.md](SECURITY.md#components-and-trust)
+- **Direct by default, and measured.** One connection, two ICE modes: peers pair
+  directly on a LAN or hole-punch across the internet, and TURN forwards
+  ciphertext only where that fails. In the Docker NAT matrix, attach takes 12 ms
+  on a LAN host pair, 17 ms to an openly reachable agent, and ~1.0 s when only
+  TURN can work; a Wi-Fi→cellular flip resumes in 2.35 s direct, 2.77 s over
+  TURN. `make netsim` reruns the whole matrix on your laptop.
+  → [`netsim/results/results.md`](netsim/results/results.md)
+- **Sharing with an expiry date.** `mir share` mints an owner-signed grant naming
+  one machine, one guest key, and a window — 1 h by default, 24 h hard cap. It is
+  read-only unless you say otherwise, and the agent enforces that by dropping
+  guest input, with no tmux client for a guest to escape. Revocable, no accounts,
+  no third party.
+  → [SECURITY.md](SECURITY.md#session-sharing),
+  [G1 sharing design](docs/superpowers/specs/2026-08-30-g1-guest-sharing-design.md)
+- **The gaps are written down too.** Release binaries are reproducible and
+  cosign-signed, the installer fails closed without a valid signature, the threat
+  model is published, and so is the list of what Miranda does not do and has not
+  proved.
+  → [`docs/release.md`](docs/release.md), [SECURITY.md](SECURITY.md),
+  [audit scope](docs/audit-scope.md)
 
 ## Security in one screen
 
@@ -175,6 +201,7 @@ each NAT approximates are in [`netsim/README.md`](netsim/README.md).
 
 ## What Miranda intentionally does not do
 
+- replace your terminal multiplexer, or ship one of its own;
 - route IP packets, subnets, databases, or arbitrary TCP services;
 - act as an SSH server or support the SSH wire protocol;
 - transfer or synchronize files;
@@ -183,8 +210,9 @@ each NAT approximates are in [`netsim/README.md`](netsim/README.md).
 - protect a compromised endpoint, browser origin, or passkey account;
 - claim independent security validation yet.
 
-Those constraints are the product strategy. A small capability is easier to
-understand, safer to grant, and easier to make feel magical.
+The first one is the whole position, not an apology: keeping a session alive is a
+solved job, and Miranda is the layer that gets you to it. A small capability is
+easier to understand, safer to grant, and easier to make feel magical.
 The longer positioning decision is in [`docs/product.md`](docs/product.md).
 
 ## Status
