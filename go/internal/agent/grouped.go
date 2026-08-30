@@ -35,15 +35,24 @@ func isDefaultTmuxLaunch(launch []string) bool {
 	return true
 }
 
-// groupedNameRe matches the session names this agent mints. The startup sweep
-// and the snapshot filter act ONLY on names of this shape.
-var groupedNameRe = regexp.MustCompile(`^mir-[0-9a-f]{8}$`)
+// groupedNameRe matches the session names this agent mints: an owner attach's
+// mir-<8 hex> and a read-write guest's guest-<8 hex> (spec G1c). The kill guard,
+// startup sweep, and snapshot filter act ONLY on names of these shapes, so a
+// guest session is cleaned up and hidden from other viewers exactly like a
+// mir-* one, and neither can ever name the base.
+var groupedNameRe = regexp.MustCompile(`^(?:mir|guest)-[0-9a-f]{8}$`)
 
 // newAttachSessionName mints a fresh grouped-session name (mir-<8 hex>).
 func newAttachSessionName() string {
 	b := make([]byte, 4)
 	_, _ = rand.Read(b)
 	return "mir-" + hex.EncodeToString(b)
+}
+
+// guestSessionName is a read-write guest's grouped session, derived from the
+// grant id so detach cleanup and the orphan sweep can find it deterministically.
+func guestSessionName(gid string) string {
+	return "guest-" + gid[:8]
 }
 
 var groupedBaseMu sync.Mutex

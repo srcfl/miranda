@@ -84,6 +84,8 @@ type Runtime struct {
 	Logf           func(string, ...any) // optional reconnect/status log (set by the CLI)
 
 	rename renameState // live display name + signaling writers for mid-run rename (see rename.go)
+
+	guests guestRegistry // live guest sessions by gid, so revoke-grant drops them at once (see guest.go)
 }
 
 // admit reserves a slot for a new attach handshake, returning false immediately
@@ -164,8 +166,9 @@ func (rt *Runtime) Up(ctx context.Context) error {
 		return errNoOwner
 	}
 	if isDefaultTmuxLaunch(rt.launch) {
-		sweepOrphanGroupedSessions() // mir-* leftovers from a crashed agent
+		sweepOrphanGroupedSessions() // mir-*/guest-* leftovers from a crashed agent
 	}
+	sweepExpiredGrants(rt.cfg.Dir, time.Now()) // drop grant files whose window has closed
 	rt.reconcileOwners(ctx, append([]string(nil), rt.cfg.PairedOwners...))
 	t := time.NewTicker(rt.reloadInterval)
 	defer t.Stop()
@@ -396,7 +399,7 @@ func (rt *Runtime) iceFor(ctx context.Context) []peer.ICEServer {
 }
 
 func (rt *Runtime) handleOffer(ctx context.Context, w *signalWriter, m signal.SignalMsg, owner string) {
-	ownerPub, err := rt.authorizeOffer(owner, m)
+	auth, err := rt.authorizeOffer(owner, m)
 	if err != nil {
 		return
 	}
@@ -451,28 +454,60 @@ func (rt *Runtime) handleOffer(ctx context.Context, w *signalWriter, m signal.Si
 		return
 	}
 
-	_ = rt.serveAuthenticated(attachCtx, dc, owner, ownerPub, releaseHS)
+	_ = rt.serveAuthenticated(attachCtx, dc, owner, auth, releaseHS)
+}
+
+// offerAuth is the result of authorizing an offer: the transport key to pin for
+// Noise-KK, and — for a guest — the grant that authorized them (nil = owner).
+type offerAuth struct {
+	pub   []byte
+	grant *identity.SignedGrant
 }
 
 // authorizeOffer verifies pin, binding, SDP-bound owner signature, and session
 // replay before any ICE/Pion allocation. Exported-to-package so tests can drive
 // the live pin set without a full WebRTC handshake.
-func (rt *Runtime) authorizeOffer(owner string, m signal.SignalMsg) ([]byte, error) {
-	if !rt.ownerPinned(owner) || m.Session == "" || m.Auth == "" {
+func (rt *Runtime) authorizeOffer(owner string, m signal.SignalMsg) (*offerAuth, error) {
+	if m.Session == "" || m.Auth == "" || m.Binding == "" {
 		return nil, fmt.Errorf("attach: not authorized")
 	}
-	ownerPub, err := ownerPubFromBinding(m.Binding, owner)
-	if err != nil {
-		return nil, err
+	// The offer is authenticated by whoever signed its binding and the SDP-bound
+	// attach challenge — the "principal". For an owner that is the routed owner
+	// itself; for a guest it is the guest key, which is why the binding wallet,
+	// not the routed owner_id, decides who this is.
+	sb, err := identity.ParseSignedBinding([]byte(m.Binding))
+	if err != nil || identity.VerifyBinding(sb) != nil {
+		return nil, fmt.Errorf("attach: bad binding")
 	}
-	auth, err := base64.StdEncoding.DecodeString(m.Auth)
-	if err != nil || identity.VerifyAuth(owner, identity.AttachChallenge(m.Session, rt.cfg.MachineID, m.SDP), auth) != nil {
+	principal := sb.Wallet
+	pub, err := hex.DecodeString(sb.X25519)
+	if err != nil {
+		return nil, fmt.Errorf("attach: bad transport key")
+	}
+	sig, err := base64.StdEncoding.DecodeString(m.Auth)
+	if err != nil || identity.VerifyAuth(principal, identity.AttachChallenge(m.Session, rt.cfg.MachineID, m.SDP), sig) != nil {
 		return nil, fmt.Errorf("attach: bad auth")
 	}
-	if !rt.acceptAttachSession(owner, m.Session) {
+
+	// Owner path (byte-identical to before): the principal is the routed, pinned
+	// owner.
+	if principal == owner && rt.ownerPinned(owner) {
+		if !rt.acceptAttachSession(principal, m.Session) {
+			return nil, fmt.Errorf("attach: replay")
+		}
+		return &offerAuth{pub: pub}, nil
+	}
+
+	// Guest path: a stored, valid grant for THIS owner and machine, bound to the
+	// principal key. ValidAt + tombstone are re-checked here on every attach.
+	grant := findValidGuestGrant(rt.cfg.Dir, owner, rt.cfg.MachineID, principal, time.Now())
+	if grant == nil {
+		return nil, fmt.Errorf("attach: not authorized")
+	}
+	if !rt.acceptAttachSession(principal, m.Session) {
 		return nil, fmt.Errorf("attach: replay")
 	}
-	return ownerPub, nil
+	return &offerAuth{pub: pub, grant: grant}, nil
 }
 
 // serveAuthenticated runs the Noise-KK responder against the pinned owner X25519 key
@@ -481,13 +516,18 @@ func (rt *Runtime) authorizeOffer(owner string, m signal.SignalMsg) ([]byte, err
 // The active-session bracket lives HERE — after auth — not at the transport accept:
 // pre-auth handshakes (already bounded by admit()) must not inflate the active count
 // and starve opt-in auto-update, which defers binary swaps until the agent is idle.
-func (rt *Runtime) serveAuthenticated(ctx context.Context, mc peer.MsgConn, owner string, ownerPub []byte, handshakeDone func()) error {
-	sess, err := peer.RunResponder(ctx, mc, rt.cfg.HostPriv(), ownerPub)
+func (rt *Runtime) serveAuthenticated(ctx context.Context, mc peer.MsgConn, owner string, auth *offerAuth, handshakeDone func()) error {
+	sess, err := peer.RunResponder(ctx, mc, rt.cfg.HostPriv(), auth.pub)
 	if err != nil {
 		return err
 	}
 	if handshakeDone != nil {
 		handshakeDone()
+	}
+	// A guest is served in its own confined path (ro mirror or grouped rw), never
+	// the owner shell below.
+	if auth.grant != nil {
+		return rt.serveGuest(ctx, mc, sess, auth.grant)
 	}
 	rt.sessionStarted()
 	defer rt.sessionEnded()
@@ -528,7 +568,7 @@ func (rt *Runtime) serveAuthenticated(ctx context.Context, mc peer.MsgConn, owne
 		}
 		windows = func() []byte { return tmuxSessionsJSON(pid, collapse) }
 	}
-	return RunAgentSession(ctx, mc, sess, pty, rt.machineName(), windows, pid, chainControl(rt.renameHandler(owner), rt.grantHandler(owner)))
+	return RunAgentSession(ctx, mc, sess, pty, rt.machineName(), windows, pid, chainControl(rt.renameHandler(owner), rt.grantHandler(owner), rt.revokeGrantHandler(owner)))
 }
 
 // agentSignalURL builds ws(s)://host/agent/signal?owner_id=..&machine_id=..
