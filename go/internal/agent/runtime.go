@@ -528,7 +528,7 @@ func (rt *Runtime) serveAuthenticated(ctx context.Context, mc peer.MsgConn, owne
 		}
 		windows = func() []byte { return tmuxSessionsJSON(pid, collapse) }
 	}
-	return RunAgentSession(ctx, mc, sess, pty, rt.machineName(), windows, pid, rt.renameHandler(owner))
+	return RunAgentSession(ctx, mc, sess, pty, rt.machineName(), windows, pid, chainControl(rt.renameHandler(owner), rt.grantHandler(owner)))
 }
 
 // agentSignalURL builds ws(s)://host/agent/signal?owner_id=..&machine_id=..

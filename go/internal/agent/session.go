@@ -25,7 +25,7 @@ type Shell interface {
 // payload was an agent-level command (whether or not it was applied); a
 // non-empty helloName re-announces the machine to this client with a fresh
 // HELLO — the rename acknowledgement.
-type ControlHandler func(payload []byte) (handled bool, helloName string)
+type ControlHandler func(payload []byte) (handled bool, helloAck map[string]string)
 
 // RunAgentSession bridges an established Noise session to a shell using the
 // Plan-1 frame protocol: it sends HELLO (machine name) once, then pumps DATA in
@@ -114,9 +114,9 @@ func RunAgentSession(ctx context.Context, mc peer.MsgConn, sess *noise.Session, 
 				}
 			case noise.FrameControl:
 				if control != nil {
-					if handled, helloName := control(payload); handled {
-						if helloName != "" {
-							hello, _ := json.Marshal(map[string]string{"name": helloName})
+					if handled, helloAck := control(payload); handled {
+						if helloAck != nil {
+							hello, _ := json.Marshal(helloAck)
 							_ = safeSend(noise.EncodeHello(hello))
 						}
 						continue

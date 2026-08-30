@@ -101,6 +101,10 @@ func (a *app) run(argv []string) int {
 		return a.exit(a.cmdUp(argv[1:]))
 	case "pair":
 		return a.exit(a.cmdPair(argv[1:]))
+	case "share":
+		return a.exit(a.cmdShare(argv[1:]))
+	case "join":
+		return a.exit(a.cmdJoin(argv[1:]))
 	case "identity":
 		return a.exit(a.cmdIdentity(argv[1:]))
 	case "machine":
@@ -125,7 +129,7 @@ func (a *app) exit(err error) int {
 }
 
 func (a *app) usage() {
-	fmt.Fprintln(a.errOut, "usage: "+a.binary+" <up|attach|list|pair|machine|identity|doctor|run|update|--version> [flags]")
+	fmt.Fprintln(a.errOut, "usage: "+a.binary+" <up|attach|list|pair|share|join|machine|identity|doctor|run|update|--version> [flags]")
 	fmt.Fprintln(a.errOut, "shorthands: a = attach, ls = list, id = identity")
 }
 
@@ -155,6 +159,10 @@ func (a *app) guide() {
 	p("    " + b + " attach            continue where you left off — short: " + b + " a")
 	p("    " + b + " attach <name>     open its shell, peer-to-peer — short: " + b + " a <name>")
 	p("    " + b + " attach a b c      several at once — Ctrl-O then 1–9 to switch")
+	p("")
+	p("  Share a terminal (guests, time-boxed):")
+	p("    " + b + " share <machine>   invite someone in — read-only, expires in an hour")
+	p("    " + b + " join <code>       claim an invite someone sent you")
 	p("")
 	p("  Identity & machines:")
 	p("    " + b + " identity show     your Miranda owner id — short: " + b + " id show")

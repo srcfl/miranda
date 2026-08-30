@@ -104,8 +104,8 @@ func TestRenameHandlerAppliesPersistsAndRepublishes(t *testing.T) {
 	newBlob := base64.StdEncoding.EncodeToString([]byte("resealed-record"))
 	payload, _ := json.Marshal(map[string]string{"a": "rename-machine", "n": "new-name", "blob": newBlob})
 	handled, hello := rt.renameHandler(owner)(payload)
-	if !handled || hello != "new-name" {
-		t.Fatalf("handler = (%v, %q), want (true, \"new-name\")", handled, hello)
+	if !handled || hello == nil || hello["name"] != "new-name" {
+		t.Fatalf("handler = (%v, %v), want (true, name=new-name)", handled, hello)
 	}
 	if got := RegistryForOwner(dir, owner); got != newBlob {
 		t.Fatalf("persisted blob = %q, want the re-sealed one", got)
@@ -150,8 +150,8 @@ func TestRenameHandlerRejectsBadInputWithoutHello(t *testing.T) {
 	for _, c := range bad {
 		payload, _ := json.Marshal(c)
 		handled, hello := h(payload)
-		if !handled || hello != "" {
-			t.Fatalf("bad rename %v = (%v, %q), want (true, \"\")", c, handled, hello)
+		if !handled || hello != nil {
+			t.Fatalf("bad rename %v = (%v, %v), want (true, nil)", c, handled, hello)
 		}
 	}
 	if got := RegistryForOwner(dir, "owner-a"); got != "" {
@@ -173,15 +173,15 @@ func TestSessionRenameControlRepliesHello(t *testing.T) {
 	clientPriv, clientPub, _ := noise.GenerateStatic()
 	clientMC, agentMC := peer.Pipe()
 
-	control := func(payload []byte) (bool, string) {
+	control := func(payload []byte) (bool, map[string]string) {
 		var c struct {
 			A string `json:"a"`
 			N string `json:"n"`
 		}
 		if json.Unmarshal(payload, &c) != nil || c.A != "rename-machine" {
-			return false, ""
+			return false, nil
 		}
-		return true, c.N
+		return true, map[string]string{"name": c.N}
 	}
 
 	done := make(chan error, 1)
