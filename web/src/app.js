@@ -14,6 +14,8 @@ import { FitAddon } from '@xterm/addon-fit';
 import { listMachines, addMachine } from './store.js';
 import { fetchMachines, mergeMachines, freshDevices, sealMachineRecord } from './registry.js';
 import { pairWithCode } from './pair.js';
+import { joinWithCode } from './join.js';
+import { saveGuestGrant, guestGrantFor, grantLive, sweepGuestGrants, shareSummary, expiryPhrase, modeWord, guardReadonlySend } from './guest.js';
 import { confirmPairingSafety, machineAfterConfirmedPairing, pendingPairingConfirmation } from './pairing/confirm.js';
 import { registerPasskey, signInPasskey, devOwnerKey, passkeySupported, isLocalhost } from './identity.js';
 import { signBinding, recordJSON } from './identity/binding.js';
@@ -107,8 +109,10 @@ export async function connectOnce(machine, term, current, onConnected, onWindows
   const signer = signerKey();
 	if (isMachineRevoked(machine.machine_id, signer.address)) throw new Error('machine revoked');
   // owner_id is the neutral Ed25519 address; the signed binding authorizes this
-  // browser's X25519 transport key for the Noise handshake.
-  const ownerId = signer.address;
+  // browser's X25519 transport key for the Noise handshake. A share routes
+  // under the MACHINE OWNER's id (the agent registers there) while the binding
+  // still authenticates us — the guest (G1c).
+  const ownerId = machine.owner || signer.address;
   const binding = recordJSON(signBinding(signer, deviceID(), bytesToHex(owner.pub), Math.floor(Date.now() / 1000)));
   const diag = { step: 'start', ws: 'init', gather: '', iceConn: '', conn: '', dc: 'init' };
   window.__diag = diag;
@@ -426,6 +430,10 @@ function openSession(machine) {
       loop: null,
       notify: null, // set by the mounted terminal view (mountGen-guarded)
     };
+    if (machine.owner) {
+      const g = guestGrantFor(id);
+      if (!g || g.mode !== 'rw') guardReadonlySend(sess.current); // ro share: output only, at the send path
+    }
     sess.term.write('[mir] connecting to ' + (machine.name || machine.machine_id) + '…\r\n');
     sessions.set(id, sess);
     startLoop(sess);
@@ -639,7 +647,16 @@ function renderMachines(root, machines, fresh) {
   if (!machines.length) { mount(root, emptyMachinesView(root)); return; }
   const viewEl = el('div', { className: 'view' });
   const grid = el('div', { className: 'grid' });
+  const allShared = machines.every((m) => m.owner);
   for (const m of machines) {
+    if (m.owner) {
+      // A share someone gave this identity: the grant, not the registry, says
+      // what it is — and it carries no owner affordances (no rename/retire).
+      grid.append(el('button', { className: 'card machine shared', onclick: () => viewTerminal(root, m) },
+        el('div', { className: 'name' }, '⇢ ' + (m.name || m.machine_id)),
+        el('div', { className: 'sub' }, shareSummary(guestGrantFor(m.machine_id)))));
+      continue;
+    }
     // A machine that is warm in the session pool (R2) shows its live state on
     // the card — tapping it switches back in place, scrollback intact.
     const warm = sessions.get(m.machine_id);
@@ -656,8 +673,10 @@ function renderMachines(root, machines, fresh) {
   grid.append(el('button', { className: 'card add', onclick: () => viewPair(root) },
     el('div', { className: 'plus' }, '＋'), el('div', { className: 'sub' }, 'Pair a machine')));
   const kids = [
-    el('h1', {}, 'your machines'),
-    el('p', { className: 'muted' }, 'Your live terminals. Leave one device, continue on another.'),
+    el('h1', {}, allShared ? 'shared with you' : 'your machines'),
+    el('p', { className: 'muted' }, allShared
+      ? 'Terminals people shared with you. Each expires on its own.'
+      : 'Your live terminals. Leave one device, continue on another.'),
     ...retiredNotice(),
   ];
   if (fresh && fresh.length) {
@@ -677,6 +696,11 @@ function renderMachines(root, machines, fresh) {
 // best-effort: a failure just leaves the local list. Discovery only. When the
 // resulting list is empty, pollForMachine keeps refreshing it live (U3).
 function viewMachines(root) {
+	// Shares whose window has fully closed age out here, like the CLI sweep.
+	for (const gone of sweepGuestGrants()) {
+		const entry = listMachines().find((x) => x.machine_id === gone);
+		if (entry && entry.owner) removeMachine(gone);
+	}
 	let localRevocations;
 	try { localRevocations = loadRevocations(signerKey().address); }
 	catch (e) {
@@ -832,7 +856,48 @@ function viewPair(root, prefill = '', auto = false) {
     el('button', { className: 'link back', onclick: () => leaveScanner(() => viewMachines(root)) }, '← machines')));
 }
 
+// viewJoin claims a share invite (the /#join-<code> link): run the guest
+// ceremony, show the safety number to read aloud (the owner approves on their
+// side), and land the share as a guest entry.
+function viewJoin(root, code) {
+  const status = el('div', { className: 'status' });
+  mount(root, el('div', { className: 'view' },
+    el('h1', {}, 'joining a shared terminal…'), status));
+  status.textContent = 'connecting to the invite…';
+  const signer = signerKey();
+  const binding = recordJSON(signBinding(signer, deviceID(), bytesToHex(ownerKey().pub), Math.floor(Date.now() / 1000)));
+  joinWithCode(code, signer, binding, (sas) => {
+    status.innerHTML = '';
+    window.__lastSafety = sas;
+    status.append(
+      el('div', { className: 'ok' }, 'Read this safety number aloud to the person sharing:'),
+      el('div', { className: 'sas' }, sas),
+      el('div', { className: 'muted' }, 'They compare and approve on their side — nothing else to do here.'));
+  }).then(({ machine, grant }) => {
+    addMachine(machine);
+    saveGuestGrant(grant);
+    status.innerHTML = '';
+    status.append(
+      el('div', { className: 'ok' }, '✓ joined ' + (machine.name || machine.machine_id) + ' — ' + modeWord(grant.mode) + ', ' + expiryPhrase(grant.na)),
+      el('div', { className: 'actions' },
+        el('button', { className: 'btn', onclick: () => viewTerminal(root, machine) }, 'Open the terminal'),
+        el('button', { className: 'link', onclick: () => viewMachines(root) }, 'Done')));
+  }).catch((e) => {
+    status.innerHTML = '';
+    status.append(
+      el('div', { className: 'muted' }, (e && e.message) || String(e)),
+      el('button', { className: 'link', onclick: () => viewMachines(root) }, '← machines'));
+  });
+}
+
 function viewTerminal(root, machineToOpen) {
+  // A share is checked against its own clock first: an expired grant would only
+  // earn the agent's silent refusal, which reads as "offline".
+  if (machineToOpen.owner && !grantLive(guestGrantFor(machineToOpen.machine_id))) {
+    noticeSheet('Your share of ' + (machineToOpen.name || machineToOpen.machine_id) + ' has ended — ask the owner for a new invite.');
+    viewMachines(root);
+    return;
+  }
   // The view is a SHELL over the warm session pool: machineToOpen becomes the
   // active session (joining the pool — possibly evicting the LRU background
   // machine); every pooled machine keeps its terminal alive in the DOM, hidden
@@ -879,13 +944,14 @@ function viewTerminal(root, machineToOpen) {
   const sw = el('button', { className: 'tb-btn', title: 'switch machine', onclick: () => openSwitcher() }, '⇄');
   const revokeBtn = el('button', { className: 'tb-btn', title: 'retire machine', onclick: retire }, '⊘');
   const titleEl = el('div', { className: 'tb-title' }, m().name || m().machine_id);
+  const roChip = el('span', { className: 'tb-ro', hidden: true });
   const renameBtn = el('button', { className: 'tb-btn', title: 'rename machine', onclick: () => renameMachineUI() }, '✎');
   // machbar: one chip per warm machine (name + state dot), shown only when two
   // or more are pooled — a single machine keeps today's clean layout.
   const machbar = el('div', { className: 'machbar', hidden: true });
   const strip = el('div', { className: 'winbar' });
   const view = el('div', { className: 'view term' },
-    el('div', { className: 'topbar' }, back, titleEl, renameBtn, sw, revokeBtn),
+    el('div', { className: 'topbar' }, back, titleEl, roChip, renameBtn, sw, revokeBtn),
     machbar, strip, termHost);
   mount(root, view);
   const viewGen = mountGen; // this mount's token: stale session notifies no-op
@@ -1076,7 +1142,19 @@ function viewTerminal(root, machineToOpen) {
   };
 
   const renderTitle = () => { const mm = m(); titleEl.textContent = mm.name || mm.machine_id; };
-  function renderChrome() { renderTitle(); renderPill(); renderMachbar(); renderStrip(); }
+  // syncGuestChrome: a share carries no owner affordances; a read-only share
+  // says so, with its clock, right in the topbar.
+  function syncGuestChrome() {
+    const mm = m();
+    const isGuest = !!mm.owner;
+    renameBtn.hidden = isGuest;
+    revokeBtn.hidden = isGuest;
+    const g = isGuest ? guestGrantFor(mm.machine_id) : null;
+    const ro = g && g.mode !== 'rw';
+    roChip.hidden = !ro;
+    if (ro) roChip.textContent = 'read-only · ' + expiryPhrase(g.na);
+  }
+  function renderChrome() { renderTitle(); renderPill(); renderMachbar(); renderStrip(); syncGuestChrome(); }
 
   // Every pooled terminal lives in the DOM, hidden except the active one — the
   // durable-terminal design across machines: scrollback survives switching.
@@ -1134,7 +1212,8 @@ function viewTerminal(root, machineToOpen) {
 
 // after sign-in: replay a scanned pairing code, else show machines
 function afterSignIn(root, pendingFrag) {
-  if (pendingFrag) viewPair(root, pendingFrag, true);
+  if (pendingFrag && pendingFrag.startsWith('join-')) viewJoin(root, pendingFrag.slice(5));
+  else if (pendingFrag) viewPair(root, pendingFrag, true);
   else viewMachines(root);
 }
 
