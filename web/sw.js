@@ -13,7 +13,7 @@
 // relay serves sw.js no-store — so a new deploy replaces this worker on the
 // next online load.
 
-const CACHE = 'mir-shell-v4';
+const CACHE = 'mir-shell-v5';
 
 // Everything the app needs to boot. test/sw.test.js fails if this list drifts
 // from the files on disk — add new modules here when you add them to src/.
@@ -29,6 +29,7 @@ const SHELL = [
   '/src/identity.js',
   '/src/identity/auth.js',
   '/src/identity/binding.js',
+  '/src/identity/grant.js',
   '/src/identity/owner.js',
   '/src/identity/registry.js',
   '/src/identity/signer.js',

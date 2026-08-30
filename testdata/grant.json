@@ -1,0 +1,15 @@
+{
+  "owner": "EJXgN4y1m4B9NSk6F7Bx2Uj6cWWbksWMs4Lor9qswz76",
+  "owner_priv": "1ed668a74f04dcaee81b48d383293500e16c98ab64d70042ffec10261b983e82",
+  "guest": "B8fqnVACge9hnGRrwVQ898xF1EJgcCX6EwxaKjHw8FXe",
+  "guest_priv": "fbde6c43427f9a232cf23675fced600329e6cb3e83528873ef3cd24ccf2032cc",
+  "machine": "a1b2c3d4e5f60718",
+  "scope": "main",
+  "mode": "ro",
+  "nb": 1756511700,
+  "na": 1756515600,
+  "gid": "00112233aabbccdd",
+  "canonical": "{\"v\":1,\"owner\":\"EJXgN4y1m4B9NSk6F7Bx2Uj6cWWbksWMs4Lor9qswz76\",\"machine\":\"a1b2c3d4e5f60718\",\"guest\":\"B8fqnVACge9hnGRrwVQ898xF1EJgcCX6EwxaKjHw8FXe\",\"scope\":\"main\",\"mode\":\"ro\",\"nb\":1756511700,\"na\":1756515600,\"gid\":\"00112233aabbccdd\"}",
+  "sig": "5zMjsprVHsWAGNdqVNz7H6YZL1x7ZTr7C6AiwfTcGVefVPVSLmLDfCvEsQCh6kwXipYsHKe2gZSDyt7ndUP836Ti",
+  "record": "{\"v\":1,\"owner\":\"EJXgN4y1m4B9NSk6F7Bx2Uj6cWWbksWMs4Lor9qswz76\",\"machine\":\"a1b2c3d4e5f60718\",\"guest\":\"B8fqnVACge9hnGRrwVQ898xF1EJgcCX6EwxaKjHw8FXe\",\"scope\":\"main\",\"mode\":\"ro\",\"nb\":1756511700,\"na\":1756515600,\"gid\":\"00112233aabbccdd\",\"sig\":\"5zMjsprVHsWAGNdqVNz7H6YZL1x7ZTr7C6AiwfTcGVefVPVSLmLDfCvEsQCh6kwXipYsHKe2gZSDyt7ndUP836Ti\"}"
+}

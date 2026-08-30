@@ -102,7 +102,7 @@ test('network-first: serves the fresh response and rewrites the cache', async ()
     request: getRequest('/src/app.js'),
   });
   assert.equal(await response.text(), 'shell:/src/app.js');
-  assert.equal(await stores.get('mir-shell-v4').get('/src/app.js').clone().text(), 'shell:/src/app.js');
+  assert.equal(await stores.get('mir-shell-v5').get('/src/app.js').clone().text(), 'shell:/src/app.js');
 });
 
 test('relay unreachable: falls back to the cached shell', async () => {
