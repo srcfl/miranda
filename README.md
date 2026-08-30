@@ -84,6 +84,9 @@ Attach several machines at once with `mir attach a b c`; press `Ctrl-O`, then
   server forwards ciphertext where direct NAT traversal fails.
 - **Blind discovery.** The relay stores only owner-encrypted machine records while
   agents are online.
+- **Shareable, for a while.** `mir share` hands someone a time-boxed,
+  read-only view of one terminal — no account, no key exchange, and it revokes
+  or expires on its own.
 
 ## Security in one screen
 

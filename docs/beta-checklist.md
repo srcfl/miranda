@@ -55,7 +55,18 @@ you tap it. Then bring the machine back: `mir up` on it, pair fresh.
 **Note down:** whether the confirmation told you what you needed to know
 before you tapped; anything surprising on the way back.
 
-## 6. Your setup
+## 6. Share a terminal
+
+On the laptop: `mir share <machine>` (defaults: read-only, 1 h). On the phone
+— or a second person's device — open the invite link, read the safety number
+aloud, and have the minter approve. Watch the share open read-only, then let
+it expire (or `mir share revoke <id>`).
+
+**Note down:** how long mint → joined took; whether the read-only view showed
+live output; whether typing into it did anything (it must not); what happened
+at expiry or revoke — the honest end line, or anything confusing.
+
+## 7. Your setup
 
 **Note down:** phone model + browser; laptop browser; passkey provider
 (iCloud Keychain, 1Password, …); network (home, office, cellular). This feeds
