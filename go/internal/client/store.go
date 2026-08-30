@@ -454,6 +454,23 @@ func AddMachine(dir string, m Machine) error {
 	return writeMachines(dir, list)
 }
 
+// RemoveMachine drops one machine by id. Used by the guest-state sweep — a
+// share whose window closed is gone; the pin set for everything else is copied
+// through untouched.
+func RemoveMachine(dir, machineID string) error {
+	list, err := ListMachines(dir)
+	if err != nil {
+		return err
+	}
+	kept := list[:0]
+	for _, m := range list {
+		if m.MachineID != machineID {
+			kept = append(kept, m)
+		}
+	}
+	return writeMachines(dir, kept)
+}
+
 // writeMachines writes machines.json atomically (temp file + rename) so a crash
 // mid-write can't truncate the pin store.
 func writeMachines(dir string, list []Machine) error {

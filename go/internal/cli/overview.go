@@ -22,6 +22,7 @@ import (
 
 	"github.com/srcful/terminal-relay/go/internal/client"
 	"github.com/srcful/terminal-relay/go/internal/defaults"
+	"github.com/srcful/terminal-relay/go/internal/identity"
 	"github.com/srcful/terminal-relay/go/internal/noise"
 	"github.com/srcful/terminal-relay/go/internal/peer"
 )
@@ -76,6 +77,8 @@ func (a *app) cmdOverview() error {
 		dir:  dir,
 		idn:  idn,
 		pump: pump,
+		fd:   fd,
+		raw:  oldState,
 		model: &overviewModel{
 			Binary: a.binary,
 			Status: "loading your machines…",
@@ -130,6 +133,8 @@ type overviewState struct {
 	dir      string
 	idn      *client.Identity
 	pump     *stdinPump
+	fd       int         // stdin fd, for suspending raw mode around the share ceremony
+	raw      *term.State // the pre-overview terminal state to restore
 	model    *overviewModel
 	machines []client.Machine  // row i -> machines[i]
 	fresh    map[string]bool   // machine ids first seen while this overview is up
@@ -198,13 +203,23 @@ func (ov *overviewState) refresh(ctx context.Context, first bool) bool {
 	}
 	rows := make([]overviewRow, 0, len(merged))
 	for _, m := range merged {
-		rows = append(rows, overviewRow{
+		row := overviewRow{
 			Name:        m.Name,
 			MachineID:   m.MachineID,
 			Online:      online[m.MachineID],
 			New:         ov.fresh[m.MachineID],
 			WindowsLine: ov.windows[m.Name],
-		})
+		}
+		if m.Owner != "" {
+			// A share someone gave this identity: mark it and let the grant
+			// speak for its state — the registry never knows it.
+			row.Shared = true
+			row.WindowsLine = "shared with you"
+			if g := client.GuestGrantFor(ov.dir, m.MachineID); g != nil {
+				row.WindowsLine = fmt.Sprintf("shared with you · %s · %s", modeWord(g.Mode), expiryPhrase(g.NA, false, time.Now()))
+			}
+		}
+		rows = append(rows, row)
 	}
 	changed := first || !rowsEqual(ov.model.Rows, rows)
 	ov.machines = merged
@@ -266,8 +281,22 @@ func (ov *overviewState) handleKey(ctx context.Context, ev keyEvent) (done bool,
 				return false, err
 			}
 		}
+	case ovShare:
+		if row, ok := ov.model.Selected(); ok {
+			if row.Shared {
+				ov.model.Status = "that's a share — only its owner can share it onward"
+				break
+			}
+			if i := ov.model.Cursor; i >= 0 && i < len(ov.machines) {
+				ov.share(ctx, ov.machines[i])
+			}
+		}
 	case ovRename:
 		if row, ok := ov.model.Selected(); ok {
+			if row.Shared {
+				ov.model.Status = "that's a share — only the owner can rename it; it expires on its own"
+				break
+			}
 			ov.prompt = promptRename
 			ov.input = nil
 			ov.model.Prompt = "new name for " + row.Name + ": "
@@ -275,6 +304,10 @@ func (ov *overviewState) handleKey(ctx context.Context, ev keyEvent) (done bool,
 		}
 	case ovRetire:
 		if row, ok := ov.model.Selected(); ok {
+			if row.Shared {
+				ov.model.Status = "that's a share — it expires on its own; nothing to retire"
+				break
+			}
 			ov.prompt = promptRetire
 			ov.input = nil
 			ov.model.Prompt = "Retire " + row.Name + "? It disappears from every device; the machine and its tmux keep running; `" +
@@ -556,4 +589,51 @@ func (f *detachFilter) Read(p []byte) (int, error) {
 		}
 		f.buf = out
 	}
+}
+
+// pumpReader adapts the overview's stdin pump to a plain io.Reader for the
+// share ceremony's line prompts (the terminal is back in cooked mode there, so
+// the kernel line-buffers and each Read hands over a full line).
+type pumpReader struct {
+	pump *stdinPump
+	buf  []byte
+}
+
+func (r *pumpReader) Read(p []byte) (int, error) {
+	if len(r.buf) == 0 {
+		chunk, ok := <-r.pump.ch
+		if !ok {
+			return 0, io.EOF
+		}
+		r.buf = chunk
+	}
+	n := copy(p, r.buf)
+	r.buf = r.buf[n:]
+	return n, nil
+}
+
+// share runs the mint ceremony for the selected machine: leave the alt screen
+// and raw mode (the ceremony prints a QR and asks questions), run it with the
+// share defaults (read-only, 1 h, session main — flags need the command form),
+// then come back to the overview.
+func (ov *overviewState) share(ctx context.Context, m client.Machine) {
+	a := ov.app
+	fmt.Fprint(a.out, altScreenOff)
+	_ = term.Restore(ov.fd, ov.raw)
+
+	sa := *a
+	sa.in = &pumpReader{pump: ov.pump}
+	err := sa.shareResolved(ctx, ov.dir, ov.idn, m, identity.GrantDefaultTTL, false, "main", defaults.WebURL(), ov.ice())
+
+	if _, rerr := term.MakeRaw(ov.fd); rerr != nil && err == nil {
+		err = rerr
+	}
+	fmt.Fprint(a.out, altScreenOn)
+	switch {
+	case err != nil:
+		ov.model.Status = err.Error()
+	default:
+		ov.model.Status = "shared — `" + a.binary + " share ls` lists it"
+	}
+	ov.draw()
 }

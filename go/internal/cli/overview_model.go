@@ -25,6 +25,7 @@ const (
 	ovQuit
 	ovHelp
 	ovEsc
+	ovShare
 	ovRune // an ordinary byte; Rune carries it (prompt input)
 )
 
@@ -77,6 +78,8 @@ func (d *keyDecoder) feed(b byte) keyEvent {
 		return keyEvent{Key: ovRename, Rune: b}
 	case 'x':
 		return keyEvent{Key: ovRetire, Rune: b}
+	case 's':
+		return keyEvent{Key: ovShare, Rune: b}
 	case '?':
 		return keyEvent{Key: ovHelp, Rune: b}
 	}
@@ -89,7 +92,8 @@ type overviewRow struct {
 	MachineID   string
 	Online      bool
 	New         bool   // discovered for the first time while this overview is up
-	WindowsLine string // dim one-line tmux summary; "" hides the line
+	Shared      bool   // a share someone gave this identity (guest entry)
+	WindowsLine string // dim one-line tmux summary or share detail; "" hides the line
 }
 
 // overviewModel is everything the overview renders. The loop mutates it and
@@ -109,8 +113,8 @@ const (
 	ansiDim    = "\x1b[2m"
 	ansiBold   = "\x1b[1m"
 	ansiReset  = "\x1b[0m"
-	ovHintBar  = "enter attach · r rename · x retire · q quit · ? help"
-	ovHelpLine = "↑/↓ or j/k move · enter attaches · r renames · x retires (asks first) · q quits"
+	ovHintBar  = "enter attach · s share · r rename · x retire · q quit · ? help"
+	ovHelpLine = "↑/↓ or j/k move · enter attaches · s shares (owner) · r renames · x retires (asks first) · q quits"
 )
 
 // MoveCursor moves the selection, clamped to the row list.
@@ -161,6 +165,9 @@ func (m *overviewModel) Render() string {
 		state := "○"
 		if r.Online {
 			state = "●"
+		}
+		if r.Shared {
+			state = "⇢" // a share: its grant, not the registry, is its state
 		}
 		badge := ""
 		if r.New {

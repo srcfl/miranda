@@ -162,6 +162,7 @@ func (a *app) guide() {
 	p("")
 	p("  Share a terminal (guests, time-boxed):")
 	p("    " + b + " share <machine>   invite someone in — read-only, expires in an hour")
+	p("    " + b + " share ls          your invites; revoke one: " + b + " share revoke <id>")
 	p("    " + b + " join <code>       claim an invite someone sent you")
 	p("")
 	p("  Identity & machines:")
