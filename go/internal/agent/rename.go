@@ -149,28 +149,28 @@ func (rt *Runtime) republishRegistry(owner string) {
 // channel is owner-authenticated, so bad input is a client bug, not an attack
 // to punish the session for.
 func (rt *Runtime) renameHandler(owner string) ControlHandler {
-	return func(payload []byte) (bool, string) {
+	return func(payload []byte) (bool, map[string]string) {
 		var c renameControl
 		if json.Unmarshal(payload, &c) != nil || c.A != "rename-machine" {
-			return false, ""
+			return false, nil
 		}
 		if !ValidMachineName(c.N) || c.Blob == "" {
-			return true, ""
+			return true, nil
 		}
 		if raw, err := base64.StdEncoding.DecodeString(c.Blob); err != nil || len(raw) == 0 || len(raw) > maxRenameBlobBytes {
-			return true, ""
+			return true, nil
 		}
 		if err := RenameMachine(rt.cfg.Dir, owner, c.N, c.Blob); err != nil {
 			if rt.Logf != nil {
 				rt.Logf("event=rename_failed err=%v", err)
 			}
-			return true, ""
+			return true, nil
 		}
 		rt.setMachineName(c.N)
 		rt.republishRegistry(owner)
 		if rt.Logf != nil {
 			rt.Logf("event=renamed name=%q", c.N)
 		}
-		return true, c.N
+		return true, map[string]string{"name": c.N}
 	}
 }
