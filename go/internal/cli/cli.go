@@ -156,8 +156,9 @@ func (a *app) guide() {
 	p("    " + b + " doctor --share    the same checks as a paste-safe report for an issue")
 	p("    " + b + " update            install the newest release (checked once a day)")
 	p("")
-	p("On the same network, " + b + " attach connects directly over the LAN (no relay) and")
-	p("falls back to the relay automatically. Full help for any command: " + b + " <command> -h")
+	p("Connections go machine-to-machine when they can — same network or hole-punched")
+	p("across the internet — and fall back to a relay only when they must.")
+	p("Full help for any command: " + b + " <command> -h")
 	// The guide is the one place a user stops to look around, so spend up to a
 	// second checking for an update — bounded, cached for a day, silent on any
 	// failure, and skipped when stdin isn't a terminal (scripts, CI, go test).

@@ -154,9 +154,9 @@ limits.
 
 ### 4. Terminal data plane
 
-After authorization, the peers establish WebRTC or LAN QUIC and run
+After authorization, the peers establish a WebRTC DataChannel and run
 `Noise_KK_25519_ChaChaPoly_SHA256` inside it. Both static keys were authenticated
-through pairing/binding, so transport DTLS/TLS certificates are not the identity
+through pairing/binding, so transport DTLS certificates are not the identity
 boundary.
 
 Noise provides mutual authentication, forward secrecy for session traffic, and
@@ -182,7 +182,7 @@ domain-separated Ed25519 tombstone over `owner_id`, `machine_id`, and timestamp.
 The client stores it locally before publication. Honest relays verify the owner
 signature, persist the record atomically, close the target's signaling registration
 and pending attaches, and reject future registration/attach attempts for that slot.
-An already-established P2P/LAN Noise session no longer traverses the relay and
+An already-established P2P Noise session no longer traverses the relay and
 cannot be remotely killed by it; the client performing revocation closes its own
 session, while other already-connected clients must disconnect or sync the record.
 
@@ -194,14 +194,15 @@ revocation; rotate the entire identity and re-pair instead.
 
 ## Network paths
 
-- **WebRTC direct:** preferred across networks; STUN exposes candidate addresses as
-  required for NAT traversal.
-- **TURN:** available only when the deployment configures it. TURN forwards Noise
-  ciphertext and learns traffic metadata/volume.
-- **LAN direct:** mDNS advertises `_miranda._udp` and the opaque machine ID; QUIC
-  connects directly. The self-signed QUIC certificate is transport-only. Noise is
-  still mandatory. Disable both advertisement and listener with `mir up --no-lan`;
-  clients can use `mir attach --relay-only`.
+- **Direct (preferred):** ICE pairs host candidates on a shared LAN and
+  server-reflexive candidates across NATs; STUN exposes candidate addresses as
+  required for NAT traversal. Private LAN addresses appear in the SDP the relay
+  brokers.
+- **TURN (fallback):** available only when the deployment configures it. TURN
+  forwards Noise ciphertext and learns traffic metadata/volume.
+
+(`mir up --no-lan` and `mir attach --relay-only` are deprecated no-ops from
+v0.8.0-beta.3: both modes ride the same connection.)
 
 Miranda does not hide IP addresses or provide traffic anonymity. Use a separate
 privacy network if that is a requirement.

@@ -83,8 +83,6 @@ type Runtime struct {
 	reloadInterval time.Duration        // how often to re-read config for newly-paired owners
 	Logf           func(string, ...any) // optional reconnect/status log (set by the CLI)
 
-	DisableLAN bool // when set, mir up serves the relay only (no QUIC listener / mDNS advertise)
-
 	rename renameState // live display name + signaling writers for mid-run rename (see rename.go)
 }
 
@@ -164,18 +162,6 @@ func (rt *Runtime) acceptAttachSession(owner, session string) bool {
 func (rt *Runtime) Up(ctx context.Context) error {
 	if len(rt.cfg.PairedOwners) == 0 {
 		return errNoOwner
-	}
-	// LAN-direct: advertise + listen for relay-less attach on the local network.
-	// Start failure is NON-FATAL — the relay path below always serves.
-	if !rt.DisableLAN {
-		if addr, stop, err := rt.startLAN(ctx); err == nil {
-			defer stop()
-			if rt.Logf != nil {
-				rt.Logf("LAN-direct listening (mDNS _miranda._udp) at %s", addr)
-			}
-		} else if rt.Logf != nil {
-			rt.Logf("LAN-direct disabled: %v", err)
-		}
 	}
 	rt.reconcileOwners(ctx, append([]string(nil), rt.cfg.PairedOwners...))
 	t := time.NewTicker(rt.reloadInterval)
@@ -487,7 +473,7 @@ func (rt *Runtime) authorizeOffer(owner string, m signal.SignalMsg) ([]byte, err
 }
 
 // serveAuthenticated runs the Noise-KK responder against the pinned owner X25519 key
-// and then the PTY session over mc. Shared by the relay offer path and LAN-direct.
+// and then the PTY session over mc.
 //
 // The active-session bracket lives HERE — after auth — not at the transport accept:
 // pre-auth handshakes (already bounded by admit()) must not inflate the active count

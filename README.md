@@ -79,9 +79,9 @@ Attach several machines at once with `mir attach a b c`; press `Ctrl-O`, then
   without managing `authorized_keys`.
 - **Persistent by default.** Network changes, browser sleep, or closing the lid do
   not kill the work running inside tmux.
-- **Direct when possible.** WebRTC connects peer-to-peer across networks; LAN
-  clients use direct QUIC. An optional TURN server can forward ciphertext where
-  direct NAT traversal fails.
+- **Direct when possible.** One connection, two modes: ICE pairs peers directly —
+  on the same LAN or hole-punched across the internet — and an optional TURN
+  server forwards ciphertext where direct NAT traversal fails.
 - **Blind discovery.** The relay stores only owner-encrypted machine records while
   agents are online.
 
@@ -96,8 +96,8 @@ Miranda assumes the rendezvous relay is untrusted.
 3. Every remote attach must carry a fresh owner signature bound to the relay-issued
    session, machine ID, and exact SDP offer. The agent verifies it before allocating
    ICE, TURN, or a peer connection.
-4. Terminal bytes run through mutually authenticated Noise `KK` inside WebRTC or
-   QUIC. Transport encryption is not the identity boundary.
+4. Terminal bytes run through mutually authenticated Noise `KK` inside the
+   WebRTC DataChannel. Transport encryption is not the identity boundary.
 5. The target agent stores its host key, a registration secret, pinned owner
    **public** IDs, and owner-encrypted registry blobs. It never stores the owner's
    root or private key.
@@ -188,7 +188,7 @@ The longer positioning decision is in [`docs/product.md`](docs/product.md).
 
 Miranda is **v0.7.0**. The CLI and browser can pair,
 discover, attach, reconnect, multiplex machines, and resume real tmux sessions over
-the P2P/LAN data plane. Machine revocation, native OS-keychain storage, bounded
+the P2P data plane. Machine revocation, native OS-keychain storage, bounded
 relay rate limits, diagnostics, signed releases, and reproducible binary checks are
 implemented. Go and browser crypto are gated by shared interop vectors.
 
@@ -222,7 +222,7 @@ machine again. Do not copy an old combined state directory into either new path.
  │ owner identity   │ WSS  │ SDP/ICE + metadata   │  WSS  │ host identity   │
  │ registry key     │─────▶│ no terminal plaintext│◀──────│ tmux + PTY       │
  └────────┬─────────┘      └──────────────────────┘       └────────┬────────┘
-          └════ WebRTC DataChannel or LAN QUIC, Noise KK E2E ══════┘
+          └═══════ WebRTC DataChannel, Noise KK E2E (direct/TURN) ═══┘
 ```
 
 The cryptographic wire domains and Go module path retain their historical

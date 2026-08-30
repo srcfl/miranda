@@ -11,10 +11,10 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-export COMPOSE_PROFILES=tools,open
+export COMPOSE_PROFILES=tools,open,lan
 RESULTS_DIR="$(pwd)/results"
 
-ALL_SCENARIOS=(open-agent prc-prc sym-sym-stun sym-sym-turn turn-only flip-prc flip-turn)
+ALL_SCENARIOS=(open-agent lan-direct prc-prc sym-sym-stun sym-sym-turn turn-only flip-prc flip-turn)
 
 usage() {
 	cat <<'EOF'
@@ -22,6 +22,7 @@ usage: ./run.sh [--list] [--no-build] [scenario ...]
 
 scenarios
   open-agent     agent on a routable address, client behind a port-restricted NAT (STUN)
+  lan-direct     agent on the client's own subnet, no TURN — only a host<->host pair can pass
   prc-prc        both sides behind port-restricted cone NATs (STUN)
   sym-sym-stun   both sides behind symmetric NATs, no TURN — expected to fail
   sym-sym-turn   both sides behind symmetric NATs, relay offers TURN
@@ -54,35 +55,40 @@ configure() {
 		export NETSIM_ORDER=1 NETSIM_AGENT_NAT="none (routable)" NETSIM_CLIENT_NAT="port-restricted" NETSIM_ICE="STUN"
 		export NETSIM_NOTE="One side reachable at a fixed address — the friendliest real case, and the floor for attach latency."
 		;;
+	lan-direct)
+		AGENT_SVC=agent-lan
+		export NETSIM_ORDER=2 NETSIM_AGENT_NAT="none (client's subnet)" NETSIM_CLIENT_NAT="none (agent's subnet)" NETSIM_ICE="STUN (host pair)"
+		export NETSIM_NOTE="Peers share a subnet and TURN is off, so only an ICE host<->host pair can complete: passing proves direct-on-LAN, with the relay carrying signalling only."
+		;;
 	prc-prc)
-		export NETSIM_ORDER=2 NETSIM_AGENT_NAT="port-restricted" NETSIM_CLIENT_NAT="port-restricted" NETSIM_ICE="STUN"
+		export NETSIM_ORDER=3 NETSIM_AGENT_NAT="port-restricted" NETSIM_CLIENT_NAT="port-restricted" NETSIM_ICE="STUN"
 		export NETSIM_NOTE="Two ordinary home routers. Both sides hole-punch; the relay only carries signalling."
 		;;
 	sym-sym-stun)
 		export NETSIM_AGENT_NAT_MODE=sym NETSIM_CLIENT_NAT_MODE=sym
-		export NETSIM_ORDER=3 NETSIM_AGENT_NAT="symmetric" NETSIM_CLIENT_NAT="symmetric" NETSIM_ICE="STUN"
+		export NETSIM_ORDER=4 NETSIM_AGENT_NAT="symmetric" NETSIM_CLIENT_NAT="symmetric" NETSIM_ICE="STUN"
 		export NETSIM_EXPECT=fail NETSIM_MAX_FAILURES=1 NETSIM_REP_BUDGET=60s
 		export NETSIM_REPS="${REPS_OVERRIDE:-1}"
 		export NETSIM_NOTE="The case STUN cannot solve: each mapping is per-destination, so the port a peer learns is never the port it is contacted on. This is why TURN exists."
 		;;
 	sym-sym-turn)
 		export NETSIM_AGENT_NAT_MODE=sym NETSIM_CLIENT_NAT_MODE=sym NETSIM_TURN=1
-		export NETSIM_ORDER=4 NETSIM_AGENT_NAT="symmetric" NETSIM_CLIENT_NAT="symmetric" NETSIM_ICE="TURN"
+		export NETSIM_ORDER=5 NETSIM_AGENT_NAT="symmetric" NETSIM_CLIENT_NAT="symmetric" NETSIM_ICE="TURN"
 		export NETSIM_NOTE="The same two symmetric NATs, with the relay handing out ephemeral TURN credentials. Noise keeps the relayed bytes opaque."
 		;;
 	turn-only)
 		export NETSIM_BLOCK_PEER_UDP=1 NETSIM_TURN=1
-		export NETSIM_ORDER=5 NETSIM_AGENT_NAT="port-restricted, peer UDP blocked" NETSIM_CLIENT_NAT="port-restricted, peer UDP blocked" NETSIM_ICE="TURN"
+		export NETSIM_ORDER=6 NETSIM_AGENT_NAT="port-restricted, peer UDP blocked" NETSIM_CLIENT_NAT="port-restricted, peer UDP blocked" NETSIM_ICE="TURN"
 		export NETSIM_NOTE="Every UDP flow except the one to coturn is dropped, so a direct path cannot exist. Measures the TURN fallback on its own."
 		;;
 	flip-prc)
 		export NETSIM_FLIP=1
-		export NETSIM_ORDER=6 NETSIM_AGENT_NAT="port-restricted" NETSIM_CLIENT_NAT="port-restricted (Wi-Fi -> cellular)" NETSIM_ICE="STUN"
+		export NETSIM_ORDER=7 NETSIM_AGENT_NAT="port-restricted" NETSIM_CLIENT_NAT="port-restricted (Wi-Fi -> cellular)" NETSIM_ICE="STUN"
 		export NETSIM_NOTE="The client's uplink is swapped for a second one behind a different NAT: new interface, new address, new mapping."
 		;;
 	flip-turn)
 		export NETSIM_AGENT_NAT_MODE=sym NETSIM_CLIENT_NAT_MODE=sym NETSIM_TURN=1 NETSIM_FLIP=1
-		export NETSIM_ORDER=7 NETSIM_AGENT_NAT="symmetric" NETSIM_CLIENT_NAT="symmetric (Wi-Fi -> cellular)" NETSIM_ICE="TURN"
+		export NETSIM_ORDER=8 NETSIM_AGENT_NAT="symmetric" NETSIM_CLIENT_NAT="symmetric (Wi-Fi -> cellular)" NETSIM_ICE="TURN"
 		export NETSIM_NOTE="The same flip on the path that has to relay: a fresh TURN allocation on the new uplink."
 		;;
 	*)

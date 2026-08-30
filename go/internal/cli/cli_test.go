@@ -156,7 +156,7 @@ func TestNoArgsShowsGuide(t *testing.T) {
 	var out, errb bytes.Buffer
 	Run(nil, &out, &errb)
 	g := out.String()
-	for _, want := range []string{"mir attach", "mir pair", "identity", "LAN"} {
+	for _, want := range []string{"mir attach", "mir pair", "identity", "machine-to-machine"} {
 		if !strings.Contains(g, want) {
 			t.Fatalf("guide missing %q:\n%s", want, g)
 		}

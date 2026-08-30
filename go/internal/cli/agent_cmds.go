@@ -79,12 +79,15 @@ func (a *app) cmdUp(args []string) error {
 	shell := fs.String("shell", "tmux:new:-A:-s:main", "launch command, ':'-separated")
 	ice := iceFlags(fs)
 	autoUpdate := fs.Bool("auto-update", os.Getenv("MIR_AUTO_UPDATE") == "1", "opt-in: automatically self-update when idle")
-	noLAN := fs.Bool("no-lan", false, "disable LAN-direct (no QUIC listener, no mDNS advertise); serve the relay only")
+	noLAN := fs.Bool("no-lan", false, "deprecated: no effect (one connection now carries direct and relayed)")
 	allowRoot := fs.Bool("allow-root", false, "unsafe override: allow the terminal agent to run as root")
 	noPair := fs.Bool("no-pair", false, "first run: do not offer inline pairing; fail if no owner is paired")
 	confirmSAS := fs.String("confirm-sas", "", "first-run pairing, non-interactive: the expected safety number")
 	yes := fs.Bool("yes", false, "first-run pairing, non-interactive: commit without comparing the safety number")
 	_ = fs.Parse(args)
+	if *noLAN {
+		fmt.Fprintln(a.errOut, "note: --no-lan no longer does anything and will go away — LAN-direct now rides the same connection (direct when possible, relayed when not)")
+	}
 	if err := ensureAgentOnlyDir(*dir); err != nil {
 		return err
 	}
@@ -131,7 +134,6 @@ func (a *app) cmdUp(args []string) error {
 	}
 
 	rt := agent.NewRuntime(cfg, launch, ice())
-	rt.DisableLAN = *noLAN
 	// Structured, timestamped agent log. RFC3339-ish date+time in UTC plus the
 	// binary prefix turns a bare "owner … disconnected" line into something you
 	// can correlate against relay logs and tell a flap (low uptime) from a normal
