@@ -13,12 +13,10 @@ const wsBase = (signalURL) => 'ws' + signalURL.slice(4); // http->ws, https->wss
 // "pairing…" forever. 30s is generous for a human-paced QR scan + two round trips.
 const PAIR_TIMEOUT_MS = 30000;
 
-// pairWithCode runs the pairing handshake using `signer` ({ address, priv }) as our
-// identity: it sends the legacy-wire owner field and proves control with an auth
-// signature over the channel binding. Returns { machine, safetyNumber }.
-export async function pairWithCode(code, signer, secret = null) {
-  const { signalURL, token } = decodeCode(code);
-
+// openPairRoom dials the blind one-shot /pair room and returns a MsgConn over
+// it plus the shared failure latch. Both ceremonies that ride the room — the
+// owner pairing below and the guest join (join.js) — use this one scaffold.
+export async function openPairRoom(signalURL, token, timeoutMs = PAIR_TIMEOUT_MS) {
   const ws = new WebSocket(wsBase(signalURL) + '/pair?room=' + roomID(token));
   ws.binaryType = 'arraybuffer';
 
@@ -31,8 +29,7 @@ export async function pairWithCode(code, signer, secret = null) {
     if (!failed) failed = err;
     if (waiter) { const w = waiter; waiter = null; w.reject(failed); }
   };
-  // 30s ceiling on the whole ceremony (mirrors connectOnce's connect timeout).
-  const timer = setTimeout(() => fail(new Error('pairing timed out')), PAIR_TIMEOUT_MS);
+  const timer = setTimeout(() => fail(new Error('pairing timed out')), timeoutMs);
 
   try {
     await new Promise((res, rej) => {
@@ -41,29 +38,46 @@ export async function pairWithCode(code, signer, secret = null) {
       ws.onerror = () => rej(new Error('could not reach the pairing relay'));
       ws.onclose = () => rej(new Error('pairing relay closed the connection'));
     });
+  } catch (e) {
+    clearTimeout(timer);
+    try { ws.close(); } catch {}
+    throw e;
+  }
 
-    // Post-open: re-wire close/error to the failure latch so a relay drop DURING the
-    // handshake rejects the pending recv() (the pre-open handlers' rejection is moot
-    // once open resolved). Without this the read side waited forever on a dead socket.
-    ws.onerror = () => fail(new Error('pairing relay error'));
-    ws.onclose = () => fail(new Error('pairing relay closed the connection'));
+  // Post-open: re-wire close/error to the failure latch so a relay drop DURING the
+  // handshake rejects the pending recv() (the pre-open handlers' rejection is moot
+  // once open resolved). Without this the read side waited forever on a dead socket.
+  ws.onerror = () => fail(new Error('pairing relay error'));
+  ws.onclose = () => fail(new Error('pairing relay closed the connection'));
 
-    // MsgConn over the WebSocket: one binary message per send/recv (the /pair
-    // bridge preserves message boundaries).
-    const inbox = [];
-    ws.onmessage = (ev) => {
-      const u = new Uint8Array(ev.data);
-      if (waiter) { const w = waiter; waiter = null; w.resolve(u); } else inbox.push(u);
-    };
-    const mc = {
-      send: (b) => ws.send(b),
-      recv: () => new Promise((resolve, reject) => {
-        if (inbox.length) return resolve(inbox.shift());
-        if (failed) return reject(failed);
-        waiter = { resolve, reject };
-      }),
-    };
+  // MsgConn over the WebSocket: one binary message per send/recv (the /pair
+  // bridge preserves message boundaries).
+  const inbox = [];
+  ws.onmessage = (ev) => {
+    const u = new Uint8Array(ev.data);
+    if (waiter) { const w = waiter; waiter = null; w.resolve(u); } else inbox.push(u);
+  };
+  const mc = {
+    send: (b) => ws.send(b),
+    recv: () => new Promise((resolve, reject) => {
+      if (inbox.length) return resolve(inbox.shift());
+      if (failed) return reject(failed);
+      waiter = { resolve, reject };
+    }),
+  };
+  const close = () => { clearTimeout(timer); try { ws.close(); } catch {} };
+  return { mc, fail, close };
+}
 
+// pairWithCode runs the pairing handshake using `signer` ({ address, priv }) as our
+// identity: it sends the legacy-wire owner field and proves control with an auth
+// signature over the channel binding. Returns { machine, safetyNumber }.
+export async function pairWithCode(code, signer, secret = null) {
+  const { signalURL, token } = decodeCode(code);
+  const room = await openPairRoom(signalURL, token);
+  const { mc, fail } = room;
+
+  try {
     const provisioner = secret ? (info) => {
       const record = new TextEncoder().encode(JSON.stringify({
         v: 1,
@@ -82,16 +96,14 @@ export async function pairWithCode(code, signer, secret = null) {
     const abort = () => {
       if (finished) return;
       finished = true;
-      clearTimeout(timer);
       fail(new Error('pairing cancelled'));
-      try { ws.close(); } catch {}
+      room.close();
     };
     const commit = async () => {
       if (finished) throw new Error('pairing already finished');
       await started.finish(provisioner);
       finished = true;
-      clearTimeout(timer);
-      try { ws.close(); } catch {}
+      room.close();
     };
     return {
       machine: { machine_id: started.info.machine_id, host_pub: started.info.host_pub, name: started.info.name, signal: signalURL },
@@ -100,8 +112,7 @@ export async function pairWithCode(code, signer, secret = null) {
       abort,
     };
   } catch (e) {
-    clearTimeout(timer);
-    try { ws.close(); } catch {}
+    room.close();
     throw e;
   }
 }
