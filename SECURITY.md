@@ -67,6 +67,14 @@ not normal deployment.
 
 ### Rendezvous relay
 
+**A relay that cannot testify.** Miranda is named after the warning — *you have
+the right to remain silent* — and the relay in the middle has no choice about
+it: terminal bytes only ever reach it as Noise ciphertext, so it cannot testify
+to what you typed, under subpoena or after a breach. That covers plaintext and
+nothing more; the relay still sees the metadata listed below, still holds
+encrypted registry blobs while an agent is live, and still persists owner-signed
+revocation tombstones.
+
 The relay matches owner/machine IDs, forwards one-shot SDP messages, bridges pairing
 rooms, serves temporary TURN credentials when configured, retains encrypted
 registry blobs only with live agent registrations, and persists owner-signed
