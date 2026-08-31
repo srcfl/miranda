@@ -115,6 +115,15 @@ Attach several machines at once with `mir attach a b c`; press `Ctrl-O`, then
   → [`docs/release.md`](docs/release.md), [SECURITY.md](SECURITY.md),
   [audit scope](docs/audit-scope.md)
 
+## Why the name?
+
+The Miranda warning: *you have the right to remain silent.* The relay in the
+middle has no choice about it — it never sees your keystrokes, so it cannot
+testify to what you typed, under subpoena or after a breach.
+
+The other Miranda is Shakespeare's, on an island in *The Tempest*, seeing the
+wider world for the first time: “O brave new world, that has such people in't.”
+
 ## Security in one screen
 
 Miranda assumes the rendezvous relay is untrusted.

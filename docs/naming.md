@@ -14,6 +14,12 @@ on Prospero the magician's island, *"O brave new world, that has such people in'
 — which fits the "definitely magic" tone and opens a thematic name system for the
 components.
 
+**Told in the product since 2026-08-31.** The warning story now opens the relay's
+section in [`SECURITY.md`](../SECURITY.md) ("a relay that cannot testify") and has
+a short "Why the name?" section in [`README.md`](../README.md), with one line of
+the Shakespeare layer for warmth. Those two are the only places it ships; this
+file stays the source and the full record.
+
 ## Criteria
 
 - Short, memorable, pronounceable; brandable.
