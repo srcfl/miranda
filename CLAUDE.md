@@ -5,6 +5,10 @@ Browser → blind relay → agent terminal, passkey-authenticated, E2E encrypted
 Go module path stays `github.com/srcful/terminal-relay/go` — internal, not the
 brand. See `docs/naming.md`.)
 
+**Picking this up cold? Read `docs/status.md` first** — where the project
+stands, what comes next, the decisions still open, and the traps that have
+already cost us time.
+
 ## Invariants (do not break)
 - The relay never sees plaintext. Only `owner_id`, `machine_id`, metadata.
 - Go and JS crypto MUST stay byte-identical — `testdata/` vectors are the gate.
@@ -18,3 +22,4 @@ brand. See `docs/naming.md`.)
 - `go/` — `mir-agent`, `mir-signal`, the `mir` client, shared `internal/` packages.
 - `web/` — browser client (vanilla JS + xterm.js).
 - `docs/superpowers/{specs,plans}/` — design + plans.
+- `docs/status.md` — current state, next goal, open decisions, known traps.
