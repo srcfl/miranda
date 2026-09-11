@@ -44,6 +44,7 @@ test('ctrlByte returns null for characters with no control mapping', () => {
 test('named keys emit the exact terminal byte sequences', () => {
   assert.deepEqual(KEY_BYTES.esc, new Uint8Array([0x1b]));
   assert.deepEqual(KEY_BYTES.tab, new Uint8Array([0x09]));
+  assert.deepEqual(KEY_BYTES.prefix, new Uint8Array([0x02])); // Ctrl-B
   assert.deepEqual(KEY_BYTES.up, new Uint8Array([0x1b, 0x5b, 0x41])); // ESC [ A
   assert.deepEqual(KEY_BYTES.down, new Uint8Array([0x1b, 0x5b, 0x42])); // ESC [ B
   assert.deepEqual(KEY_BYTES.right, new Uint8Array([0x1b, 0x5b, 0x43])); // ESC [ C
@@ -60,6 +61,7 @@ test('arrow sequences decode to the canonical ANSI escapes', () => {
 test('keyBytes resolves named keys and literal characters to bytes', () => {
   assert.deepEqual(keyBytes('esc'), new Uint8Array([0x1b]));
   assert.deepEqual(keyBytes('tab'), new Uint8Array([0x09]));
+  assert.deepEqual(keyBytes('prefix'), new Uint8Array([0x02]));
   assert.deepEqual(keyBytes('up'), new Uint8Array([0x1b, 0x5b, 0x41]));
   // literal extras are UTF-8 encoded
   assert.deepEqual(keyBytes('|'), new Uint8Array([0x7c]));

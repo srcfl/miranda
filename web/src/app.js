@@ -22,6 +22,7 @@ import { signBinding, recordJSON } from './identity/binding.js';
 import { signAuth, attachChallenge } from './identity/auth.js';
 import { filterRevoked, isMachineRevoked, loadRevocations, revokeMachine, syncRevocations } from './revocations.js';
 import { makeKeybar, shouldShowKeybar } from './ui/keybar.js';
+import { applyHello, hideTmuxStrip } from './ui/hello.js';
 import jsQR from '/vendor/jsqr.js';
 
 const te = new TextEncoder();
@@ -247,7 +248,8 @@ export async function connectOnce(machine, term, current, onConnected, onWindows
       else if (type === FRAME_WINDOWS) { try { onWindows && onWindows(JSON.parse(td.decode(payload))); } catch {} }
       // A HELLO after the first one is the agent re-announcing itself — today
       // that means a machine rename (ours: the acknowledgement; another
-      // device's: a live update).
+      // device's: a live update). engine, if present, is sticky: a name-only
+      // rename HELLO must not drop a herdr attach back to tmux chrome.
       else if (type === FRAME_HELLO) { try { onHello && onHello(JSON.parse(td.decode(payload))); } catch {} }
     }
   } catch (e) {
@@ -377,9 +379,9 @@ function startLoop(sess) {
         ping(sess);
       },
       // A late HELLO is a rename: ours (the ack) or another device's (live
-      // update). The store is only written on OUR rename (we know its sealed
-      // ts); here the session's name just follows the machine.
-      (meta) => { if (meta && meta.name) { sess.machine = { ...sess.machine, name: meta.name }; ping(sess); } }),
+      // update). engine is sticky so a name-only HELLO cannot un-hide the
+      // tmux strip on a herdr attach.
+      (meta) => { sess.machine = applyHello(sess.machine, meta); ping(sess); }),
     onState: (state, attempt) => {
       sess.attempt = attempt || 0;
       if (state === 'connected') {
@@ -990,6 +992,11 @@ function viewTerminal(root, machineToOpen) {
   // grid overview. Falls back to ＋/‹/› before any snapshot (or non-tmux shells).
   function renderStrip() {
     strip.replaceChildren();
+    if (hideTmuxStrip(m().engine)) {
+      strip.hidden = true;
+      return;
+    }
+    strip.hidden = false;
     const sess = sessionsView();
     const cur = sess && (sess.find((s) => s.act) || sess[0]);
     if (!cur || !cur.win || !cur.win.length) {

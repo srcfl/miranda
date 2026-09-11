@@ -41,6 +41,7 @@ export function ctrlByte(ch) {
 export const KEY_BYTES = {
   esc: new Uint8Array([0x1b]),
   tab: new Uint8Array([0x09]),
+  prefix: new Uint8Array([0x02]), // Ctrl-B — herdr and tmux share this prefix
   up: new Uint8Array([0x1b, 0x5b, 0x41]), // ESC [ A
   down: new Uint8Array([0x1b, 0x5b, 0x42]), // ESC [ B
   right: new Uint8Array([0x1b, 0x5b, 0x43]), // ESC [ C
@@ -101,6 +102,7 @@ export function shouldShowKeybar(mm = (typeof window !== 'undefined' ? window.ma
 const KEYS = [
   ['esc', 'Esc'],
   ['ctrl', 'Ctrl'],
+  ['prefix', '^B'],
   ['tab', 'Tab'],
   ['up', '↑'],
   ['down', '↓'],
@@ -143,7 +145,7 @@ export function makeKeybar(sendRaw, focus) {
     focus && focus();
   };
 
-  const arrowAria = { up: 'up arrow', down: 'down arrow', left: 'left arrow', right: 'right arrow' };
+  const arrowAria = { up: 'up arrow', down: 'down arrow', left: 'left arrow', right: 'right arrow', prefix: 'prefix (Ctrl-B)' };
   for (const [token, label] of KEYS) {
     const b = doc.createElement('button');
     b.className = 'keybar-btn' + (token === 'ctrl' ? ' keybar-ctrl' : '');

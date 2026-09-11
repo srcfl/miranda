@@ -101,3 +101,37 @@ func TestPinOwnerPersists(t *testing.T) {
 		t.Fatal("pinned owner did not persist")
 	}
 }
+
+func TestSetEnginePersists(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := LoadOrInit(dir, "box", "http://localhost:8443"); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetEngine(dir, "herdr"); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := LoadOrInit(dir, "box", "http://localhost:8443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Engine != "herdr" {
+		t.Fatalf("engine = %q, want herdr", reloaded.Engine)
+	}
+	if err := SetEngine(dir, "tmux"); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, _ = LoadOrInit(dir, "box", "http://localhost:8443")
+	if reloaded.Engine != "tmux" {
+		t.Fatalf("engine = %q, want tmux", reloaded.Engine)
+	}
+}
+
+func TestSetEngineRejectsUnknown(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := LoadOrInit(dir, "box", "http://localhost:8443"); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetEngine(dir, "zellij"); err == nil {
+		t.Fatal("expected unknown engine error")
+	}
+}

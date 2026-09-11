@@ -191,7 +191,7 @@ func TestSessionRenameControlRepliesHello(t *testing.T) {
 			done <- err
 			return
 		}
-		done <- RunAgentSession(ctx, agentMC, s, blockingShell{stop: ctx.Done()}, "old-name", nil, 0, control)
+		done <- RunAgentSession(ctx, agentMC, s, blockingShell{stop: ctx.Done()}, "old-name", "", nil, 0, control)
 	}()
 	cs, err := peer.RunInitiator(ctx, clientMC, clientPriv, agentPub)
 	if err != nil {

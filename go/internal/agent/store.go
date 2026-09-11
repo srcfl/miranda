@@ -15,13 +15,17 @@ import (
 
 // Config is the agent's persisted identity + settings, stored as config.json.
 type Config struct {
-	HostPrivHex        string   `json:"host_priv"`                     // X25519 host private key (hex)
-	HostPubHex         string   `json:"host_pub"`                      // derived; convenience
-	MachineID          string   `json:"machine_id"`                    // random, stable
-	RegistrationSecret string   `json:"registration_secret,omitempty"` // relay-side registration proof
-	MachineName        string   `json:"machine_name"`                  // human label (travels E2E only)
-	SignalURL          string   `json:"signal_url"`                    // e.g. http://localhost:8443
-	PairedOwners       []string `json:"paired_owners"`                 // base58 Miranda owner ids
+	HostPrivHex        string `json:"host_priv"`                     // X25519 host private key (hex)
+	HostPubHex         string `json:"host_pub"`                      // derived; convenience
+	MachineID          string `json:"machine_id"`                    // random, stable
+	RegistrationSecret string `json:"registration_secret,omitempty"` // relay-side registration proof
+	MachineName        string `json:"machine_name"`                  // human label (travels E2E only)
+	SignalURL          string `json:"signal_url"`                    // e.g. http://localhost:8443
+	// Engine is the persisted terminal engine for this machine: "tmux"
+	// (default), "herdr", or empty (treated as tmux). `mir up --engine` writes
+	// it so a herdr box stays herdr across restarts without repeating the flag.
+	Engine       string   `json:"engine,omitempty"`
+	PairedOwners []string `json:"paired_owners"` // base58 Miranda owner ids
 	// OwnerRegistry contains opaque, owner-encrypted discovery records keyed by
 	// owner id. They are created by the passkey-holding client during pairing.
 	// The agent can republish them but cannot decrypt them.
@@ -47,6 +51,27 @@ func ReloadOwners(dir string) ([]string, error) {
 }
 
 func configPath(dir string) string { return filepath.Join(dir, "config.json") }
+
+// SetEngine persists the terminal engine name ("tmux" or "herdr") without
+// touching identity or pairing state. Unknown values are refused so a typo
+// cannot stick.
+func SetEngine(dir, engine string) error {
+	switch engine {
+	case "tmux", "herdr":
+	default:
+		return fmt.Errorf("unknown engine %q (known: tmux, herdr)", engine)
+	}
+	data, err := os.ReadFile(configPath(dir))
+	if err != nil {
+		return err
+	}
+	cfg := &Config{}
+	if err := json.Unmarshal(data, cfg); err != nil {
+		return err
+	}
+	cfg.Engine = engine
+	return save(dir, cfg)
+}
 
 // LoadOrInit reads config.json from dir, creating a fresh host key, machine id,
 // and relay registration proof on first use. machineName/signalURL update the

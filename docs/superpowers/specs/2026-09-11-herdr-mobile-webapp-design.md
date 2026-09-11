@@ -1,16 +1,39 @@
-# Herdr-aware mobile webapp — the inbox herdr does not have
+# Herdr-aware mobile webapp — run every herdr from the phone
 
-> Investigation + design; no build. Grounded in herdr **0.9.0** (protocol 22,
+> Investigation + design. Grounded in herdr **0.9.0** (protocol 22,
 > endpoint generation 1) running on linux/x86_64, and in the existing Miranda
 > PWA. Where a thing was not measured, it says so. The 2026-08-31 engine-seam
 > spec remains the source of truth for the `Engine` interface; this spec
 > decides what the **phone** should be.
 
+**v1 (Fredrik, 2026-09-11):** the problem to solve is running all herdrs from
+the phone. That is the existing PWA attaching to the user's existing herdr
+TUI via `mir up --engine herdr`, not an agent inbox. Inbox, pane
+observe/control, and `HERDR_SOCKET_PATH` isolation are later. Do not mint a
+second empty herdr — launching `herdr` with the user's environment attaches
+the session they already have. Miranda's paired-machine list is the
+multi-machine layer; do not implement `herdr machine add`.
+
+## Phone v1 — TUI in the PWA we already ship
+
+On each box: `mir up --engine herdr` (install herdr if needed, pair as
+today). On the phone: open the Miranda PWA, tap the machine, land in that
+machine's herdr TUI (herdr's own mobile layout at ≤64 cols). Switch machines
+with the existing ⇄ / machine chips. Hide Miranda's tmux window strip — herdr
+draws its own chrome, and the ＋/‹/› fallback is a lie. Prefix on the mobile
+keybar is Ctrl-B (0x02), which herdr and tmux share.
+
+Honest limits, said at `mir up`: Miranda's window strip and `mir share` stay
+tmux-only. Writable guests are refused (already: write sharing needs tmux).
+A second attach is a second herdr TUI client; 0.9 claims independent views.
+
+The inbox design below stays as the *next* product, not this slice.
+
 ## One sentence
 
-Miranda already ships the mobile client herdr refused to build; the webapp
-should become an **agent inbox across paired machines**, not a phone-sized
-dump of herdr's TUI.
+Miranda already ships the mobile client herdr refused to build. v1 is
+**that client attached to the herdr you already run**. An **agent inbox
+across paired machines** is what comes after, once the phone path exists.
 
 ## Why this now
 
@@ -327,18 +350,21 @@ herdr. Full TUI launch and window-verb parity can follow.
 
 ## Part 5 — slices
 
+Phone v1 (this slice) is M-phone, not M2–M4. It does not wait on the Engine
+interface extract.
+
 | # | Slice | Acceptance |
 |---|---|---|
-| M0 | This spec. No code. | — |
+| M-phone | `mir up --engine herdr`, persist, bootstrap, HELLO.engine, hide tmux strip, Prefix `^B`. Launch the user's herdr (no private socket). | `mir up --engine bogus` errors; `--engine`+`--shell` refused; persisted herdr survives restart; missing herdr refuses (no tmux fallback); PWA hides ＋/‹/› on `engine: herdr`; `go test ./...` and `npm test` green |
+| M0 | This spec. | — |
 | M1 | E1 + E2 as already specified (tmux-only seam). | `go test ./...` and `npm test` green; `mir doctor` prints tmux caps |
-| M2 | herdr engine: Probe, Snapshot from `session.snapshot`, Watch from `events.subscribe`. Empty snapshot → `workspace create`. Socket via `HERDR_SOCKET_PATH`. Read-only. | CLI overview and web strip show herdr tabs; a `tab create` appears in the strip without polling |
-| M3 | herdr `Mirror` (`observe`) and pane `control`. Agent copies ANSI frames onto `FrameData`. HELLO grows `engine` + `caps`. | Phone-sized xterm shows one pane; observe confinement test from the engine spec (no inject, no other-pane leak). Second control without takeover fails with a named error |
+| M2 | herdr engine: Probe, Snapshot from `session.snapshot`, Watch from `events.subscribe`. Empty snapshot → `workspace create`. Socket via `HERDR_SOCKET_PATH` only if Miranda is running a *private* herdr, which phone v1 does not. | CLI overview and web strip show herdr tabs; a `tab create` appears in the strip without polling |
+| M3 | herdr `Mirror` (`observe`) and pane `control`. Agent copies ANSI frames onto `FrameData`. HELLO grows `caps`. | Phone-sized xterm shows one pane; observe confinement test from the engine spec (no inject, no other-pane leak). Second control without takeover fails with a named error |
 | M4 | `st` on FrameWindows v2 (engine E7). Inbox UI in the SPA: cross-machine list, tap to M3. tmux machines have no inbox. | Old client + new agent: today's UI. New client + tmux: today's UI. New client + herdr: inbox with state. One vector added, none changed |
 | M5 | Desktop-TUI coexistence: if a controller cannot resize (crop), the SPA stays on observe and says so. Takeover is a confirm sheet that names the engine. | Copy is tested; no silent crop of a 113-column desktop pane onto a 40-column phone |
-| M6 | Bootstrap: `mir up --engine herdr` (engine E8). | Clean machine: prompt → install → up → inbox on the PWA |
 
-Order M0 → M1 → M2 → M3 → M4. M5 can land with M3 if the crop re-measure is
-cheap. M6 can parallel M4.
+Order: **M-phone now** (it is the product). M1 can land independently. M2–M4
+are the inbox, after the phone can already reach herdr.
 
 Out of scope for this spec: herdr plugins, graphics, worktrees, `agent prompt`
 from the phone, push notifications, rewriting the PWA in a framework,

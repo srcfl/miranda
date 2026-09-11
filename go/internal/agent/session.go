@@ -4,6 +4,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"sync"
 
 	"github.com/srcful/terminal-relay/go/internal/noise"
@@ -30,7 +31,7 @@ type ControlHandler func(payload []byte) (handled bool, helloAck map[string]stri
 // RunAgentSession bridges an established Noise session to a shell using the
 // Plan-1 frame protocol: it sends HELLO (machine name) once, then pumps DATA in
 // both directions and applies RESIZE. Returns when either side ends.
-func RunAgentSession(ctx context.Context, mc peer.MsgConn, sess *noise.Session, sh Shell, machineName string, windowsJSON func() []byte, tmuxPid int, control ControlHandler) error {
+func RunAgentSession(ctx context.Context, mc peer.MsgConn, sess *noise.Session, sh Shell, machineName, engine string, windowsJSON func() []byte, tmuxPid int, control ControlHandler) error {
 	// noise.Session.Encrypt is not concurrency-safe (nonce counter), and several
 	// goroutines now send (HELLO, shell->peer, the windows poller) — serialize.
 	var sendMu sync.Mutex
@@ -40,8 +41,7 @@ func RunAgentSession(ctx context.Context, mc peer.MsgConn, sess *noise.Session, 
 		return send(mc, sess, framed)
 	}
 
-	hello, _ := json.Marshal(map[string]string{"name": machineName})
-	if err := safeSend(noise.EncodeHello(hello)); err != nil {
+	if err := safeSend(noise.EncodeHello(helloJSON(machineName, engine))); err != nil {
 		return err
 	}
 
@@ -146,4 +146,33 @@ func send(mc peer.MsgConn, sess *noise.Session, framed []byte) error {
 		return err
 	}
 	return mc.Send(ct)
+}
+
+// helloJSON is the HELLO payload. engine is omitted when empty so a plain
+// shell attach stays byte-identical to today's frame; a herdr attach adds
+// "engine":"herdr" so the web client can hide the tmux window strip.
+func helloJSON(name, engine string) []byte {
+	b, _ := json.Marshal(helloFields(name, engine))
+	return b
+}
+
+func helloFields(name, engine string) map[string]string {
+	meta := map[string]string{"name": name}
+	if engine != "" {
+		meta["engine"] = engine
+	}
+	return meta
+}
+
+// EngineFromLaunch reports the engine name the web client should treat this
+// attach as. Only "herdr" is special-cased today; tmux and custom --shell
+// return empty so existing chrome stays.
+func EngineFromLaunch(launch []string) string {
+	if len(launch) == 0 {
+		return ""
+	}
+	if filepath.Base(launch[0]) == "herdr" {
+		return "herdr"
+	}
+	return ""
 }

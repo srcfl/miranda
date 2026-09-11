@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -203,5 +204,115 @@ func TestPairOnFirstRunAbortsOnRefusal(t *testing.T) {
 	}
 	if owners, _ := agent.ReloadOwners(dir); len(owners) != 0 {
 		t.Fatalf("refused pairing must pin nothing, got %v", owners)
+	}
+}
+
+func stubHerdrOnPATH(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "herdr"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	t.Setenv("HOME", t.TempDir())
+}
+
+func TestUpRejectsUnknownEngine(t *testing.T) {
+	a := &app{binary: "mir", out: io.Discard, errOut: io.Discard}
+	err := a.cmdUp([]string{"--dir", t.TempDir(), "--engine", "bogus", "--no-lan"})
+	if err == nil || !strings.Contains(err.Error(), `unknown engine "bogus"`) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestUpRejectsEngineAndShellTogether(t *testing.T) {
+	a := &app{binary: "mir", out: io.Discard, errOut: io.Discard}
+	err := a.cmdUp([]string{"--dir", t.TempDir(), "--engine", "herdr", "--shell", "sh", "--no-lan"})
+	if err == nil || !strings.Contains(err.Error(), "--engine and --shell cannot be used together") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestUpEngineHerdrPersistsBeforePairing(t *testing.T) {
+	stubHerdrOnPATH(t)
+	dir := t.TempDir()
+	a := &app{binary: "mir", out: io.Discard, errOut: io.Discard}
+	err := a.cmdUp([]string{"--dir", dir, "--signal", "http://127.0.0.1:1",
+		"--engine", "herdr", "--no-lan", "--no-pair"})
+	if err == nil || !strings.Contains(err.Error(), "no paired owner") {
+		t.Fatalf("expected the no-paired-owner refusal after persist, got %v", err)
+	}
+	cfg, err := agent.LoadOrInit(dir, "box", "http://127.0.0.1:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Engine != "herdr" {
+		t.Fatalf("engine = %q, want herdr", cfg.Engine)
+	}
+}
+
+func TestUpShellHerdrDoesNotPersistEngine(t *testing.T) {
+	stubHerdrOnPATH(t)
+	dir := t.TempDir()
+	if _, err := agent.LoadOrInit(dir, "box", "http://127.0.0.1:1"); err != nil {
+		t.Fatal(err)
+	}
+	a := &app{binary: "mir", out: io.Discard, errOut: io.Discard}
+	err := a.cmdUp([]string{"--dir", dir, "--signal", "http://127.0.0.1:1",
+		"--shell", "herdr", "--no-lan", "--no-pair"})
+	if err == nil || !strings.Contains(err.Error(), "no paired owner") {
+		t.Fatalf("got %v", err)
+	}
+	cfg, err := agent.LoadOrInit(dir, "box", "http://127.0.0.1:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Engine != "" {
+		t.Fatalf("--shell must not persist engine, got %q", cfg.Engine)
+	}
+}
+
+func TestUpPersistedHerdrDoesNotRequireTmux(t *testing.T) {
+	stubHerdrOnPATH(t)
+	dir := t.TempDir()
+	if _, err := agent.LoadOrInit(dir, "box", "http://127.0.0.1:1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.SetEngine(dir, "herdr"); err != nil {
+		t.Fatal(err)
+	}
+	a := &app{binary: "mir", out: io.Discard, errOut: io.Discard}
+	err := a.cmdUp([]string{"--dir", dir, "--signal", "http://127.0.0.1:1", "--no-lan", "--no-pair"})
+	if err == nil || !strings.Contains(err.Error(), "no paired owner") {
+		t.Fatalf("persisted herdr should reach pairing/serve, got %v", err)
+	}
+	if strings.Contains(err.Error(), "tmux") {
+		t.Fatalf("persisted herdr must not demand tmux: %v", err)
+	}
+}
+
+func TestUpEngineHerdrMissingRefusesNonInteractive(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	out := &safeBuf{}
+	a := &app{binary: "mir", out: out, errOut: io.Discard, in: strings.NewReader("")}
+	err := a.cmdUp([]string{"--dir", dir, "--signal", "http://127.0.0.1:1",
+		"--engine", "herdr", "--no-lan"})
+	if err == nil || !strings.Contains(err.Error(), "herdr is not installed") {
+		t.Fatalf("got %v", err)
+	}
+	if !strings.Contains(err.Error(), herdrInstallHint) {
+		t.Fatalf("refusal must carry the install command, got: %v", err)
+	}
+	if strings.Contains(out.String(), "First run") || strings.Contains(out.String(), "safety number") {
+		t.Fatalf("herdr bootstrap must run before pairing:\n%s", out.String())
+	}
+	cfg, loadErr := agent.LoadOrInit(dir, "box", "http://127.0.0.1:1")
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if cfg.Engine != "" {
+		t.Fatalf("failed herdr install must not persist engine, got %q", cfg.Engine)
 	}
 }

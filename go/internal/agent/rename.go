@@ -171,6 +171,6 @@ func (rt *Runtime) renameHandler(owner string) ControlHandler {
 		if rt.Logf != nil {
 			rt.Logf("event=renamed name=%q", c.N)
 		}
-		return true, map[string]string{"name": c.N}
+		return true, helloFields(c.N, EngineFromLaunch(rt.launch))
 	}
 }

@@ -71,6 +71,7 @@ func (a *app) cmdDoctor(args []string) error {
 	} else {
 		d.ok("tmux is available")
 	}
+	d.checkHerdrEngine(*agentDir)
 	if *offline {
 		d.warn("relay health check skipped (--offline)")
 	} else {
@@ -209,6 +210,24 @@ func (d *doctorReport) checkAgent(dir string) {
 			d.fail("agent relay URL is unsafe: %q", d.shareURL(cfg.SignalURL))
 		}
 	}
+}
+
+// checkHerdrEngine warns only on machines that asked for herdr. A tmux box
+// must not be nagged that herdr is missing.
+func (d *doctorReport) checkHerdrEngine(dir string) {
+	data, err := os.ReadFile(filepath.Join(dir, "config.json"))
+	if err != nil {
+		return
+	}
+	var cfg agent.Config
+	if json.Unmarshal(data, &cfg) != nil || cfg.Engine != "herdr" {
+		return
+	}
+	if _, ok := herdrOnPathOrLocal(exec.LookPath, os.UserHomeDir); !ok {
+		d.warn("herdr is not installed; this machine is set to engine herdr — run `%s`", herdrInstallHint)
+		return
+	}
+	d.ok("herdr is available")
 }
 
 func checkPrivateFile(d *doctorReport, path, label string) bool {

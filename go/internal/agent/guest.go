@@ -118,8 +118,7 @@ func (rt *Runtime) serveGuestRO(ctx context.Context, mc peer.MsgConn, sess *nois
 		defer sendMu.Unlock()
 		return send(mc, sess, framed)
 	}
-	hello, _ := json.Marshal(map[string]string{"name": rt.machineName() + " (shared, read-only)"})
-	_ = safeSend(noise.EncodeHello(hello))
+	_ = safeSend(noise.EncodeHello(helloJSON(rt.machineName()+" (shared, read-only)", EngineFromLaunch(rt.launch))))
 
 	// The scope names the session; tmux resolves it to that session's active
 	// pane. (An exact-match "=name" works for session targets but not pane
@@ -221,7 +220,7 @@ func (rt *Runtime) serveGuestRO(ctx context.Context, mc peer.MsgConn, sess *nois
 // a guest cannot be served rw there; refuse honestly.
 func (rt *Runtime) serveGuestRW(ctx context.Context, mc peer.MsgConn, sess *noise.Session, grant *identity.SignedGrant) error {
 	if !isDefaultTmuxLaunch(rt.launch) {
-		_ = send(mc, sess, noise.EncodeHello(mustJSON(map[string]string{"name": rt.machineName()})))
+		_ = send(mc, sess, noise.EncodeHello(helloJSON(rt.machineName(), EngineFromLaunch(rt.launch))))
 		_ = send(mc, sess, noise.EncodeData([]byte("\r\n[write sharing needs tmux on this machine — ask the owner]\r\n")))
 		<-ctx.Done()
 		return nil
@@ -237,7 +236,7 @@ func (rt *Runtime) serveGuestRW(ctx context.Context, mc peer.MsgConn, sess *nois
 	defer pty.Close()
 	defer killGroupedSession(name)
 
-	err = RunAgentSession(ctx, mc, sess, pty, rt.machineName()+" (shared)", nil, 0, nil)
+	err = RunAgentSession(ctx, mc, sess, pty, rt.machineName()+" (shared)", EngineFromLaunch(rt.launch), nil, 0, nil)
 	if ctx.Err() != nil {
 		_ = send(mc, sess, noise.EncodeData([]byte(endedByGrant(ctx))))
 	}

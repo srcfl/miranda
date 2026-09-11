@@ -5,9 +5,9 @@ project up cold, then `CLAUDE.md`, `docs/product.md`, and the spec for whatever
 you are about to touch. This file records state and decisions; the specs remain
 the source of truth for design.
 
-**Next goal: herdr-aware mobile webapp** (agent inbox across paired machines).
-The engine seam is the prerequisite, not the product. Jump to
-[What comes next](#what-comes-next).
+**Next goal: run every herdr from the phone.** `mir up --engine herdr` on
+each box; the existing PWA attaches to that machine's herdr TUI. The agent
+inbox is later. Jump to [What comes next](#what-comes-next).
 
 ## Where things stand
 
@@ -39,14 +39,15 @@ Shipped over 2026-08-29/30, all merged and released:
 
 ## What comes next
 
-**Build the herdr-aware mobile webapp.** Spec:
-[`docs/superpowers/specs/2026-09-11-herdr-mobile-webapp-design.md`](superpowers/specs/2026-09-11-herdr-mobile-webapp-design.md).
-The engine seam
+**Ship phone attach to the herdr you already run.** Spec:
+[`docs/superpowers/specs/2026-09-11-herdr-mobile-webapp-design.md`](superpowers/specs/2026-09-11-herdr-mobile-webapp-design.md)
+(v1 is TUI-in-PWA; inbox is the following product). The engine seam
 ([#107](https://github.com/srcfl/miranda/issues/107),
 [`2026-08-31-engine-seam-herdr-design.md`](superpowers/specs/2026-08-31-engine-seam-herdr-design.md))
-is still the prerequisite; its E1/E2 slices (tmux-only) land first. The
-webapp spec revises what *then* gets built: an agent inbox on the existing
-PWA, not `--shell herdr` painted into xterm.
+still pays for itself, but it does not gate this slice: `mir up --engine herdr`
+launches `herdr` in the PTY, HELLO carries `engine`, the PWA hides the tmux
+strip. Do not isolate `HERDR_SOCKET_PATH` — that would be a second, empty
+session.
 
 Why: herdr 0.9.0 (2026-09-07) can orchestrate several machines in one TUI —
 via SSH (`herdr machine add`). It still has no browser, no passkey, no

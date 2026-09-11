@@ -39,7 +39,7 @@ func TestSessionBridgeRunsRealShellOverNoise(t *testing.T) {
 			return
 		}
 		defer p.Close()
-		done <- RunAgentSession(ctx, agentMC, s, p, "test-machine", nil, 0, nil)
+		done <- RunAgentSession(ctx, agentMC, s, p, "test-machine", "", nil, 0, nil)
 	}()
 	bs, err := peer.RunInitiator(ctx, browserMC, browserPriv, agentPub)
 	if err != nil {
@@ -123,7 +123,7 @@ func TestSessionBridgeNoGoroutineLeakWhenShellExitsFirst(t *testing.T) {
 			return
 		}
 		// Shell errors immediately => shell->peer goroutine returns first.
-		done <- RunAgentSession(ctx, agentMC, s, exitingShell{}, "test-machine", nil, 0, nil)
+		done <- RunAgentSession(ctx, agentMC, s, exitingShell{}, "test-machine", "", nil, 0, nil)
 	}()
 
 	if _, err := peer.RunInitiator(ctx, browserMC, browserPriv, agentPub); err != nil {
@@ -173,4 +173,45 @@ func recvFrame(t *testing.T, ctx context.Context, mc peer.MsgConn, sess *noise.S
 		t.Fatalf("decrypt: %v", err)
 	}
 	return pt
+}
+
+func TestHelloJSONOmitsEmptyEngine(t *testing.T) {
+	var meta map[string]string
+	if err := json.Unmarshal(helloJSON("box", ""), &meta); err != nil {
+		t.Fatal(err)
+	}
+	if meta["name"] != "box" {
+		t.Fatalf("name=%q", meta["name"])
+	}
+	if _, ok := meta["engine"]; ok {
+		t.Fatalf("empty engine must be omitted, got %v", meta)
+	}
+}
+
+func TestHelloJSONIncludesHerdr(t *testing.T) {
+	var meta map[string]string
+	if err := json.Unmarshal(helloJSON("box", "herdr"), &meta); err != nil {
+		t.Fatal(err)
+	}
+	if meta["engine"] != "herdr" || meta["name"] != "box" {
+		t.Fatalf("meta=%v", meta)
+	}
+}
+
+func TestEngineFromLaunch(t *testing.T) {
+	cases := []struct {
+		launch []string
+		want   string
+	}{
+		{[]string{"tmux", "new", "-A", "-s", "main"}, ""},
+		{[]string{"herdr"}, "herdr"},
+		{[]string{"/home/you/.local/bin/herdr"}, "herdr"},
+		{[]string{"sh"}, ""},
+		{nil, ""},
+	}
+	for _, tc := range cases {
+		if got := EngineFromLaunch(tc.launch); got != tc.want {
+			t.Errorf("EngineFromLaunch(%v)=%q, want %q", tc.launch, got, tc.want)
+		}
+	}
 }
