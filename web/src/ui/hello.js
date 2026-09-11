@@ -8,9 +8,12 @@
 export function applyHello(machine, meta) {
   if (!machine) return machine;
   if (!meta || typeof meta !== 'object') return machine;
+  const name = typeof meta.name === 'string' && meta.name ? meta.name : '';
+  const engine = typeof meta.engine === 'string' && meta.engine ? meta.engine : '';
+  if (!name && !engine) return machine;
   const next = { ...machine };
-  if (typeof meta.name === 'string' && meta.name) next.name = meta.name;
-  if (typeof meta.engine === 'string' && meta.engine) next.engine = meta.engine;
+  if (name) next.name = name;
+  if (engine) next.engine = engine;
   return next;
 }
 

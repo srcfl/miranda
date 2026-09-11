@@ -20,6 +20,7 @@ test('applyHello ignores empty payloads', () => {
   const orig = { name: 'box', engine: 'herdr' };
   assert.equal(applyHello(orig, null), orig);
   assert.equal(applyHello(orig, {}), orig);
+  assert.deepEqual(applyHello(orig, { name: '', engine: '' }), orig);
 });
 
 test('hideTmuxStrip is herdr-only', () => {
