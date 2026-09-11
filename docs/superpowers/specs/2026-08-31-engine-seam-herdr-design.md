@@ -4,6 +4,15 @@
 > claim about herdr below was produced by running herdr 0.8.2 in a contained
 > sandbox and reading what came back. Where a thing was not measured, it says
 > so.
+>
+> **0.9.0 addendum (2026-09-11).** herdr shipped multi-machine SSH orchestration
+> and documented per-client TUI views. Observe/control exclusivity and
+> `tab.focus` being server-global were re-measured on 0.9.0 and still hold.
+> The phone-facing product is specified separately:
+> [`2026-09-11-herdr-mobile-webapp-design.md`](2026-09-11-herdr-mobile-webapp-design.md).
+> That spec uses pane observe/control as the web v1 attach, not a herdr TUI
+> dumped into xterm. This document remains the `Engine` interface and the
+> tmux coupling map.
 
 ## One sentence
 

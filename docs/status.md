@@ -1,11 +1,12 @@
 # Status — where Miranda stands
 
-Written 2026-08-31. Read this first if you are picking the project up cold, then
-`CLAUDE.md`, `docs/product.md`, and the spec for whatever you are about to touch.
-This file records state and decisions; the specs remain the source of truth for
-design.
+Written 2026-08-31, updated 2026-09-11. Read this first if you are picking the
+project up cold, then `CLAUDE.md`, `docs/product.md`, and the spec for whatever
+you are about to touch. This file records state and decisions; the specs remain
+the source of truth for design.
 
-**Next goal: carry herdr as a second engine.** Jump to
+**Next goal: herdr-aware mobile webapp** (agent inbox across paired machines).
+The engine seam is the prerequisite, not the product. Jump to
 [What comes next](#what-comes-next).
 
 ## Where things stand
@@ -17,8 +18,9 @@ live: every importmap entry resolves, the beta's modules are served,
 
 Miranda is positioned as **the reach layer for persistent terminals**: a
 multiplexer keeps the session alive on the machine, Miranda gets you to that
-machine. The engine is tmux today, and carrying a second one is the next goal.
-The name's story now ships too — "a relay that cannot testify."
+machine. The engine is tmux today; herdr is the second engine, and the
+product-facing goal is a herdr-aware mobile webapp on the PWA we already
+ship. The name's story now ships too — "a relay that cannot testify."
 
 Shipped over 2026-08-29/30, all merged and released:
 
@@ -37,51 +39,65 @@ Shipped over 2026-08-29/30, all merged and released:
 
 ## What comes next
 
-**Carry herdr as a second engine.** Spec:
-[`docs/superpowers/specs/2026-08-31-engine-seam-herdr-design.md`](superpowers/specs/2026-08-31-engine-seam-herdr-design.md),
-issue [#107](https://github.com/srcfl/miranda/issues/107). Its slice table is
-authoritative; this is the orientation.
+**Build the herdr-aware mobile webapp.** Spec:
+[`docs/superpowers/specs/2026-09-11-herdr-mobile-webapp-design.md`](superpowers/specs/2026-09-11-herdr-mobile-webapp-design.md).
+The engine seam
+([#107](https://github.com/srcfl/miranda/issues/107),
+[`2026-08-31-engine-seam-herdr-design.md`](superpowers/specs/2026-08-31-engine-seam-herdr-design.md))
+is still the prerequisite; its E1/E2 slices (tmux-only) land first. The
+webapp spec revises what *then* gets built: an agent inbox on the existing
+PWA, not `--shell herdr` painted into xterm.
 
-Why: [herdr](https://github.com/herdrdev/herdr) is an agent-aware tmux
-replacement whose remote answer is SSH into your own box. It is not a
-competitor — it sits one layer below Miranda, and its audience is Miranda's
-ideal user, already assembled. Every engine Miranda can carry widens the market
-instead of splitting it.
+Why: herdr 0.9.0 (2026-09-07) can orchestrate several machines in one TUI —
+via SSH (`herdr machine add`). It still has no browser, no passkey, no
+phone. Community fills that with Moshi (SSH), `herdr-web` (private APIs),
+and a Tailscale relay plugin. Miranda's PWA already is that client at the
+reach layer. Herdr Cloud is waitlisted as an E2E "middleman" — the sentence
+that is already the README. Move while that door is open.
 
-Everything below was **measured against herdr 0.8.2**, not assumed:
+Everything below about streams was **re-measured against herdr 0.9.0**
+on linux/x86_64 (protocol 22). TUI-view independence (#3526) is herdr's
+published contract; a clean A-follows-B replay was not completed in the
+sandbox (first-run overlay). Details live in the 2026-09-11 spec §2.
 
-- **Better than tmux:** `terminal session observe` is a genuinely confined
-  read-only stream — injected input, resize and scroll all failed to reach the
-  pane, and a focus change elsewhere never leaked into the stream. That is a
-  cleaner primitive than G1's `capture-pane` + `pipe-pane`. Its event socket
-  also beats R3's 22 hooks, and it exposes agent state (working / blocked /
-  idle) that tmux never had — a new capability, not just parity.
-- **Worse than tmux:** there is **no per-attach view isolation** — two clients
-  share focus, measured both at tab and workspace level. That is exactly the bug
-  D4's grouped sessions were built to kill. A writable guest is one pane,
-  exclusive, and any client can `--takeover` and evict the incumbent.
-- **Watch out:** herdr phones home by default (version checks and the agent
-  detection manifests), and its socket lives under `$HOME`, so a long `HOME`
-  overflows `sun_path`.
+- **Better than tmux, still:** `terminal session observe` is confined
+  (a marker printed in another pane did not appear). `events.subscribe`
+  still beats R3's hooks. Agent state still rolls up pane → tab →
+  workspace. `report-agent` to `blocked` was visible on all three.
+- **Worse than tmux, still, for the socket:** `tab.focus` is
+  server-global. Control of one pane is exclusive; `--takeover` evicts
+  the incumbent. A headless server starts with an empty snapshot — there
+  is no `tmux new -A -s main` analogue until `workspace create`.
+- **Changed since 0.8.2:** herdr TUI clients are documented as able to view
+  different tabs independently, with last-interactor size on a shared tab.
+  Multi-machine lives in the *client* over SSH; the socket has no
+  `machine.*` methods. Do not implement `herdr machine add` inside Miranda.
+- **Watch out, unchanged:** phone-home on by default; `sun_path` overflow
+  on a long `HOME`; a small viewport is a crop when a full TUI owns
+  geometry (0.8.2 measurement, not re-run on 0.9).
 
 ### Decisions still open (Fredrik's call)
 
-Claude's recommendations, argued in the spec and in the session that produced
-it; none is ruled on yet.
+The engine spec's five, plus two from the webapp spec. Recommendations
+below; none is ruled on yet.
 
-1. **A second interactive attach on herdr** — allow it with a loud warning
-   (recommended: refusing would make a herdr box *worse* with Miranda than
-   without, which kills the distribution play), or refuse it.
-2. **Two window strips** — herdr draws its own tab bar inside the pane. Hide
-   ours, hide nothing, or keep ours only where it adds tap targets.
-3. **Writable guests on herdr** — recommended: **refuse `--write` in v1**, since
-   any client can evict the owner. Read-only sharing there is better than on
-   tmux, so the sharing story survives.
-4. **herdr's phone-home** — recommended: ship Miranda's herdr config with it
-   off, and document that agent detection goes staler.
-5. **Sequencing** — recommended: land the seam for tmux only (a pure refactor
-   that pays off regardless), and hold the herdr engine itself until the beta
-   gaps below are closed.
+1. **A second interactive attach on herdr** — for pane-streams: many
+   observers, refuse a second controller without takeover. For TUI launch
+   (`mir attach` on a laptop): allow with a loud warning until #3526 is
+   re-measured on Linux.
+2. **Two window strips** — on the phone, draw neither. Inbox + one pane.
+   Desktop TUI launch may still double-chrome; that path is not web v1.
+3. **Writable guests on herdr** — still **refuse `--write` in v1**.
+   Observe-based sharing is the better primitive.
+4. **herdr's phone-home** — ship Miranda's herdr config with it off.
+5. **Sequencing** — land E1+E2 (tmux seam) regardless. Do **not** hold the
+   herdr engine behind the rest of the beta; the webapp spec's M2–M4 are
+   the product. Herdr Cloud is why.
+6. **Inbox vs machine grid as home.** Recommended: keep the grid; a
+   "needs you" chip opens the inbox when any herdr machine is `blocked`.
+7. **Phone typing at a pane a desktop TUI is watching.** Recommended:
+   observe by default; `--takeover` only behind a confirm that names the
+   engine.
 
 The rule the spec sets, and the one not to bend: **no feature may silently
 degrade.** If an engine cannot do per-attach isolation or a confined read-only
@@ -96,7 +112,7 @@ view, Miranda refuses or says so plainly.
 - **P3: commission the external audit.** Scope is ready in
   `docs/audit-scope.md`; `BETA.md` states plainly that no audit has been
   commissioned.
-- The five herdr decisions above.
+- The herdr decisions in [What comes next](#what-comes-next) (now seven).
 
 ## Open backlog
 
