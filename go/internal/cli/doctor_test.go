@@ -57,3 +57,46 @@ func TestDoctorRejectsLegacyPlaintextOwnerRoot(t *testing.T) {
 		t.Fatalf("unexpected output stdout=%q stderr=%q", out.String(), errOut.String())
 	}
 }
+
+func TestDoctorWarnsWhenHerdrEngineBinaryMissing(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	clientDir := t.TempDir()
+	agentDir := t.TempDir()
+	if _, err := client.LoadOrCreateIdentity(clientDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.LoadOrInit(agentDir, "box", "http://localhost"); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.SetEngine(agentDir, "herdr"); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	code := Run([]string{"doctor", "--client-dir", clientDir, "--agent-dir", agentDir, "--offline"}, &out, &errOut)
+	if code != 0 {
+		// missing tmux/herdr are warnings, not failures
+		t.Fatalf("exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	if !strings.Contains(out.String(), "herdr is not installed") {
+		t.Fatalf("expected a herdr warning:\n%s", out.String())
+	}
+}
+
+func TestDoctorDoesNotWarnHerdrOnTmuxEngine(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	clientDir := t.TempDir()
+	agentDir := t.TempDir()
+	if _, err := client.LoadOrCreateIdentity(clientDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.LoadOrInit(agentDir, "box", "http://localhost"); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	_ = Run([]string{"doctor", "--client-dir", clientDir, "--agent-dir", agentDir, "--offline"}, &out, &errOut)
+	if strings.Contains(out.String(), "engine herdr") || strings.Contains(out.String(), "herdr is not installed") {
+		t.Fatalf("tmux engine must not be nagged about herdr:\n%s", out.String())
+	}
+}

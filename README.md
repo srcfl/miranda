@@ -43,9 +43,10 @@ The useful boundary is the layer:
   sharing.
 
 So Miranda does not replace your multiplexer. It makes the sessions you already
-run follow you. tmux is the engine it drives today; carrying other engines is
-the direction, tracked in [#107](https://github.com/srcfl/miranda/issues/107),
-not something that works yet.
+run follow you. tmux is the default engine. On a herdr machine,
+`mir up --engine herdr` attaches the phone to that herdr session. Deeper herdr
+integration (inbox, pane streams) is tracked in
+[#107](https://github.com/srcfl/miranda/issues/107).
 
 | Tool | Its job | What Miranda adds |
 |---|---|---|
@@ -63,6 +64,12 @@ mir pair       # shows a QR/code and a six-group safety number
 # scan with the Miranda web app, or run `mir pair <code>` on a client
 # compare and confirm the safety number on both ends
 mir up         # keeps the machine's tmux session reachable
+```
+
+On a machine that already runs [herdr](https://herdr.dev):
+
+```bash
+mir up --engine herdr   # phone lands in this herdr, same session as the desktop TUI
 ```
 
 Then, from another terminal:
@@ -151,8 +158,8 @@ Read the exact guarantees, non-goals, and residual risks in
 
 ## Install
 
-Miranda currently targets macOS and Linux. `tmux` is required on machines serving
-persistent sessions. Release installation requires `cosign` and fails
+Miranda currently targets macOS and Linux. Persistent sessions need `tmux`
+(the default) or herdr (`mir up --engine herdr`). Release installation requires `cosign` and fails
 closed unless the checksum manifest has a valid keyless signature from this
 repository's tagged release workflow. Native owner clients store their root in
 macOS Keychain or Linux Secret Service; on Linux, install the package that provides

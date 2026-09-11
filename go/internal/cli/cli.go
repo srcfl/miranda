@@ -151,6 +151,7 @@ func (a *app) guide() {
 	p("")
 	p("  Serve a machine (on the box you want to reach):")
 	p("    " + b + " up                keep its tmux sessions reachable — first run shows a pairing QR")
+	p("    " + b + " up --engine herdr  same, but attach the phone to this machine's herdr")
 	p("    " + b + " pair              add another owner later — prints a QR + safety number")
 	p("")
 	p("  Reach your machines (where you are):")

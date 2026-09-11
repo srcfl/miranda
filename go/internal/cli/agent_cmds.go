@@ -76,7 +76,8 @@ func (a *app) cmdUp(args []string) error {
 	name := fs.String("name", hostname(), "machine display name")
 	signalURL := fs.String("signal", defaults.SignalURL(), "signaling server base URL")
 	webURL := fs.String("web", defaults.WebURL(), "browser SPA base URL the first-run pairing QR opens")
-	shell := fs.String("shell", "tmux:new:-A:-s:main", "launch command, ':'-separated (the default gives each viewer its own tmux view; a custom command attaches as-is)")
+	engine := fs.String("engine", "", "pty engine: tmux (default) or herdr")
+	shell := fs.String("shell", defaultTmuxShell, "launch command, ':'-separated (the default gives each viewer its own tmux view; a custom command attaches as-is). Mutually exclusive with --engine")
 	ice := iceFlags(fs)
 	autoUpdate := fs.Bool("auto-update", os.Getenv("MIR_AUTO_UPDATE") == "1", "opt-in: automatically self-update when idle")
 	noLAN := fs.Bool("no-lan", false, "deprecated: no effect (one connection now carries direct and relayed)")
@@ -85,6 +86,15 @@ func (a *app) cmdUp(args []string) error {
 	confirmSAS := fs.String("confirm-sas", "", "first-run pairing, non-interactive: the expected safety number")
 	yes := fs.Bool("yes", false, "first-run pairing, non-interactive: commit without comparing the safety number")
 	_ = fs.Parse(args)
+	var engineSet, shellSet bool
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "engine":
+			engineSet = true
+		case "shell":
+			shellSet = true
+		}
+	})
 	if *noLAN {
 		fmt.Fprintln(a.errOut, "note: --no-lan no longer does anything and will go away — LAN-direct now rides the same connection (direct when possible, relayed when not)")
 	}
@@ -99,13 +109,24 @@ func (a *app) cmdUp(args []string) error {
 	if err != nil {
 		return err
 	}
-	launch := strings.Split(*shell, ":")
-	isTTY := term.IsTerminal(int(os.Stdin.Fd()))
-	// tmux bootstrap runs BEFORE pairing: on a fresh machine both need the
-	// user's attention, and asking everything up front (tmux, then the pairing
-	// QR) reads as one flow instead of two interruptions.
-	launch, err = newTmuxBootstrap(isTTY, a.in).ensure(a.out, a.errOut, launch)
+	launch, persistEngine, notice, err := resolveLaunch(*engine, *shell, engineSet, shellSet, cfg.Engine)
 	if err != nil {
+		return err
+	}
+	isTTY := term.IsTerminal(int(os.Stdin.Fd()))
+	// Engine bootstrap runs BEFORE pairing: on a fresh machine both need the
+	// user's attention, and asking everything up front (install, then the
+	// pairing QR) reads as one flow instead of two interruptions. A herdr
+	// request never falls back to tmux.
+	if isHerdrLaunch(launch) {
+		launch, err = newHerdrBootstrap(isTTY, a.in).ensure(a.out, a.errOut, launch)
+	} else {
+		launch, err = newTmuxBootstrap(isTTY, a.in).ensure(a.out, a.errOut, launch)
+	}
+	if err != nil {
+		return err
+	}
+	if err := persistEngineAfterUp(*dir, persistEngine); err != nil {
 		return err
 	}
 
@@ -141,6 +162,9 @@ func (a *app) cmdUp(args []string) error {
 	rlog := log.New(a.errOut, a.binary+": ", log.LstdFlags|log.LUTC)
 	rt.Logf = rlog.Printf
 	fmt.Fprintf(a.out, "%s up: machine %s, signaling %s\n", a.binary, cfg.MachineID, cfg.SignalURL)
+	if notice != "" {
+		fmt.Fprint(a.out, notice)
+	}
 	// Non-blocking update notice (cache-only display; refresh in background while serving).
 	updateClient(a.binary).MaybeNotify(a.errOut, updateCachePath(*dir), version.Version, 24*time.Hour)
 	if *autoUpdate {

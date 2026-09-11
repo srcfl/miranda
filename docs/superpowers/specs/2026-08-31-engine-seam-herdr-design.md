@@ -4,6 +4,16 @@
 > claim about herdr below was produced by running herdr 0.8.2 in a contained
 > sandbox and reading what came back. Where a thing was not measured, it says
 > so.
+>
+> **0.9.0 addendum (2026-09-11).** herdr shipped multi-machine SSH orchestration
+> and documented per-client TUI views. Observe/control exclusivity and
+> `tab.focus` being server-global were re-measured on 0.9.0 and still hold.
+> The phone-facing product is specified separately:
+> [`2026-09-11-herdr-mobile-webapp-design.md`](2026-09-11-herdr-mobile-webapp-design.md).
+> Phone v1 is `mir up --engine herdr` attaching the existing PWA to the
+> user's existing herdr TUI (no private `HERDR_SOCKET_PATH`). Inbox and pane
+> observe/control remain the following product. This document remains the
+> `Engine` interface and the tmux coupling map.
 
 ## One sentence
 
